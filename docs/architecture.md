@@ -208,10 +208,17 @@ is exactly what consumers get:
 
 Control plane only — if stormstorage is down, data keeps flowing
 (NVMe-TCP sessions, RAID rebuilds in progress, exports: all engine-side).
-v1: single instance, state in `<data_dir>/state.json` (atomic writes),
-rebuildable from the registry + engines (volumes are discoverable via
-`/v1/volumes` per node). Later: state in StormKV/fastetcd and N replicas
-behind stormd — same ladder stormblock's own GEM plans to climb (#44).
+
+**Peer replication (implemented, v0.2.0):** run one instance per
+site/cluster and list the others under `[replication] peers`. Every
+durable-intent mutation (volumes, registered nodes) bumps a revision and
+pushes the full payload to every peer (`POST /api/v1/replicate`); a peer
+applies only newer revisions. Poll status deliberately does not replicate
+— each peer watches the engines itself, so freshness is local and peers
+cannot ping-pong overwrites. This is honest async last-writer-wins for
+state that is also rebuildable from the engines; consensus
+(StormKV/fastetcd) is the phase-5 ladder, same as stormblock's GEM (#44).
+State persists per-instance in `<data_dir>/state.json` (atomic writes).
 
 ## API (:9093)
 

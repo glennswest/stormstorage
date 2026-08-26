@@ -112,6 +112,11 @@ pub struct DistVolume {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct FedState {
+    /// Bumped on every *durable-intent* mutation (volumes, registered
+    /// nodes) — the replication watermark. Poll status never bumps it, so
+    /// peers each observing the engines cannot ping-pong overwrites.
+    #[serde(default)]
+    pub revision: u64,
     pub nodes: BTreeMap<String, Node>,
     pub volumes: BTreeMap<String, DistVolume>,
 }

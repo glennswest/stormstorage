@@ -27,4 +27,15 @@
   .gitignore
 
 ## [Unreleased]
-<!-- New unreleased changes go here -->
+
+### 2026-08-26
+- **feat:** stormview integration — `GET /api/v1/components` +
+  `/ws/components` serving system/pools/nodes/volumes with relations
+  (pool has_many nodes+volumes, volume legs target nodes) and actions
+  (volume delete), so stormd/stormsh/stormconsole render and drive the
+  federation generically
+- **feat:** Peer replication — `[replication] peers`, revision-guarded
+  last-writer-wins push of durable intent (volumes + registered nodes) to
+  every peer on change (`POST /api/v1/replicate`,
+  `GET /api/v1/replication/status`); poll status deliberately local so
+  peers cannot ping-pong

@@ -76,6 +76,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ui", get(ui_index))
         .route("/ui/", get(ui_index))
         .route("/api/v1/health", get(health))
+        .route("/api/v1/components", get(components_feed))
+        .route("/ws/components", get(ws_components))
+        .route("/api/v1/replicate", post(receive_replication))
+        .route("/api/v1/replication/status", get(replication_status))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/pools", get(list_pools))
@@ -95,6 +99,54 @@ async fn ui_index() -> Html<&'static str> {
 
 async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "version": crate::VERSION }))
+}
+
+async fn components_feed(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let feed = crate::components::collect(&s).await;
+    Json(serde_json::to_value(feed).unwrap_or_default())
+}
+
+/// Full-snapshot pushes, stormd-style: every 2 s, send when changed.
+async fn ws_components(
+    ws: axum::extract::ws::WebSocketUpgrade,
+    State(s): State<Arc<AppState>>,
+) -> Response {
+    ws.on_upgrade(move |mut sock| async move {
+        let mut last = String::new();
+        loop {
+            let feed = crate::components::collect(&s).await;
+            let json = serde_json::to_string(&feed).unwrap_or_default();
+            if json != last {
+                if sock
+                    .send(axum::extract::ws::Message::Text(json.clone().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                last = json;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    })
+}
+
+async fn receive_replication(
+    State(s): State<Arc<AppState>>,
+    Json(payload): Json<crate::replicate::Payload>,
+) -> Json<serde_json::Value> {
+    let incoming = payload.revision;
+    let applied = crate::replicate::apply(&s, payload).await;
+    let local = s.fed.read().await.revision;
+    Json(json!({ "applied": applied, "incoming": incoming, "revision": local }))
+}
+
+async fn replication_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let fed = s.fed.read().await;
+    Json(json!({
+        "revision": fed.revision,
+        "peers": s.config.replication.peers,
+    }))
 }
 
 async fn list_nodes(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -359,7 +411,12 @@ async fn create_volume(
         created_at: SystemTime::now(),
     };
     let response = serde_json::to_value(&vol).unwrap_or_default();
-    s.fed.write().await.volumes.insert(req.name.clone(), vol);
+    {
+        let mut fed = s.fed.write().await;
+        fed.volumes.insert(req.name.clone(), vol);
+        fed.revision += 1;
+    }
+    crate::replicate::push_to_peers(s.clone());
     s.events.write().await.push(
         Some(req.name.clone()),
         Severity::Info,
@@ -427,7 +484,12 @@ async fn delete_volume(
             errors.join("; ")
         )));
     }
-    s.fed.write().await.volumes.remove(&name);
+    {
+        let mut fed = s.fed.write().await;
+        fed.volumes.remove(&name);
+        fed.revision += 1;
+    }
+    crate::replicate::push_to_peers(s.clone());
     s.events.write().await.push(
         Some(name.clone()),
         Severity::Info,
@@ -484,8 +546,12 @@ async fn register_node(
     node.status.last_ok = Some(SystemTime::now());
     node.status.healthy = true;
     node.status.consecutive_failures = 0;
+    if is_new {
+        fed.revision += 1;
+    }
     drop(fed);
     if is_new {
+        crate::replicate::push_to_peers(s.clone());
         s.events.write().await.push(
             Some(a.hostname.clone()),
             Severity::Info,

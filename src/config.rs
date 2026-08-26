@@ -12,8 +12,19 @@ pub struct Config {
     pub federation: FederationConfig,
     pub poll: PollConfig,
     pub api: ApiConfig,
+    pub replication: ReplicationConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
+}
+
+/// Peer stormstorage instances (one per site/cluster). Durable-intent
+/// state (volumes, registered nodes) replicates to every peer on change;
+/// last-writer-wins by revision. See src/replicate.rs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReplicationConfig {
+    /// Base URLs of the other instances, e.g. ["http://siteb:9093"].
+    pub peers: Vec<String>,
 }
 
 impl Default for Config {
@@ -24,6 +35,7 @@ impl Default for Config {
             federation: FederationConfig::default(),
             poll: PollConfig::default(),
             api: ApiConfig::default(),
+            replication: ReplicationConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }

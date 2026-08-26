@@ -54,3 +54,9 @@ rung     = "cluster"
 
 [api]
 api_token = ""
+
+# Peer stormstorage instances (one per site/cluster). Durable state
+# (volumes, registered nodes) replicates to peers on change,
+# last-writer-wins by revision; each peer polls the engines itself.
+[replication]
+peers = []          # e.g. ["http://siteb:9093"]
