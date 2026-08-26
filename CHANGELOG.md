@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+<!-- New unreleased changes go here -->
+
+## [v0.2.0] — 2026-08-26
+
+### Added
+- stormview integration — `GET /api/v1/components` +
+  `/ws/components` serving system/pools/nodes/volumes with relations
+  (pool has_many nodes+volumes, volume legs target nodes) and actions
+  (volume delete), so stormd/stormsh/stormconsole render and drive the
+  federation generically
+- Peer replication — `[replication] peers`, revision-guarded
+  last-writer-wins push of durable intent (volumes + registered nodes) to
+  every peer on change (`POST /api/v1/replicate`,
+  `GET /api/v1/replication/status`); poll status deliberately local so
+  peers cannot ping-pong. Verified live on dev: volume created on peer A
+  visible on peer B at the pushed revision within 2 s
+
 ## [v0.1.0] — 2026-08-26
 
 ### Added
@@ -25,17 +43,3 @@
   phased plan
 - **chore:** Project bootstrap — CLAUDE.md work plan, README, changelog,
   .gitignore
-
-## [Unreleased]
-
-### 2026-08-26
-- **feat:** stormview integration — `GET /api/v1/components` +
-  `/ws/components` serving system/pools/nodes/volumes with relations
-  (pool has_many nodes+volumes, volume legs target nodes) and actions
-  (volume delete), so stormd/stormsh/stormconsole render and drive the
-  federation generically
-- **feat:** Peer replication — `[replication] peers`, revision-guarded
-  last-writer-wins push of durable intent (volumes + registered nodes) to
-  every peer on change (`POST /api/v1/replicate`,
-  `GET /api/v1/replication/status`); poll status deliberately local so
-  peers cannot ping-pong

@@ -10,7 +10,7 @@ volumes as RAID across individual per-node volumes (legs over NVMe-TCP,
 movable), tiering across clusters, and the fleet surface stormfs walks
 across. Founding spec: [docs/architecture.md](docs/architecture.md).
 
-**Version: 0.1.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.2.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 Never in the data path. Everything node↔node and client↔node is NVMe-TCP.
 
