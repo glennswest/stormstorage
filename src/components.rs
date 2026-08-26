@@ -45,7 +45,7 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
         Metric::new("legs", v.legs.len().to_string()).tone("accent"),
     ];
     if v.assembly == AssemblyState::PendingEngineSupport {
-        metrics.push(Metric::new("assembly", "pending #73".into()).tone("warn"));
+        metrics.push(Metric::new("assembly", "pending #73").tone("warn"));
     }
     let mut relations = vec![Relation::has_many(
         "legs",
