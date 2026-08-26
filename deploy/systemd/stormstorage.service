@@ -1,0 +1,16 @@
+[Unit]
+Description=StormStorage control plane
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/sbin/stormstorage
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/stormstorage --config /etc/stormstorage/stormstorage.toml
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

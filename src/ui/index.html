@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StormStorage</title>
+<style>
+:root{
+  --bg:#0f0f1a; --panel:#16192e; --border:#2a2d45; --brand:#e94560;
+  --ok:#50fa7b; --warnc:#f1fa8c; --err:#ff5555; --accent:#8be9fd;
+  --muted:#8890b5; --fg:#e6e6f0;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
+h1{font-size:16px;margin-bottom:2px}
+h2{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+th,td{padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+tr:last-child td{border-bottom:none}
+.chip{display:inline-block;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:600}
+.c-ok{background:rgba(80,250,123,.15);color:var(--ok)}
+.c-warn{background:rgba(241,250,140,.15);color:var(--warnc)}
+.c-err{background:rgba(255,85,85,.18);color:var(--err)}
+.c-mut{background:rgba(136,144,181,.15);color:var(--muted)}
+.c-acc{background:rgba(139,233,253,.15);color:var(--accent)}
+button,select,input{background:#1d2140;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:3px 9px;font-size:12px}
+button{cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.danger{color:var(--err)}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.dim{color:var(--muted)}
+#events{margin-top:14px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:200px;overflow-y:auto}
+.ev{font-size:12px;padding:2px 0;border-bottom:1px solid rgba(42,45,69,.5)}
+.ev:last-child{border-bottom:none}
+.ev .t{color:var(--muted);margin-right:8px;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+#err{color:var(--err);font-size:12px;margin:8px 0;display:none}
+.wrap{overflow-x:auto}
+form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
+</style>
+</head>
+<body>
+<h1>StormStorage</h1>
+<div class="sub" id="head">…</div>
+<div id="err"></div>
+
+<h2>Nodes</h2>
+<div class="wrap"><table>
+<thead><tr><th>Node</th><th>Engine</th><th>Tier</th><th>Labels</th><th>Health</th><th>Free / Total</th><th>Vols</th></tr></thead>
+<tbody id="nodes"></tbody>
+</table></div>
+
+<h2>Pools</h2>
+<div class="wrap"><table>
+<thead><tr><th>Pool</th><th>Replicas</th><th>Rung</th><th>Nodes</th><th>Free / Total</th></tr></thead>
+<tbody id="pools"></tbody>
+</table></div>
+
+<h2>Volumes</h2>
+<form class="create" onsubmit="return createVol(event)">
+  <input id="v-name" placeholder="name" required>
+  <input id="v-size" type="number" placeholder="GiB" required min="1" style="width:80px">
+  <select id="v-pool"><option value="">no pool</option></select>
+  <input id="v-repl" type="number" placeholder="legs" min="1" style="width:60px">
+  <button type="submit">Create</button>
+</form>
+<div class="wrap"><table>
+<thead><tr><th>Volume</th><th>Size</th><th>Pool</th><th>Legs</th><th>Rung</th><th>Assembly</th><th></th></tr></thead>
+<tbody id="vols"></tbody>
+</table></div>
+
+<div id="events"><h2 style="margin-top:0">Events</h2><div id="evlist"></div></div>
+<script>
+const m = location.pathname.match(/^(\/ui\/(?:proxy|ext)\/[^\/]+\/)/);
+const API = m ? m[1] : '/';
+const $ = id => document.getElementById(id);
+function human(b){ if(!b) return '0'; const u=['B','KiB','MiB','GiB','TiB','PiB']; let i=0;
+  while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b>=100||i===0?0:1)+' '+u[i]; }
+function chip(t,c){return `<span class="chip ${c}">${t}</span>`}
+async function api(p,o){ const r=await fetch(API+p,o);
+  if(!r.ok){ let msg=r.status+' '+r.statusText; try{const j=await r.json(); if(j.error)msg=j.error}catch(e){}
+    throw new Error(msg); } return r.json(); }
+function post(p,b){return api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})}
+function fail(e){$('err').style.display='block';$('err').textContent=e.message||String(e);
+  setTimeout(()=>{$('err').style.display='none'},7000)}
+window.createVol=(ev)=>{ ev.preventDefault();
+  const b={name:$('v-name').value, size_bytes:Number($('v-size').value)*1024**3};
+  if($('v-pool').value) b.pool=$('v-pool').value;
+  if($('v-repl').value) b.replicas=Number($('v-repl').value);
+  post('api/v1/volumes',b).then(()=>{$('v-name').value='';refresh()}).catch(e=>{fail(e)});
+  return false; };
+window.delVol=(n)=>{ if(confirm(`Delete volume ${n} and all its legs?`))
+  fetch(API+`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
+    .then(r=>{ if(!r.ok) return r.json().then(j=>{throw new Error(j.error||r.status)}); refresh(); })
+    .catch(fail); };
+async function refresh(){
+  try{
+    const [h,n,p,v,e]=await Promise.all([api('api/v1/health'),api('api/v1/nodes'),
+      api('api/v1/pools'),api('api/v1/volumes'),api('api/v1/events')]);
+    $('head').textContent=`v${h.version} · ${n.nodes.length} nodes · ${v.volumes.length} volumes`;
+    $('nodes').innerHTML=n.nodes.map(x=>`<tr>
+      <td class="mono">${x.name}</td>
+      <td class="dim mono">${x.engine_url}</td>
+      <td>${x.tier?chip(x.tier,'c-acc'):''}</td>
+      <td class="dim">${Object.entries(x.labels||{}).map(([k,val])=>`${k}=${val}`).join(' ')}</td>
+      <td>${x.status.healthy?chip('healthy','c-ok'):chip('unreachable','c-err')}</td>
+      <td>${human(x.status.free_bytes)} / ${human(x.status.total_bytes)}</td>
+      <td>${x.status.volumes||0}</td></tr>`).join('')
+      ||'<tr><td colspan="7" class="dim">no nodes — add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>';
+    $('pools').innerHTML=p.pools.map(x=>`<tr>
+      <td>${x.name}</td><td>${x.replicas}</td><td>${x.rung}</td>
+      <td class="dim">${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}</td>
+      <td>${human(x.free_bytes)} / ${human(x.total_bytes)}</td></tr>`).join('')
+      ||'<tr><td colspan="5" class="dim">no pools configured</td></tr>';
+    const sel=$('v-pool'); const cur=sel.value;
+    sel.innerHTML='<option value="">no pool</option>'+p.pools.map(x=>`<option>${x.name}</option>`).join('');
+    sel.value=cur;
+    $('vols').innerHTML=v.volumes.map(x=>`<tr>
+      <td class="mono">${x.name}</td><td>${human(x.size_bytes)}</td>
+      <td>${x.pool||''}</td>
+      <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}`).join(', ')}</td>
+      <td>${x.rung}</td>
+      <td>${x.assembly==='pending_engine_support'?chip('pending #73','c-warn'):chip('single leg','c-mut')}</td>
+      <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
+      ||'<tr><td colspan="7" class="dim">no volumes</td></tr>';
+    $('evlist').innerHTML=e.events.slice(-30).reverse().map(x=>{
+      const t=x.time&&x.time.secs_since_epoch?new Date(x.time.secs_since_epoch*1000).toLocaleTimeString():'';
+      const cls={info:'',warning:'c-warn',error:'c-err'}[x.severity]||'';
+      return `<div class="ev"><span class="t">${t}</span><span class="${cls?'chip '+cls:''}">${x.severity}</span> ${x.message}</div>`;
+    }).join('')||'<div class="dim">no events</div>';
+  }catch(e){fail(e)}
+}
+refresh(); setInterval(refresh,5000);
+</script>
+</body>
+</html>

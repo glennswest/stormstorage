@@ -65,6 +65,15 @@ keeps the rungs distinct.
 - [ ] Issues: stormblock#73 (NVMe-TCP export as drive/RAID member via API),
       stormfs (consume stormstorage registry/placement)
 
+### Open: CSI relationship (Glenn, 2026-08-26)
+stormblock is the default-everywhere storage; rustkube and the rest of
+the Storm stack integrate it natively, which makes CSI the compatibility
+path for *foreign* Kubernetes, not the primary path. Still wanted, but
+stormblock-first. To look at: stormblock-csi targets a single engine's
+/v1 today — with stormstorage above the engines it should target
+stormstorage (fleet placement) instead. Needs an analysis pass over
+stormblock-csi before changing anything.
+
 ### Phase 2: Leg wiring
 - [ ] Exports per leg; head assembly via stormblock#73
 - [ ] Leg move: create → export → add_member → rebuild-verified → remove →

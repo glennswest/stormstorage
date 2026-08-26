@@ -1,0 +1,11 @@
+# Snippet for stormd: supervise stormstorage and extend the newer UI.
+
+[[process]]
+name = "stormstorage"
+command = "/usr/sbin/stormstorage"
+args = ["--config", "/etc/stormstorage/stormstorage.toml"]
+
+[process.ui]
+label   = "Storage"
+proxy   = "http://127.0.0.1:9093/"
+summary = "http://127.0.0.1:9093/api/v1/summary"
