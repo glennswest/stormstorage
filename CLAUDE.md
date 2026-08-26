@@ -71,6 +71,14 @@ keeps the rungs distinct.
 - [x] Issues: stormblock#73 (NVMe-TCP export as drive/RAID member via API),
       stormfs#64 (consume stormstorage registry/placement)
 
+### Phase 1.5: stormview feed + peer replication — DONE (v0.2.0)
+- [x] `GET /api/v1/components` + `/ws/components` (stormview crate,
+      public): system/pool/node/volume with relations for grids and a
+      delete action on volumes — renders in stormd/stormsh/stormconsole
+- [x] `[replication] peers`: revision-guarded async replication of
+      durable intent (volumes + registered nodes); poll status stays
+      local per peer. Live-verified: create on peer A → visible on B <2s
+
 ### Open: CSI relationship (Glenn, 2026-08-26)
 stormblock is the default-everywhere storage; rustkube and the rest of
 the Storm stack integrate it natively, which makes CSI the compatibility
