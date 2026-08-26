@@ -52,18 +52,24 @@ keeps the rungs distinct.
 
 ## Work Plan
 
-### Phase 1: Registry, pools, placement, volumes — IN PROGRESS
+### Phase 1: Registry, pools, placement, volumes — DONE (v0.1.0)
 - [x] Founding spec (docs/architecture.md)
-- [ ] Scaffold: config (nodes/pools/rungs), model, events, persistence
-- [ ] Engine client (/v1: capacity, volume create/delete/list; bearer)
-- [ ] Poller: enrich + health-mark every node
-- [ ] stormblock-compatible register/deregister endpoints
-- [ ] Placement engine: domain grouping at rung, load-balanced, pure+tested
-- [ ] DistVolume create/delete (legs created per node; assembly pending #73)
-- [ ] API + embedded UI + stormd summary card
-- [ ] Build/test on dev; v0.1.0
-- [ ] Issues: stormblock#73 (NVMe-TCP export as drive/RAID member via API),
-      stormfs (consume stormstorage registry/placement)
+- [x] Scaffold: config (nodes/pools/rungs), model, events, persistence
+- [x] Engine client (/v1: capacity, volume create/delete/list; bearer;
+      legs request replica_tier slaves=0)
+- [x] Poller: enrich + health-mark every node
+- [x] stormblock-compatible register/deregister endpoints
+- [x] Placement engine: domain grouping at rung, load-balanced, pure+tested
+- [x] DistVolume create/delete (legs created per node; assembly pending #73;
+      rollback on partial failure)
+- [x] API + embedded UI + stormd summary card
+- [x] Build/test on dev (15/15, clippy clean); e2e against a LIVE stormblock
+      on dev: poll→capacity, pool create→leg in engine, delete→clean.
+      Operational note: an engine started with plain --device does NOT
+      reopen an existing slab — capacity reads 0 until a slab is
+      formatted/adopted; matters for node provisioning.
+- [x] Issues: stormblock#73 (NVMe-TCP export as drive/RAID member via API),
+      stormfs#64 (consume stormstorage registry/placement)
 
 ### Open: CSI relationship (Glenn, 2026-08-26)
 stormblock is the default-everywhere storage; rustkube and the rest of
