@@ -75,10 +75,17 @@ impl Engine {
     }
 
     /// POST /v1/volumes — name-idempotent create per the /v1 contract.
+    /// `slaves: 0`: a leg is a standalone volume — cross-node redundancy is
+    /// stormstorage's job (legs across nodes), not the engine's replica
+    /// machinery; an SNO node has no peers to host a slave anyway.
     pub async fn create_volume(&self, name: &str, size_bytes: u64) -> anyhow::Result<Value> {
         let resp = self
             .req(reqwest::Method::POST, "/v1/volumes")
-            .json(&serde_json::json!({ "name": name, "size_bytes": size_bytes }))
+            .json(&serde_json::json!({
+                "name": name,
+                "size_bytes": size_bytes,
+                "replica_tier": { "slaves": 0 },
+            }))
             .send()
             .await?;
         let status = resp.status();
