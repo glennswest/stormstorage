@@ -20,8 +20,12 @@ Same rule as stormblock/stormdrive: **every cargo command runs on
 `root@dev.g8.lo`** (`/root/stormstorage`).
 
 ```
-commit → push → ssh root@dev.g8.lo 'cd /root/stormstorage && git pull && cargo test'
+commit → push → ssh root@dev.g8.lo 'cd /root/stormstorage && git pull && \
+    CARGO_TARGET_DIR=/build/cargo/stormstorage cargo test'
 ```
+
+Target dirs live on dev's 2 TB spinning drive (`/build/cargo/<project>`),
+never on the SSD root.
 
 Clean `target/debug` on dev when done; check `df -h /`.
 
@@ -88,7 +92,10 @@ stormblock-first. To look at: stormblock-csi targets a single engine's
 stormstorage (fleet placement) instead. Needs an analysis pass over
 stormblock-csi before changing anything.
 
-### Phase 2: Leg wiring
+### Phase 2: Leg wiring — UNBLOCKED (stormblock#73 landed 2026-08-26)
+stormblock now attaches `nvme-tcp://host:port/<nqn>?nsid=N` as a drive via
+POST /api/v1/drives and takes it as a RAID member; proven cross-engine on
+dev (RAID-1 across a local drive + a remote NVMe-TCP leg, members active).
 - [ ] Exports per leg; head assembly via stormblock#73
 - [ ] Leg move: create → export → add_member → rebuild-verified → remove →
       delete (also the failure-recovery and evacuation path)
