@@ -85,17 +85,32 @@ pub struct Leg {
     pub state: LegState,
     #[serde(default)]
     pub message: Option<String>,
+    /// The engine's own node name — /v1 read-write attach is gated on it.
+    #[serde(default)]
+    pub master_node: Option<String>,
+    /// Attach coordinates once the leg is exported over NVMe-TCP.
+    #[serde(default)]
+    pub export: Option<crate::engine::AttachedLeg>,
+    /// The head engine's drive uuid for this leg (POST /api/v1/drives).
+    #[serde(default)]
+    pub drive_uuid: Option<String>,
+    /// The head array's member uuid for this leg.
+    #[serde(default)]
+    pub member_uuid: Option<String>,
 }
 
-/// Why a volume's legs are not yet a mirrored whole.
+/// Whether a volume's legs are a mirrored whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AssemblyState {
     /// Single leg — nothing to assemble.
     SingleLeg,
-    /// Legs placed and created; RAID assembly over NVMe-TCP waits on
-    /// stormblock#73 (attach an NVMe-TCP export as a RAID member via API).
+    /// Legs exist but the RAID is not (yet) assembled — either mid-flight
+    /// or a failed assembly awaiting retry (see the volume's events).
+    /// (Historic records carry this from before stormblock#73 landed.)
     PendingEngineSupport,
+    /// RAID1 assembled on the head across every leg over NVMe-TCP.
+    Assembled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +122,12 @@ pub struct DistVolume {
     pub rung: String,
     pub legs: Vec<Leg>,
     pub assembly: AssemblyState,
+    /// Node whose engine holds the assembled array.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// Array id on the head engine.
+    #[serde(default)]
+    pub array_id: Option<String>,
     pub created_at: SystemTime,
 }
 

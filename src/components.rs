@@ -44,8 +44,14 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
         Metric::new("size", stormview::format_bytes(v.size_bytes)),
         Metric::new("legs", v.legs.len().to_string()).tone("accent"),
     ];
-    if v.assembly == AssemblyState::PendingEngineSupport {
-        metrics.push(Metric::new("assembly", "pending #73").tone("warn"));
+    match v.assembly {
+        AssemblyState::Assembled => {
+            metrics.push(Metric::new("assembly", "raid1").tone("ok"));
+        }
+        AssemblyState::PendingEngineSupport => {
+            metrics.push(Metric::new("assembly", "pending").tone("warn"));
+        }
+        AssemblyState::SingleLeg => {}
     }
     let mut relations = vec![Relation::has_many(
         "legs",
@@ -214,21 +220,22 @@ mod tests {
             pool: Some("fast".into()),
             replicas: 2,
             rung: "cluster".into(),
-            legs: vec![
-                Leg {
-                    node: "a".into(),
+            legs: ["a", "b"]
+                .iter()
+                .map(|n| Leg {
+                    node: n.to_string(),
                     volume_id: Some("x".into()),
                     state: LegState::Created,
                     message: None,
-                },
-                Leg {
-                    node: "b".into(),
-                    volume_id: Some("y".into()),
-                    state: LegState::Created,
-                    message: None,
-                },
-            ],
+                    master_node: None,
+                    export: None,
+                    drive_uuid: None,
+                    member_uuid: None,
+                })
+                .collect(),
             assembly: AssemblyState::PendingEngineSupport,
+            head: None,
+            array_id: None,
             created_at: SystemTime::now(),
         };
         let c = volume_component(&v);

@@ -8,6 +8,7 @@ pub mod config;
 pub mod engine;
 pub mod events;
 pub mod model;
+pub mod orchestrate;
 pub mod placement;
 pub mod registry;
 pub mod replicate;

@@ -90,6 +90,11 @@ window.createVol=(ev)=>{ ev.preventDefault();
   if($('v-repl').value) b.replicas=Number($('v-repl').value);
   post('api/v1/volumes',b).then(()=>{$('v-name').value='';refresh()}).catch(e=>{fail(e)});
   return false; };
+window.moveLeg=(name,from)=>{
+  if(confirm(`Move ${name}'s leg off ${from}? A new leg is placed automatically and rebuilt before ${from} is released.`))
+    act(post(`api/v1/volumes/${encodeURIComponent(name)}/move`,{from}));
+};
+window.act=(p)=>p.then(refresh).catch(e=>{fail(e);refresh();});
 window.delVol=(n)=>{ if(confirm(`Delete volume ${n} and all its legs?`))
   fetch(API+`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
     .then(r=>{ if(!r.ok) return r.json().then(j=>{throw new Error(j.error||r.status)}); refresh(); })
@@ -119,9 +124,9 @@ async function refresh(){
     $('vols').innerHTML=v.volumes.map(x=>`<tr>
       <td class="mono">${x.name}</td><td>${human(x.size_bytes)}</td>
       <td>${x.pool||''}</td>
-      <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}`).join(', ')}</td>
-      <td>${x.rung}</td>
-      <td>${x.assembly==='pending_engine_support'?chip('pending #73','c-warn'):chip('single leg','c-mut')}</td>
+      <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${x.assembly==='assembled'?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
+      <td>${x.rung}${x.head?` <span class="dim">head ${x.head}</span>`:''}</td>
+      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='pending_engine_support'?chip('pending','c-warn'):chip('single leg','c-mut')}</td>
       <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="7" class="dim">no volumes</td></tr>';
     $('evlist').innerHTML=e.events.slice(-30).reverse().map(x=>{

@@ -38,7 +38,7 @@ impl AppState {
         }
     }
 
-    fn engine_for(&self, node: &Node) -> Engine {
+    pub(crate) fn engine_for(&self, node: &Node) -> Engine {
         Engine::new(&node.config.engine_url, node.config.api_token.clone())
     }
 }
@@ -86,6 +86,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/placement/plan", post(plan_dry_run))
         .route("/api/v1/volumes", get(list_volumes).post(create_volume))
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
+        .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
         .route("/api/v1/storage/register", post(register_node))
@@ -371,6 +372,10 @@ async fn create_volume(
                 volume_id: v.get("id").and_then(|i| i.as_str()).map(|x| x.to_string()),
                 state: LegState::Created,
                 message: None,
+                master_node: crate::engine::Engine::master_node_of(&v),
+                export: None,
+                drive_uuid: None,
+                member_uuid: None,
             }),
             Err(e) => {
                 failure = Some(format!("{node_name}: {e:#}"));
@@ -400,6 +405,7 @@ async fn create_volume(
     } else {
         AssemblyState::PendingEngineSupport
     };
+    let multi_leg = legs.len() > 1;
     let vol = DistVolume {
         name: req.name.clone(),
         size_bytes: req.size_bytes,
@@ -408,9 +414,10 @@ async fn create_volume(
         rung: rp.rung.clone(),
         legs,
         assembly,
+        head: None,
+        array_id: None,
         created_at: SystemTime::now(),
     };
-    let response = serde_json::to_value(&vol).unwrap_or_default();
     {
         let mut fed = s.fed.write().await;
         fed.volumes.insert(req.name.clone(), vol);
@@ -430,6 +437,24 @@ async fn create_volume(
         ),
     );
     s.persist().await;
+
+    // Wire the legs into a mirror. Failure leaves the volume stored with
+    // assembly pending (partial export progress persisted) plus an error
+    // event — the legs and their data are never rolled back for this.
+    if multi_leg {
+        if let Err(e) = crate::orchestrate::assemble(&s, &req.name).await {
+            s.events.write().await.push(
+                Some(req.name.clone()),
+                Severity::Error,
+                "assemble",
+                format!("{}: assembly failed (legs kept, retry by re-creating or moving): {e:#}", req.name),
+            );
+        }
+    }
+    let response = {
+        let fed = s.fed.read().await;
+        serde_json::to_value(fed.volumes.get(&req.name)).unwrap_or_default()
+    };
     Ok(Json(response))
 }
 
@@ -462,7 +487,18 @@ async fn delete_volume(
             .cloned()
             .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?
     };
-    let mut errors = Vec::new();
+    // Unwire the mirror first (array, head drives, exports) — best-effort;
+    // a half-torn assembly must not block deleting the legs.
+    let mut errors = crate::orchestrate::teardown(&s, &vol).await;
+    if !errors.is_empty() {
+        s.events.write().await.push(
+            Some(name.clone()),
+            Severity::Warning,
+            "volume",
+            format!("{name}: teardown issues: {}", errors.join("; ")),
+        );
+        errors.clear();
+    }
     for leg in &vol.legs {
         let Some(id) = &leg.volume_id else { continue };
         let engine = {
@@ -498,6 +534,29 @@ async fn delete_volume(
     );
     s.persist().await;
     Ok(Json(json!({ "deleted": name })))
+}
+
+#[derive(Deserialize)]
+struct MoveBody {
+    /// Node whose leg leaves.
+    from: String,
+    /// Target node; omitted = placement picks (distinct domain, emptiest).
+    #[serde(default)]
+    to: Option<String>,
+}
+
+/// Move one leg of an assembled volume: new leg + rebuild in the
+/// foreground of the mirror, old leg retired by a background task once
+/// the new member reports active. Progress lands in the event feed.
+async fn move_volume_leg(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<MoveBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let target = crate::orchestrate::move_leg(&s, &name, &body.from, body.to)
+        .await
+        .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    Ok(Json(json!({ "moving": body.from, "to": target, "status": "rebuilding" })))
 }
 
 /// stormblock's own registration heartbeat shape (stormblock
