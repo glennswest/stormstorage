@@ -92,14 +92,23 @@ stormblock-first. To look at: stormblock-csi targets a single engine's
 stormstorage (fleet placement) instead. Needs an analysis pass over
 stormblock-csi before changing anything.
 
-### Phase 2: Leg wiring — UNBLOCKED (stormblock#73 landed 2026-08-26)
+### Phase 2: Leg wiring — IN PROGRESS (2026-08-28; stormblock#73 landed)
 stormblock now attaches `nvme-tcp://host:port/<nqn>?nsid=N` as a drive via
 POST /api/v1/drives and takes it as a RAID member; proven cross-engine on
 dev (RAID-1 across a local drive + a remote NVMe-TCP leg, members active).
-- [ ] Exports per leg; head assembly via stormblock#73
-- [ ] Leg move: create → export → add_member → rebuild-verified → remove →
-      delete (also the failure-recovery and evacuation path)
-- [ ] Node-loss handling: re-leg from surviving copies
+Plan: legs export via /v1 attach (hot-add namespace, returns
+nqn/addresses/nsid); head = first placed node; head attaches every leg as
+an nvme-tcp:// drive (its own leg over loopback too — uniform; local
+fast-path is a later optimization) and assembles RAID1 via
+/api/v1/arrays. Move = new leg → attach → add_member → poll member
+active → remove_member → drop old drive/volume.
+- [ ] Engine client: /v1 attach/detach, arrays create/get/members, typed
+      create (captures master node for attach gating)
+- [ ] Assembly in create flow; teardown in delete; AssemblyState::Assembled
+- [ ] POST /api/v1/volumes/{name}/move — background leg move with events
+- [ ] e2e on dev: 3 engines — create 2-leg mirror, verify array active;
+      move a leg to the third engine, verify convergence
+- [ ] Node-loss handling: re-leg from surviving copies (next)
 
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters
