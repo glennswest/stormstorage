@@ -1,6 +1,6 @@
 [package]
 name = "stormstorage"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Storage control plane across Storm nodes and clusters — registry, pools, placement, distributed volumes, tiering"

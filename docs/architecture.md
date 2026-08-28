@@ -146,16 +146,12 @@ DistVolume { name, size, pool, replicas, rung,
 - **Head failover**: the legs are plain volumes — a new head can attach
   the surviving legs and reassemble (RAID superblocks identify members).
   Orchestrated re-head is a later phase; the data is never trapped.
-- Phase-1 fallback until the engine gap closes (stormblock#73): legs are
-  placed and created, exports wired, assembly recorded as `pending` —
-  placement, moves, and bookkeeping all real, mirroring waiting on the
-  engine.
-
-The engine gap this needs — **attach an NVMe-TCP export as a drive /
-RAID member via the management API** — is stormblock#73. The pieces
-(NVMe-oF initiator would mirror `iscsi_dev.rs`; RAID1 add/remove exists;
-`open_one_drive` currently dispatches only block-device-or-file) are all
-in the engine's lane.
+- **Implemented (v0.3.0)**: stormblock#73 landed (2026-08-28) — the
+  engine attaches `nvme-tcp://` URIs as drives and RAID members. Assembly
+  runs inline at create; teardown at delete; leg moves via
+  `POST /api/v1/volumes/{name}/move` with a background rebuild-wait.
+  Proven live: create → assembled RAID1; move → converged with both
+  members active and the old leg's volume deleted.
 
 Native `/v1` replication (prestage, fence/promote, epoch-carrying writes
 — stormblock #5/#6/#7) is the *second* redundancy mechanism when its data

@@ -3,6 +3,36 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+## [v0.3.0] — 2026-08-28
+
+### Added
+- Phase 2 — leg wiring. Multi-leg volumes now assemble into a real
+  **RAID1 on the head node**: every leg is exported via `/v1 attach`
+  (hot-added NVMe-TCP namespace), the head opens each as an
+  `nvme-tcp://` drive (stormblock#73; its own leg over loopback —
+  uniform, local fast-path later) and mirrors across them via
+  `/api/v1/arrays`. Legs record master node, export coordinates, head
+  drive uuid, and RAID member uuid; volumes record head + array id;
+  `AssemblyState::Assembled`.
+- **Leg move** — `POST /api/v1/volumes/{name}/move {from, to?}`: new leg
+  placed (distinct staying domains at the volume's rung, emptiest first,
+  or an explicit target), created, attached, added as a member; a
+  background task waits for the rebuild to reach active, then retires
+  the old member, closes the old head drive, and deletes the old volume.
+  The same sequence is failure recovery and evacuation.
+- Delete tears the assembly down first (array, head drives, exports),
+  best-effort, before removing leg volumes.
+- Engine client: attach/detach, arrays create/get/add/remove member,
+  idempotent drive open, drive close, drive listing.
+- UI: assembly chip (raid1/pending), head shown, per-leg move button.
+
+### Verified
+- e2e on dev.g8.lo with three live engines: create → assembled RAID1
+  (legs node-b/node-c, member uuids captured); move off node-c →
+  converged to node-b/node-d, both members active on the head, old
+  volume gone from node-c. Requires stormblock ≥ the 2026-08-28 build
+  (array members expose uuid + device_path).
+
 ## [v0.2.0] — 2026-08-26
 
 ### Added

@@ -10,7 +10,7 @@ volumes as RAID across individual per-node volumes (legs over NVMe-TCP,
 movable), tiering across clusters, and the fleet surface stormfs walks
 across. Founding spec: [docs/architecture.md](docs/architecture.md).
 
-**Version: 0.2.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
+**Version: 0.3.0** — version locations: `Cargo.toml`, `Cargo.lock`, this file.
 
 Never in the data path. Everything node↔node and client↔node is NVMe-TCP.
 
@@ -92,7 +92,7 @@ stormblock-first. To look at: stormblock-csi targets a single engine's
 stormstorage (fleet placement) instead. Needs an analysis pass over
 stormblock-csi before changing anything.
 
-### Phase 2: Leg wiring — IN PROGRESS (2026-08-28; stormblock#73 landed)
+### Phase 2: Leg wiring — DONE (v0.3.0, 2026-08-28)
 stormblock now attaches `nvme-tcp://host:port/<nqn>?nsid=N` as a drive via
 POST /api/v1/drives and takes it as a RAID member; proven cross-engine on
 dev (RAID-1 across a local drive + a remote NVMe-TCP leg, members active).
@@ -102,13 +102,18 @@ an nvme-tcp:// drive (its own leg over loopback too — uniform; local
 fast-path is a later optimization) and assembles RAID1 via
 /api/v1/arrays. Move = new leg → attach → add_member → poll member
 active → remove_member → drop old drive/volume.
-- [ ] Engine client: /v1 attach/detach, arrays create/get/members, typed
+- [x] Engine client: /v1 attach/detach, arrays create/get/members, typed
       create (captures master node for attach gating)
-- [ ] Assembly in create flow; teardown in delete; AssemblyState::Assembled
-- [ ] POST /api/v1/volumes/{name}/move — background leg move with events
-- [ ] e2e on dev: 3 engines — create 2-leg mirror, verify array active;
-      move a leg to the third engine, verify convergence
+- [x] Assembly in create flow; teardown in delete; AssemblyState::Assembled
+      (needs stormblock ≥ 2026-08-28: array members expose uuid+path)
+- [x] POST /api/v1/volumes/{name}/move — background leg move with events
+- [x] e2e on dev: 3 engines — create → assembled RAID1 on head (member
+      uuids captured); move node-c → node-d converged, both members
+      active, old volume gone
 - [ ] Node-loss handling: re-leg from surviving copies (next)
+- [ ] Consumer serving: export the head array itself (a volume on the
+      array, or the array as a namespace) so clients attach the mirror
+      (next)
 
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters
