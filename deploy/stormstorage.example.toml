@@ -12,8 +12,9 @@ fail_threshold = 3
 # Top-down rung order for failure domains and spreading.
 rungs = ["site", "building", "room", "row", "rack", "multicluster", "cluster", "node"]
 
-# Static nodes. Nodes can also self-register: point a stormblock's
-# [stormfs] metadata_url at http://<this-host>:9093 and it announces itself.
+# Static nodes. Nodes can also self-register: in a stormblock's config set
+# [stormfs] enabled = true, metadata_url = "http://<this-host>:9093" and
+# advertise_addr = "<engine-host>:9090", and it announces itself.
 [[nodes]]
 name       = "shelf25"                       # 2.5" NetApp shelf SNO cluster
 engine_url = "http://192.168.8.150:9090"
@@ -44,8 +45,8 @@ selector = { tier = "medium" }
 replicas = 1
 rung     = "node"
 
-# Mirrored across the two shelf clusters (legs assemble when
-# stormblock#73 lands; placement and creation work today).
+# Mirrored across the two shelf clusters: legs are assembled into a RAID1
+# on the head node (needs stormblock with #73, 2026-08-28 or later).
 [[pools]]
 name     = "protected"
 selector = { labels = { site = "gw" } }
@@ -53,6 +54,8 @@ replicas = 2
 rung     = "cluster"
 
 [api]
+# Sent as a bearer token on outbound peer pushes only. It is not checked
+# on inbound requests yet (#6).
 api_token = ""
 
 # Peer stormstorage instances (one per site/cluster). Durable state

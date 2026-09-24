@@ -10,6 +10,15 @@
   `enabled` + `advertise_addr`), building with `sc-build`, and how it ships
   in goldens (stormcos `docs/goldens.md`, closes #3). Gaps found in the code
   are filed as #6 (inbound API auth) and #7 (no assembly retry).
+- **docs:** docs/architecture.md checked against the code. Design-only
+  sections are marked (head failover, native replication, IO-load placement,
+  rebalance, tiering, stormfs forwarding). The API table is corrected (move
+  takes `{from, to?}`, plan takes `size_bytes`/`tier`, and the components,
+  replicate and replication-status routes are added). The DistVolume shape
+  now matches `src/model.rs`.
+- **docs:** Stale comments fixed in `src/config.rs` (`api_token` is
+  outbound-only), `src/events.rs` (the actual event kinds) and `src/lib.rs`,
+  and in the example config (#73 has landed; self-registration keys).
 
 ## [v0.3.0] — 2026-08-28
 

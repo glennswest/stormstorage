@@ -90,7 +90,8 @@ impl Default for PollConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApiConfig {
-    /// Empty = no auth (family posture); present from day one.
+    /// Bearer token sent on outbound replication pushes to peers. Not
+    /// checked on inbound requests yet — the API is unauthenticated (#6).
     pub api_token: String,
 }
 

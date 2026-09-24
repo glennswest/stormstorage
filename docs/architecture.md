@@ -1,7 +1,11 @@
 # StormStorage — Founding Specification
 
 **Status:** v1, 2026-08-26. Written with stormblock v9.13.0, stormdrive
-v0.3.0, and stormfs v2 (in design) as the surrounding stack.
+v0.3.0, and stormfs v2 (in design) as the surrounding stack. Checked
+against the code on 2026-09-24 (v0.3.0). Sections that describe what
+does not run yet are marked **Design, not implemented**. The
+[README](../README.md) documents what runs, including every config key
+and route.
 
 ## Mission
 
@@ -65,22 +69,26 @@ multi-node clusters slot in later without a remodel.
 
 ```rust
 NodeConfig  { name, engine_url, api_token?, labels: {rung→value}, tier? }
-NodeStatus  { healthy, last_ok, total_bytes, free_bytes,
-              engine_topology, volumes, source: static|registered }
+NodeStatus  { healthy, last_ok, consecutive_failures, total_bytes,
+              free_bytes, engine_topology, volumes,
+              source: static|registered }
 ```
 
 Nodes enter the registry two ways:
 1. **Static** — `[[nodes]]` in stormstorage.toml.
 2. **Self-registration** — stormstorage implements stormblock's *existing*
    outbound heartbeat verbatim: `POST /api/v1/storage/register` with
-   `{node_addr, hostname, volumes[]}` every 30 s and `/deregister` on
-   shutdown (stormblock `src/stormfs.rs`). Point a node's
-   `[stormfs] metadata_url` at stormstorage and it announces itself with
-   **zero engine changes**.
+   `{node_addr, hostname, volumes[]}` every `heartbeat_secs` (default
+   30 s) and `/deregister` on shutdown (stormblock `src/stormfs.rs`). Set
+   a node's `[stormfs] enabled = true`, `metadata_url` to stormstorage
+   and `advertise_addr` to its own `host:9090`, and it announces itself
+   with **zero engine changes**.
 
 Either way, the poller enriches each node from its engine
 (`GET /v1/nodes/capacity`: totals + topology labels) and marks nodes
-unhealthy after consecutive failures.
+unhealthy after `poll.fail_threshold` consecutive failures. Marking a
+node unhealthy removes it from placement. Nothing yet acts on the
+volumes that have legs there (#1).
 
 ### The federation tree
 
@@ -131,9 +139,18 @@ volume is assembled as RAID1 on a **head node** whose stormblock attaches
 the remote legs over NVMe-TCP and mirrors across them.
 
 ```
-DistVolume { name, size, pool, replicas, rung,
-             head: node, legs: [ {node, volume_id, export, state} ] }
+DistVolume { name, size_bytes, pool, replicas, rung, created_at,
+             assembly: single_leg | pending_engine_support | assembled,
+             head: node?, array_id?,
+             legs: [ {node, volume_id, state: created|failed, message,
+                      master_node, export: {nqn, traddr, trsvcid, nsid},
+                      drive_uuid, member_uuid} ] }
 ```
+
+The head is the first placed node (`legs[0]`). Every leg, including the
+head's own, is attached by the head as an `nvme-tcp://` drive over the
+network (loopback for its own leg). A local fast-path is a later
+optimization.
 
 - **Everything is NVMe-TCP** — remote legs are NVMe-TCP namespaces
   exported by their node and attached by the head as drives/RAID members.
@@ -143,7 +160,7 @@ DistVolume { name, size, pool, replicas, rung,
   primitive; the same sequence serves failure recovery, rebalancing, tier
   migration, and shelf/node evacuation. (Rebuild-error hardening is
   stormblock#69.)
-- **Head failover**: the legs are plain volumes — a new head can attach
+- **Head failover** (*design, not implemented*): the legs are plain volumes — a new head can attach
   the surviving legs and reassemble (RAID superblocks identify members).
   Orchestrated re-head is a later phase; the data is never trapped.
 - **Implemented (v0.3.0)**: stormblock#73 landed (2026-08-28) — the
@@ -152,8 +169,14 @@ DistVolume { name, size, pool, replicas, rung,
   `POST /api/v1/volumes/{name}/move` with a background rebuild-wait.
   Proven live: create → assembled RAID1; move → converged with both
   members active and the old leg's volume deleted.
+- **Not implemented yet:**
+  - failure-driven re-leg when a node is lost (#1);
+  - an export of the assembled array that consumers can attach (#2).
+    Today only the legs are exported, for the head.
+  - retrying a failed assembly (#7). The volume stays
+    `pending_engine_support`.
 
-Native `/v1` replication (prestage, fence/promote, epoch-carrying writes
+*Design, not implemented:* native `/v1` replication (prestage, fence/promote, epoch-carrying writes
 — stormblock #5/#6/#7) is the *second* redundancy mechanism when its data
 path lands; stormstorage orchestrates either through one DistVolume
 model.
@@ -165,17 +188,24 @@ capacity ≥ size ∩ tier match), rung, replica count.
 
 1. Group candidates by domain (label-chain prefix at rung).
 2. Require ≥ replicas distinct domains — else a hard, explained error.
-3. Within each domain, **load-balance**: score by free-capacity ratio
-   (v1), later by live IO load (per-drive utilization from stormdrive /
-   per-node from engine metrics) so hot nodes shed new legs.
+3. Within each domain, **load-balance**: the highest free-capacity ratio
+   wins. Domains are then taken emptiest-first. A node that reports no
+   capacity scores 0 but stays eligible. *(Design: score by live IO load
+   as well, so hot nodes shed new legs. Not implemented.)*
 4. Deterministic given equal inputs (testable); ties broken by name.
 
-**Rebalance** (phase 3) reuses leg moves: when a new node/shelf/cluster
+A leg move's automatic target uses the same function over healthy nodes
+that carry no leg and sit in a domain distinct from every staying leg.
+
+**Rebalance** (phase 3, *design, not implemented*) reuses leg moves: when a new node/shelf/cluster
 joins a pool, stormstorage proposes leg moves from the fullest domains to
 the emptiest until spread converges — same operation as failure
 recovery, driven by policy instead of alarm.
 
 ### Tiering across clusters
+
+*Design, not implemented.* Today a tier is only a node attribute that
+pool selectors and create requests filter on.
 
 A tier can be an entire cluster (testbed: 2.5" = high, 3.5" = medium,
 PVE = backup). Tier migration = leg moves between pools: create legs in
@@ -184,6 +214,10 @@ asymmetric by design — an async catchup leg (engine #5/#6/#7 machinery
 when it lands), not a synchronous mirror member.
 
 ### StormFS
+
+*Design.* The stormstorage side exists (`GET /api/v1/nodes`,
+`POST /api/v1/volumes`). Consuming it is stormfs#64. Forwarding
+announcements to a stormfs endpoint is not implemented.
 
 stormfs v2 puts its namespace in an embedded sharded KV across fleet
 nodes and writes file data **directly** to stormblock volumes over
@@ -219,38 +253,44 @@ State persists per-instance in `<data_dir>/state.json` (atomic writes).
 ## API (:9093)
 
 ```
-GET  /                                embedded UI
-GET  /api/v1/health
+GET  / , /ui , /ui/                   embedded UI
+GET  /api/v1/health                   {status, version}
 GET  /api/v1/nodes                    registry + status
-GET  /api/v1/topology                 federation tree (nodes grouped by chain)
+GET  /api/v1/topology                 rungs + each node's label chain
 GET  /api/v1/pools                    pools + per-pool capacity/health rollup
-POST /api/v1/placement/plan           dry-run: {pool|size,replicas?,rung?} → legs
-GET|POST /api/v1/volumes              distributed volumes; create places+creates legs
+POST /api/v1/placement/plan           dry-run: {size_bytes, pool?, replicas?, rung?, tier?} → legs
+GET|POST /api/v1/volumes              distributed volumes; create places, creates legs, assembles
 GET|DELETE /api/v1/volumes/{name}
-POST /api/v1/volumes/{name}/move      {leg: node, to?: node} — leg move (phase 2)
+POST /api/v1/volumes/{name}/move      {from: node, to?: node} — leg move
 GET  /api/v1/events?since=
 GET  /api/v1/summary                  stormd RemoteSummary card
+GET  /api/v1/components               stormview feed (also WS /ws/components)
+POST /api/v1/replicate                peer push {revision, volumes, registered}
+GET  /api/v1/replication/status       {revision, peers}
 POST /api/v1/storage/register         stormblock-compatible self-registration
 POST /api/v1/storage/deregister
 ```
 
-Error envelope `{error, code}` (family convention). `api_token` in config
-from day one, off by default.
+Error envelope `{error, code}` (family convention). `[api] api_token` is
+in the config, but today it is only sent on outbound peer pushes. No
+inbound request is checked (#6).
 
 ## UI
 
 stormd newer-UI extension, same contract as stormdrive: `[process.ui]`
 with `proxy` (embedded page at `/`, proxy-prefix aware) + `summary`
-(dashboard card). Page: nodes table (health, capacity, labels), pools
+(dashboard card); see `deploy/stormd-ui.toml`. The stormview feed also
+drives stormconsole's `stormstorage` plugin. Page: nodes table (health, capacity, labels), pools
 rollup, volumes with leg states, create-volume form, event feed.
 
 ## Phases
 
-1. **Registry + placement + volumes** (this scaffold): static + announced
+1. **Registry + placement + volumes** (*done, v0.1.0*): static + announced
    nodes, poller, pools, placement engine, DistVolume create/delete with
    legs created per node via `/v1`, assembly `pending` on #73, UI, card.
-2. **Leg wiring**: exports per leg, head assembly via #73, leg move
-   (add/rebuild/remove sequence), failure-driven re-leg on node loss.
+2. **Leg wiring** (*done, v0.3.0*, except the last item): exports per
+   leg, head assembly via #73, leg move (add/rebuild/remove sequence).
+   Failure-driven re-leg on node loss is still open (#1).
 3. **Rebalance + tier migration**: policy-driven leg moves; pool
    capacity watermarks.
 4. **Native replication**: orchestrate /v1 prestage/fence/promote when
@@ -259,7 +299,7 @@ rollup, volumes with leg states, create-volume form, event feed.
 
 ## What this asked of the neighbours
 
-- **stormblock#73** (new): attach an NVMe-TCP export as a drive / RAID1
+- **stormblock#73** (landed 2026-08-28): attach an NVMe-TCP export as a drive / RAID1
   member via the management API — the one engine gap between "placed
   legs" and "mirrored legs".
 - stormblock#70/#71/#72: label chains, sub-node spreading, remotely

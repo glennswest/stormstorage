@@ -1,6 +1,7 @@
 //! StormStorage — the storage control plane across Storm nodes and
-//! clusters. Registry, pools, placement, distributed volumes, tiering.
-//! Never in the data path. See docs/architecture.md.
+//! clusters. Registry, pools, placement, distributed volumes assembled as
+//! RAID1 over NVMe-TCP, leg moves, peer replication (tiering is design).
+//! Never in the data path. See README.md and docs/architecture.md.
 
 pub mod api;
 pub mod components;

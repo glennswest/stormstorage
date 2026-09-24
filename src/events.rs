@@ -19,7 +19,8 @@ pub struct Event {
     /// Node or volume name the event is about.
     pub subject: Option<String>,
     pub severity: Severity,
-    /// node, volume, placement, register, poll.
+    /// node, volume, assemble (assembly and leg-move progress), register,
+    /// replicate.
     pub kind: String,
     pub message: String,
 }
