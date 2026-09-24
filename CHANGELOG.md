@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-24
+- **docs:** README rewritten from the code (#4). It covers what runs today, every
+  CLI flag and config key with its default, the full API route table, the
+  engine calls made, self-registration (stormblock `[stormfs]` needs
+  `enabled` + `advertise_addr`), building with `sc-build`, and how it ships
+  in goldens (stormcos `docs/goldens.md`, closes #3). Gaps found in the code
+  are filed as #6 (inbound API auth) and #7 (no assembly retry).
+
 ## [v0.3.0] — 2026-08-28
 
 ### Added
