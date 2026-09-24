@@ -148,5 +148,5 @@ active → remove_member → drop old drive/volume.
 
 ## Rules recap
 - Conventional commits; changelog every change; docs ship with code.
-- Check `gh issue list --state open` at session start.
+- No claude attribution. Check `gh issue list --state open` at session start.
 - Bugs in stormblock/stormdrive/stormfs → file issues there.
