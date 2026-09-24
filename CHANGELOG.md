@@ -19,6 +19,8 @@
 - **docs:** Stale comments fixed in `src/config.rs` (`api_token` is
   outbound-only), `src/events.rs` (the actual event kinds) and `src/lib.rs`,
   and in the example config (#73 has landed; self-registration keys).
+- **docs:** CLAUDE.md now builds with `sc-build` instead of ssh to root@dev,
+  records the golden/shipping facts, and has a current work plan.
 
 ## [v0.3.0] — 2026-08-28
 

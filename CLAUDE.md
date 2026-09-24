@@ -14,20 +14,24 @@ across. Founding spec: [docs/architecture.md](docs/architecture.md).
 
 Never in the data path. Everything node↔node and client↔node is NVMe-TCP.
 
-## Build on dev, never on this Mac
+## Build and ship
 
-Same rule as stormblock/stormdrive: **every cargo command runs on
-`root@dev.g8.lo`** (`/root/stormstorage`).
+Build and test with **`sc-build`** from this checkout, after `git push`.
+It builds the pushed commit in a scratch directory on `dev.g8.lo` as an
+unprivileged user and deletes it afterwards. There is no checkout on dev,
+and nothing runs as root.
 
 ```
-commit → push → ssh root@dev.g8.lo 'cd /root/stormstorage && git pull && \
-    CARGO_TARGET_DIR=/build/cargo/stormstorage cargo test'
+git push && sc-build                 # cargo build && cargo test
+sc-build 'cargo clippy --all-targets'
 ```
 
-Target dirs live on dev's 2 TB spinning drive (`/build/cargo/<project>`),
-never on the SSD root.
-
-Clean `target/debug` on dev when done; check `df -h /`.
+It ships as a stormcos service component in goldens: `stormstorage` and
+`-logs` on system1, `-data` on data1. The authority on goldens is
+stormcos `docs/goldens.md`. When an issue's work is complete, request the
+golden once with
+`stormcentral component build stormstorage --url http://stormcentral.g8.lo`.
+`Cargo.lock` pins stormview; bump it with `cargo update -p stormview`.
 
 ## Layering (do not blur it)
 
@@ -110,19 +114,26 @@ active → remove_member → drop old drive/volume.
 - [x] e2e on dev: 3 engines — create → assembled RAID1 on head (member
       uuids captured); move node-c → node-d converged, both members
       active, old volume gone
-- [ ] Node-loss handling: re-leg from surviving copies (next)
+- [ ] Node-loss handling: re-leg from surviving copies (#1, P1)
 - [ ] Consumer serving: export the head array itself (a volume on the
       array, or the array as a namespace) so clients attach the mirror
-      (next)
+      (#2, P2)
+- [ ] Retry a failed assembly (#7). Today the volume stays pending.
 
-### In progress: docs from code (#4, 2026-09-24)
-- [ ] README rewritten from source: flags, every config key + default,
+### Docs from code — DONE (#4, 2026-09-24)
+- [x] README rewritten from source: flags, every config key + default,
       ports, endpoints, build (sc-build), shipping (golden)
-- [ ] docs/architecture.md: mark design-only sections; fix stale bits
-- [ ] CLAUDE.md: build rules → sc-build; status current
-- [ ] Cross-refs (stormblock ports/APIs, stormfs heartbeat, stormd card)
-      checked against those repos
-- [ ] Gaps the docs promise but code lacks → issues
+- [x] docs/architecture.md: design-only sections marked, stale bits fixed
+- [x] CLAUDE.md: build rules → sc-build; status current
+- [x] Cross-refs checked against the code of stormblock (`src/stormfs.rs`
+      heartbeat, :9090), stormd (`[process.ui]` proxy/summary), stormcos
+      (goldens, routes) and stormconsole (the stormstorage plugin)
+- [x] Gaps the docs promised but the code lacks, filed as issues:
+      #6 inbound API auth, #7 assembly retry
+
+### Open: security
+- [ ] Inbound API auth. `api.api_token` is outbound-only, and
+      `/api/v1/replicate` accepts any payload (#6).
 
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters
@@ -137,5 +148,5 @@ active → remove_member → drop old drive/volume.
 
 ## Rules recap
 - Conventional commits; changelog every change; docs ship with code.
-- No claude attribution. Check `gh issue list --state open` at session start.
+- Check `gh issue list --state open` at session start.
 - Bugs in stormblock/stormdrive/stormfs → file issues there.
