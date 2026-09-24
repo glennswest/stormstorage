@@ -4,6 +4,9 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-24
+- **docs:** `docs/presentation.md`: an 11-slide Marp deck on purpose, place in
+  stormcos (from stormcentral's graph), how it works, current features,
+  planned work, interfaces, shipping and status. Built from the code (#5).
 - **docs:** README rewritten from the code (#4). It covers what runs today, every
   CLI flag and config key with its default, the full API route table, the
   engine calls made, self-registration (stormblock `[stormfs]` needs

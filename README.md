@@ -257,6 +257,8 @@ snippet adds a `[process.ui]` block with `proxy` pointing at the UI and
 
 - [docs/architecture.md](docs/architecture.md): the design. Each section
   says whether it is implemented or design only.
+- [docs/presentation.md](docs/presentation.md): an 11-slide overview deck.
+  It is Marp Markdown: `npx @marp-team/marp-cli docs/presentation.md`.
 - [CLAUDE.md](CLAUDE.md): work plan, status and project rules.
 - [CHANGELOG.md](CHANGELOG.md)
 
