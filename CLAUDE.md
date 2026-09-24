@@ -115,6 +115,15 @@ active → remove_member → drop old drive/volume.
       array, or the array as a namespace) so clients attach the mirror
       (next)
 
+### In progress: docs from code (#4, 2026-09-24)
+- [ ] README rewritten from source: flags, every config key + default,
+      ports, endpoints, build (sc-build), shipping (golden)
+- [ ] docs/architecture.md: mark design-only sections; fix stale bits
+- [ ] CLAUDE.md: build rules → sc-build; status current
+- [ ] Cross-refs (stormblock ports/APIs, stormfs heartbeat, stormd card)
+      checked against those repos
+- [ ] Gaps the docs promise but code lacks → issues
+
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters
 - [ ] Cross-cluster tier migration (pool → pool)
