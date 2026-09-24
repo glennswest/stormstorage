@@ -131,10 +131,11 @@ active → remove_member → drop old drive/volume.
 - [x] Gaps the docs promised but the code lacks, filed as issues:
       #6 inbound API auth, #7 assembly retry
 
-### In progress: presentation (#5, 2026-09-24)
-- [ ] docs/presentation.md: a Marp deck of 8–15 slides built from the
-      README/code; the relationships slide matches stormcentral's graph
-- [ ] Linked from the README; changelog; sc-build; golden request
+### Presentation — DONE (#5, 2026-09-24)
+- [x] docs/presentation.md: an 11-slide Marp deck built from the README
+      and code; the relationships slide follows stormcentral's graph
+      (graph gaps filed as stormcentral#20)
+- [x] Linked from the README; changelog; sc-build passing
 
 ### Open: security
 - [ ] Inbound API auth. `api.api_token` is outbound-only, and
