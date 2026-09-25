@@ -4,6 +4,12 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-25
+- **docs:** Consumer serving (#2) decided: a volume carved on the array, not
+  the array as a namespace. Rationale and shape are in docs/architecture.md.
+  Blocked on stormblock#150 (pin a volume to an array's slab) and
+  stormblock#149 (/v1 attach returns ublk to the master node since
+  stormblock 2337c8a, which also breaks leg assembly where ublk is
+  available).
 - **feat:** Adopt the local stormblock (#9). With `[local]` (on by
   default) the engine at `http://127.0.0.1:9090` is registered once it
   answers, under its own name from `GET /api/v1/discovery`, with the live

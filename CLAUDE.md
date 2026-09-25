@@ -115,9 +115,16 @@ active → remove_member → drop old drive/volume.
       uuids captured); move node-c → node-d converged, both members
       active, old volume gone
 - [ ] Node-loss handling: re-leg from surviving copies (#1, P1)
-- [ ] Consumer serving: export the head array itself (a volume on the
-      array, or the array as a namespace) so clients attach the mirror
-      (#2, P2)
+- [ ] Consumer serving (#2): **decided** — a volume carved on the array,
+      exported like any volume (docs/architecture.md "Consumer serving").
+      **Blocked** on stormblock#150 (pin a volume to an array's slab;
+      array slabs out of general allocation) and stormblock#149 (/v1
+      attach returns ublk to the master since stormblock 2337c8a — this
+      also breaks leg assembly where ublk is available). When both land:
+      `DistVolume.export` (state/volume_id/node/coordinates/republished),
+      single-leg serves its leg through the same field, delete revokes
+      first, `POST /api/v1/volumes/{name}/export` republishes; API, feed,
+      UI; e2e on dev incl. pulling a leg's node under client I/O.
 - [ ] Retry a failed assembly (#7). Today the volume stays pending.
 
 ### Docs from code — DONE (#4, 2026-09-24)
