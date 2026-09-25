@@ -13,8 +13,64 @@ pub struct Config {
     pub poll: PollConfig,
     pub api: ApiConfig,
     pub replication: ReplicationConfig,
+    pub local: LocalConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
+}
+
+/// Adopting the stormblock on the machine stormstorage runs on (#9). On a
+/// node nothing else tells it where storage is, so by default it looks at
+/// the engine on loopback and, once that answers, registers it and the
+/// live peers of its stormblock cluster. Nodes found this way are local to
+/// this instance and never replicated — every instance finds its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalConfig {
+    pub enabled: bool,
+    /// The local engine's management API.
+    pub engine_url: String,
+    /// Node name; unset = the engine's own name (its discovery
+    /// `local_node`), else this machine's hostname.
+    pub name: Option<String>,
+    /// Also adopt the live peers in the local engine's stormblock cluster.
+    pub cluster_peers: bool,
+    /// Bearer token for the engine(s): `$STORMBLOCK_API_TOKEN` wins, then
+    /// this file when it is readable. Unset = `/etc/stormblock/api_token`.
+    pub token_file: Option<String>,
+    /// Cluster-level tier role given to adopted nodes.
+    pub tier: Option<String>,
+}
+
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            engine_url: "http://127.0.0.1:9090".into(),
+            name: None,
+            cluster_peers: true,
+            token_file: None,
+            tier: None,
+        }
+    }
+}
+
+impl LocalConfig {
+    /// The engine token, if one is available to this process.
+    pub fn token(&self) -> Option<String> {
+        if let Ok(t) = std::env::var("STORMBLOCK_API_TOKEN") {
+            if !t.trim().is_empty() {
+                return Some(t.trim().to_string());
+            }
+        }
+        let path = self
+            .token_file
+            .clone()
+            .unwrap_or_else(|| "/etc/stormblock/api_token".into());
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
 }
 
 /// Peer stormstorage instances (one per site/cluster). Durable-intent
@@ -36,6 +92,7 @@ impl Default for Config {
             poll: PollConfig::default(),
             api: ApiConfig::default(),
             replication: ReplicationConfig::default(),
+            local: LocalConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }

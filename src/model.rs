@@ -15,6 +15,9 @@ pub enum NodeSource {
     Static,
     /// Announced itself via POST /api/v1/storage/register.
     Registered,
+    /// Adopted by this instance: the engine on its own machine, or a peer
+    /// in that engine's stormblock cluster (`[local]`, #9). Not replicated.
+    Local,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

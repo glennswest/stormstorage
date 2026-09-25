@@ -378,6 +378,105 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// GET a management listing (`{items, count}`, or a bare array).
+    async fn get_items(&self, path: &str) -> anyhow::Result<Vec<Value>> {
+        let v: Value = self
+            .get(path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(match v {
+            Value::Array(a) => a,
+            Value::Object(mut o) => o
+                .remove("items")
+                .and_then(|x| x.as_array().cloned())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        })
+    }
+
+    /// GET /api/v1/slabs — the node's slabs.
+    pub async fn list_slabs(&self) -> anyhow::Result<Vec<crate::inventory::Slab>> {
+        Ok(self
+            .get_items("/api/v1/slabs")
+            .await?
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
+    }
+
+    /// GET /api/v1/volumes — every volume the engine holds (the /v1 list
+    /// is only what was created through /v1).
+    pub async fn list_engine_volumes(&self) -> anyhow::Result<Vec<crate::inventory::EngineVolume>> {
+        Ok(self
+            .get_items("/api/v1/volumes")
+            .await?
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
+    }
+
+    /// GET /api/v1/slabs/{id}/slots — the distinct volumes owning slots.
+    pub async fn slab_volume_ids(&self, slab_id: &str) -> anyhow::Result<Vec<String>> {
+        let mut ids: Vec<String> = self
+            .get_items(&format!("/api/v1/slabs/{slab_id}/slots"))
+            .await?
+            .iter()
+            .filter_map(|s| s.get("volume_id").and_then(|x| x.as_str()).map(|x| x.to_string()))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// GET /api/v1/discovery — the engine's own name and the peers it
+    /// hears. Engines without discovery answer an error; that is `Ok(None)`.
+    pub async fn discovery(&self) -> anyhow::Result<Option<Discovery>> {
+        let resp = self.get("/api/v1/discovery").send().await?;
+        if !resp.status().is_success() {
+            return Ok(None);
+        }
+        Ok(resp.json::<Discovery>().await.ok())
+    }
+}
+
+/// The part of stormblock's `GET /api/v1/discovery` view stormstorage uses.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct Discovery {
+    pub local_node: String,
+    pub cluster_id: Option<String>,
+    pub nodes: Vec<DiscoveredNode>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct DiscoveredNode {
+    pub node_name: String,
+    /// `host:port` of the peer's management API.
+    pub mgmt_addr: String,
+    pub cluster_id: Option<String>,
+    pub stale: bool,
+}
+
+impl Discovery {
+    /// Live peers in the local engine's own cluster (none when unclustered).
+    pub fn cluster_peers(&self) -> Vec<&DiscoveredNode> {
+        let Some(cid) = &self.cluster_id else {
+            return Vec::new();
+        };
+        self.nodes
+            .iter()
+            .filter(|n| !n.stale && n.cluster_id.as_ref() == Some(cid))
+            .filter(|n| !n.node_name.is_empty() && !n.mgmt_addr.is_empty())
+            .filter(|n| n.node_name != self.local_node)
+            .collect()
+    }
+}
+
 /// Find the first object carrying capacity fields in whatever wrapper the
 /// engine used: bare object, array, or {"nodes": [...]}.
 fn first_capacity_object(v: &Value) -> Option<&serde_json::Map<String, Value>> {
@@ -422,6 +521,26 @@ mod tests {
 
         let e = Engine::new("http://192.168.8.150:9090", None);
         assert_eq!(e.host(), "192.168.8.150");
+    }
+
+    #[test]
+    fn discovery_cluster_peers() {
+        let d: Discovery = serde_json::from_value(serde_json::json!({
+            "local_node": "n1", "cluster_id": "c1", "cluster_name": "x",
+            "cluster_peer_count": 1, "clusters": [],
+            "nodes": [
+                {"node_name":"n2","mgmt_addr":"10.0.0.2:9090","cluster_id":"c1","stale":false,
+                 "version":1,"total_bytes":0,"free_bytes":0,"engine_version":"x","age_secs":1},
+                {"node_name":"n3","mgmt_addr":"10.0.0.3:9090","cluster_id":"c1","stale":true},
+                {"node_name":"n4","mgmt_addr":"10.0.0.4:9090","cluster_id":"c2","stale":false},
+                {"node_name":"n5","mgmt_addr":"10.0.0.5:9090","cluster_id":null,"stale":false}
+            ]
+        }))
+        .unwrap();
+        let peers: Vec<&str> = d.cluster_peers().iter().map(|n| n.node_name.as_str()).collect();
+        assert_eq!(peers, vec!["n2"]);
+        let unclustered = Discovery { cluster_id: None, ..d.clone() };
+        assert!(unclustered.cluster_peers().is_empty());
     }
 
     #[test]

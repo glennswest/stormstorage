@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use stormstorage::api::AppState;
 use stormstorage::config::Config;
-use stormstorage::events::EventLog;
 use stormstorage::model::FedState;
-use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
 #[command(name = "stormstorage", version, about = "Storage control plane across Storm nodes and clusters")]
@@ -60,12 +58,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let listen = config.listen_addr.clone();
-    let state = Arc::new(AppState {
-        config,
-        fed: RwLock::new(fed),
-        events: RwLock::new(EventLog::new(4096)),
-        state_path,
-    });
+    let state = Arc::new(AppState::new(config, fed, state_path));
 
     tokio::spawn(stormstorage::registry::run(state.clone()));
 

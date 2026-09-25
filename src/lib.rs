@@ -8,6 +8,7 @@ pub mod components;
 pub mod config;
 pub mod engine;
 pub mod events;
+pub mod inventory;
 pub mod model;
 pub mod orchestrate;
 pub mod placement;

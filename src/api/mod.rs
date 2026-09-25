@@ -13,6 +13,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use crate::inventory::NodeInventory;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -25,6 +27,20 @@ pub struct AppState {
     pub fed: RwLock<FedState>,
     pub events: RwLock<EventLog>,
     pub state_path: Option<PathBuf>,
+    /// Each node's slabs and volumes as last observed (#9). Not persisted.
+    pub inventory: RwLock<BTreeMap<String, NodeInventory>>,
+}
+
+impl AppState {
+    pub fn new(config: Config, fed: FedState, state_path: Option<PathBuf>) -> Self {
+        Self {
+            config,
+            fed: RwLock::new(fed),
+            events: RwLock::new(EventLog::new(4096)),
+            state_path,
+            inventory: RwLock::new(BTreeMap::new()),
+        }
+    }
 }
 
 impl AppState {
@@ -81,6 +97,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/replicate", post(receive_replication))
         .route("/api/v1/replication/status", get(replication_status))
         .route("/api/v1/nodes", get(list_nodes))
+        .route("/api/v1/nodes/{name}/inventory", get(node_inventory))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/pools", get(list_pools))
         .route("/api/v1/placement/plan", post(plan_dry_run))
@@ -210,6 +227,7 @@ fn pool_rollup(pool: &PoolConfig, fed: &FedState) -> serde_json::Value {
     }
     json!({
         "name": pool.name,
+        "kind": "policy",
         "replicas": pool.replicas,
         "rung": pool.rung,
         "nodes": names,
@@ -220,11 +238,58 @@ fn pool_rollup(pool: &PoolConfig, fed: &FedState) -> serde_json::Value {
     })
 }
 
+/// Policy pools from the config, then every node's slabs (a node's own
+/// pools), then the slabs summed per tier across nodes (#9).
 async fn list_pools(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let fed = s.fed.read().await;
-    let pools: Vec<serde_json::Value> =
+    let mut pools: Vec<serde_json::Value> =
         s.config.pools.iter().map(|p| pool_rollup(p, &fed)).collect();
+    drop(fed);
+    let inv = s.inventory.read().await;
+    for (node, ni) in inv.iter() {
+        for slab in &ni.slabs {
+            pools.push(json!({
+                "name": format!("{node}/{}", slab.id),
+                "kind": "slab",
+                "node": node,
+                "slab": slab.id,
+                "tier": slab.tier,
+                "role": slab.role,
+                "domain": slab.domain,
+                "total_bytes": slab.total_bytes,
+                "free_bytes": slab.free_bytes,
+                "allocated_bytes": slab.allocated_bytes(),
+                "volumes": crate::inventory::volumes_on(ni, &slab.id).len(),
+            }));
+        }
+    }
+    for t in crate::inventory::tiers(&inv) {
+        pools.push(json!({
+            "name": format!("tier:{}", t.tier),
+            "kind": "tier",
+            "tier": t.tier,
+            "nodes": t.nodes,
+            "slabs": t.slabs,
+            "total_bytes": t.total_bytes,
+            "free_bytes": t.free_bytes,
+            "allocated_bytes": t.allocated_bytes,
+            "volumes": t.volumes,
+        }));
+    }
     Json(json!({ "pools": pools }))
+}
+
+/// A node's slabs and its engine volumes, each with the slab(s) it is on.
+async fn node_inventory(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !s.fed.read().await.nodes.contains_key(&name) {
+        return Err(ApiError::not_found(format!("node {name:?}")));
+    }
+    let inv = s.inventory.read().await;
+    let ni = inv.get(&name).cloned().unwrap_or_default();
+    Ok(Json(serde_json::to_value(ni).unwrap_or_default()))
 }
 
 #[derive(Deserialize)]
@@ -571,7 +636,7 @@ struct Announce {
     volumes: Vec<serde_json::Value>,
 }
 
-fn engine_url_from(node_addr: &str) -> String {
+pub(crate) fn engine_url_from(node_addr: &str) -> String {
     if node_addr.contains("://") {
         node_addr.trim_end_matches('/').to_string()
     } else if node_addr.contains(':') {
@@ -684,6 +749,13 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         .map(|n| n.status.total_bytes)
         .sum();
     let volumes = fed.volumes.len();
+    let (engine_volumes, slabs) = {
+        let inv = s.inventory.read().await;
+        (
+            inv.values().map(|i| i.volumes.len()).sum::<usize>(),
+            inv.values().map(|i| i.slabs.len()).sum::<usize>(),
+        )
+    };
     let pending = fed
         .volumes
         .values()
@@ -701,7 +773,8 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "ok"
     };
     let detail = format!(
-        "{healthy}/{total_nodes} nodes, {volumes} volumes ({pending} pending assembly), {} free",
+        "{healthy}/{total_nodes} nodes, {slabs} slab pools, {engine_volumes} node volumes, \
+         {volumes} distributed ({pending} pending assembly), {} free",
         human(free)
     );
     Json(json!({
@@ -710,7 +783,9 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         "metrics": [
             { "label": "Nodes", "value": format!("{healthy}/{total_nodes}"),
               "tone": if healthy < total_nodes { "warn" } else { "ok" } },
-            { "label": "Volumes", "value": volumes.to_string(), "tone": "accent" },
+            { "label": "Pools", "value": slabs.to_string() },
+            { "label": "Volumes", "value": (engine_volumes).to_string(), "tone": "accent" },
+            { "label": "Distributed", "value": volumes.to_string() },
             { "label": "Free", "value": human(free) },
             { "label": "Capacity", "value": human(cap), "tone": "muted" },
         ]
