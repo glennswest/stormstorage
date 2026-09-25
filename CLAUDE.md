@@ -137,6 +137,31 @@ active → remove_member → drop old drive/volume.
       (graph gaps filed as stormcentral#20)
 - [x] Linked from the README; changelog; sc-build passing
 
+### Node adoption: the local stormblock, slabs as pools (#9, P1) — IN PROGRESS
+On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
+3 slabs and 141 volumes. Plan (stormblock APIs read from its source):
+- [ ] `[local]` config (default on): adopt `http://127.0.0.1:9090` once it
+      answers; name = engine's `GET /api/v1/discovery` `local_node`, else
+      the hostname. Cluster peers from the same discovery view (same
+      `cluster_id`, not stale, `mgmt_addr`) adopted too. Source `local`:
+      never replicated (every instance discovers its own).
+      Token: `$STORMBLOCK_API_TOKEN`, then `local.token_file`
+      (default `/etc/stormblock/api_token`) when readable.
+- [ ] Poller: per node inventory (not persisted) — `GET /api/v1/slabs`,
+      `GET /api/v1/volumes`, `GET /api/v1/slabs/{id}/slots` (volume →
+      slab). Volumes with no slot of their own (fresh clones) placed via
+      their parent's slab, then the only slab of their role; else
+      unplaced until stormblock#136.
+- [ ] `/api/v1/pools`: policy pools (`kind: policy`) + one per slab
+      (`kind: slab`) + per-tier aggregate across nodes (`kind: tier`).
+      `/api/v1/nodes/{name}/volumes` lists engine volumes with pool.
+- [ ] Components feed: slab pools with their volumes, tier rollups,
+      engine volumes (owner as consumer); system card counts them.
+- [ ] Test: in-process mock stormblock → adopt → pools/volumes/feed.
+- Blocked elsewhere: drive identity per slab + RAID partners
+  (stormblock#136), consumer beyond `owner` (stormblock#138), PV/PVC
+  (rustkube-node#59).
+
 ### Open: security
 - [ ] Inbound API auth. `api.api_token` is outbound-only, and
       `/api/v1/replicate` accepts any payload (#6).
