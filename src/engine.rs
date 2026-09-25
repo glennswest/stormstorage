@@ -158,8 +158,17 @@ impl Engine {
                 serde_json::json!({ "node": node, "mode": "read_write" }),
             )
             .await?;
-        if v.get("transport").and_then(|t| t.as_str()) != Some("nvme_tcp") {
-            anyhow::bail!("attach {id}: unexpected transport in {v}");
+        match v.get("transport").and_then(|t| t.as_str()) {
+            Some("nvme_tcp") => {}
+            // Since stormblock 2337c8a an attach by the master node gets the
+            // local ublk fast path, and every attach made here names the
+            // master. Nothing remote can use a ublk device (stormblock#149).
+            Some("ublk") => anyhow::bail!(
+                "attach {id}: engine offered a local ublk device, not NVMe-TCP — \
+                 a remote head or client cannot use it (stormblock#149); \
+                 until that lands set [management] ublk_transport = false on this engine"
+            ),
+            _ => anyhow::bail!("attach {id}: unexpected transport in {v}"),
         }
         let addr = v
             .get("addresses")

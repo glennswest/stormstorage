@@ -4,6 +4,10 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-25
+- **fix:** A leg attach answered with ublk now fails with an error that
+  names the cause (stormblock#149) and the workaround
+  (`[management] ublk_transport = false`), instead of "unexpected
+  transport" (#2).
 - **docs:** Consumer serving (#2) decided: a volume carved on the array, not
   the array as a namespace. Rationale and shape are in docs/architecture.md.
   Blocked on stormblock#150 (pin a volume to an array's slab) and
