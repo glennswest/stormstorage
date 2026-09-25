@@ -71,10 +71,10 @@ multi-node clusters slot in later without a remodel.
 NodeConfig  { name, engine_url, api_token?, labels: {rung→value}, tier? }
 NodeStatus  { healthy, last_ok, consecutive_failures, total_bytes,
               free_bytes, engine_topology, volumes,
-              source: static|registered }
+              source: static|registered|local }
 ```
 
-Nodes enter the registry two ways:
+Nodes enter the registry three ways:
 1. **Static** — `[[nodes]]` in stormstorage.toml.
 2. **Self-registration** — stormstorage implements stormblock's *existing*
    outbound heartbeat verbatim: `POST /api/v1/storage/register` with
@@ -83,8 +83,15 @@ Nodes enter the registry two ways:
    a node's `[stormfs] enabled = true`, `metadata_url` to stormstorage
    and `advertise_addr` to its own `host:9090`, and it announces itself
    with **zero engine changes**.
+3. **Local adoption** (*implemented, #9*) — with `[local] enabled` (the
+   default), the engine on stormstorage's own machine
+   (`http://127.0.0.1:9090`) is adopted once it answers, under the
+   engine's own name (`GET /api/v1/discovery` `local_node`), and so are
+   the live peers of its stormblock cluster (same `cluster_id`, at their
+   `mgmt_addr`). A node already named statically or by heartbeat wins.
+   Adopted nodes are local to the instance: never replicated.
 
-Either way, the poller enriches each node from its engine
+Every way, the poller enriches each node from its engine
 (`GET /v1/nodes/capacity`: totals + topology labels) and marks nodes
 unhealthy after `poll.fail_threshold` consecutive failures. Marking a
 node unhealthy removes it from placement. Nothing yet acts on the
@@ -129,6 +136,18 @@ spread rung, tier) that the request may override. Multiple pools may
 select overlapping nodes — a pool is policy + selection, not exclusive
 ownership. (Within a node, stormblock's slab/tier machinery is the
 node-local pool; stormblock#71 adds sub-node spreading.)
+
+**Slab pools and tiers** (*implemented, #9*). Those node-local pools are
+shown as pools in their own right: each slab of each node is a `slab`
+pool (tier, role, failure domain, total/free/allocated), and slabs of one
+tier are summed across nodes as a `tier` pool. The poller reads each
+node's slabs, volumes and slab slot tables and places every engine volume
+on its slab(s): where it owns slots, else where its parent does (a fresh
+clone), else the only slab of its role — otherwise `unknown`, never
+guessed. This inventory is observed state (memory only, not replicated).
+Still to come from the engine: the drive under each slab and each
+volume's RAID/replica partners (stormblock#136), and each volume's
+consumer beyond its `owner` (stormblock#138).
 
 ### DistVolume — RAID across individual volumes
 
@@ -256,8 +275,9 @@ State persists per-instance in `<data_dir>/state.json` (atomic writes).
 GET  / , /ui , /ui/                   embedded UI
 GET  /api/v1/health                   {status, version}
 GET  /api/v1/nodes                    registry + status
+GET  /api/v1/nodes/{name}/inventory   slabs + engine volumes placed on them
 GET  /api/v1/topology                 rungs + each node's label chain
-GET  /api/v1/pools                    pools + per-pool capacity/health rollup
+GET  /api/v1/pools                    policy, slab and tier pools with rollups
 POST /api/v1/placement/plan           dry-run: {size_bytes, pool?, replicas?, rung?, tier?} → legs
 GET|POST /api/v1/volumes              distributed volumes; create places, creates legs, assembles
 GET|DELETE /api/v1/volumes/{name}
@@ -281,7 +301,8 @@ stormd newer-UI extension, same contract as stormdrive: `[process.ui]`
 with `proxy` (embedded page at `/`, proxy-prefix aware) + `summary`
 (dashboard card); see `deploy/stormd-ui.toml`. The stormview feed also
 drives stormconsole's `stormstorage` plugin. Page: nodes table (health, capacity, labels), pools
-rollup, volumes with leg states, create-volume form, event feed.
+(policy, slab, tier), node volumes with their slab and owner, distributed
+volumes with leg states, create-volume form, event feed.
 
 ## Phases
 

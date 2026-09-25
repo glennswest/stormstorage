@@ -3,6 +3,29 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-25
+- **feat:** Adopt the local stormblock (#9). With `[local]` (on by
+  default) the engine at `http://127.0.0.1:9090` is registered once it
+  answers, under its own name from `GET /api/v1/discovery`, with the live
+  peers of its stormblock cluster. Adopted nodes (source `local`) are not
+  replicated. Token from `$STORMBLOCK_API_TOKEN` or
+  `/etc/stormblock/api_token` when readable.
+- **feat:** Node inventory (#9). Each poll reads every reachable engine's
+  slabs, volumes and slab slot tables and places each volume on its slab(s)
+  (by slots, else its parent's, else the only slab of its role, else
+  `unknown`). New `GET /api/v1/nodes/{name}/inventory`.
+- **feat:** Slabs are pools (#9). `GET /api/v1/pools` now carries `kind`:
+  `policy` (the configured pools, as before), `slab` (one per slab per
+  node: tier, role, domain, total/free/allocated, volume count) and `tier`
+  (slabs summed per tier across nodes).
+- **feat:** Components feed shows real counts (#9): `tier:<tier>`, slab pools
+  `pool:<node>/<slab>` with their volumes, node volumes `nvol:<node>/<id>`
+  with their pool(s) and owner; the system card counts pools and volumes.
+  `/api/v1/summary` and the embedded UI show the same (Pools table by kind,
+  a Node volumes table; the create form offers only policy pools).
+- **docs:** README (local adoption, `[local]` keys, inventory, pool kinds,
+  new route), architecture.md, example config.
+
 ### 2026-09-24
 - **docs:** `docs/presentation.md`: an 11-slide Marp deck on purpose, place in
   stormcos (from stormcentral's graph), how it works, current features,

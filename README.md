@@ -13,16 +13,32 @@ stormview components feed on **:9093**.
 ## What it does today (v0.3.0)
 
 - **Registry of storage nodes.** Each node is one stormblock engine (an
-  SNO cluster). Nodes come from `[[nodes]]` in the config file, or
-  register themselves through stormblock's existing `[stormfs]` heartbeat
-  (see [Self-registration](#self-registration)).
+  SNO cluster). Nodes come from `[[nodes]]` in the config file, register
+  themselves through stormblock's existing `[stormfs]` heartbeat
+  (see [Self-registration](#self-registration)), or are **adopted**: the
+  engine on the machine stormstorage runs on, and that engine's
+  stormblock-cluster peers (see [Local adoption](#local-adoption)).
 - **Poller.** Every `poll.interval_secs` it calls each engine's
   `GET /v1/nodes/capacity` and records total/free bytes and the engine's
   topology labels. After `poll.fail_threshold` consecutive failures the
   node is marked unhealthy and an event is logged. One success marks it
   healthy again.
-- **Pools.** A pool is a name, a node selector (tier, labels, explicit
-  names) and defaults (`replicas`, `rung`). Pools may overlap.
+- **Node inventory.** Each poll also reads every reachable engine's slabs
+  (`GET /api/v1/slabs`), all its volumes (`GET /api/v1/volumes`) and each
+  slab's slot table (`GET /api/v1/slabs/{id}/slots`), and places every
+  volume on the slab(s) it lives on: the slabs where it owns slots; for a
+  volume owning none (a fresh clone), its parent's; failing that, the only
+  slab of its role on the node. Anything still ambiguous is reported as
+  `unknown` rather than guessed (stormblock#136 will report placement
+  directly). Inventory is observed state: in memory only, never replicated,
+  and dropped when the node goes unhealthy.
+- **Pools.** Three kinds, all in `GET /api/v1/pools`:
+  - `slab`: every slab of every node is a pool, with its tier, role,
+    failure domain, total/free/allocated bytes and its volume count;
+  - `tier`: the slabs of one tier summed across nodes;
+  - `policy`: from `[[pools]]` — a name, a node selector (tier, labels,
+    explicit names) and defaults (`replicas`, `rung`) for distributed
+    volumes. Policy pools may overlap.
 - **Placement.** Picks one node per distinct failure domain at a rung
   (a domain is the node's label chain from the top rung down to that
   rung). Only healthy nodes with `free_bytes ≥ size` count. Within a
@@ -111,6 +127,12 @@ worked example.
 | `[poll] fail_threshold` | `3` | Consecutive failed polls before a node is marked unhealthy. |
 | `[api] api_token` | `""` | Sent as a bearer token on **outbound** replication pushes to peers. It is **not checked on inbound requests** today: the API has no auth (#6). |
 | `[replication] peers` | `[]` | Base URLs of peer instances, e.g. `["http://siteb:9093"]`. |
+| `[local] enabled` | `true` | Adopt the engine on this machine, see [Local adoption](#local-adoption). |
+| `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
+| `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
+| `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
+| `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. |
+| `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[[nodes]]` | none | Static nodes, see below. Names must be unique. |
 | `[[pools]]` | none | Pools, see below. |
 
@@ -157,6 +179,26 @@ shutdown) marks the node unhealthy, but the next successful poll marks it
 healthy again if the engine still answers. Registered nodes have no labels
 or tier until the engine reports topology.
 
+### Local adoption
+
+On a node nothing else tells stormstorage where storage is, so by default it
+looks for the engine on the same machine (`[local] engine_url`). Once that
+engine answers, every poll:
+
+- registers it under the engine's own name (source `local`);
+- reads its `GET /api/v1/discovery` view and adopts every peer in the same
+  stormblock cluster (same `cluster_id`, not stale) at its `mgmt_addr`;
+- forgets an adopted peer that has left the cluster, and re-adopts the
+  local engine if its name changed.
+
+A node already named by `[[nodes]]` or a heartbeat, by name or engine URL,
+is left as it is. Adopted nodes are this instance's own: they are not
+replicated to peers (every instance adopts its own engine) and adoption does
+not bump the replication revision. Where no engine answers, nothing is
+adopted and nothing is shown. An adopted local node's URL is loopback, so it
+is fine for inventory and single-node volumes; legs for multi-node volumes
+want a node whose `engine_url` other engines can reach (`[[nodes]]`).
+
 ## API (:9093)
 
 Errors return `{"error": "...", "code": "not_found|bad_request|conflict|engine"}`
@@ -166,9 +208,10 @@ with HTTP 404/400/409/502.
 |---|---|---|
 | GET | `/`, `/ui`, `/ui/` | Embedded UI. |
 | GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. |
-| GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status. |
+| GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered` or `local`). |
+| GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume with `slabs` and `placed_by` (`slots`, `parent`, `role`, `unknown`); `fetched_at`, `error`. |
 | GET | `/api/v1/topology` | Rungs, plus each node's label chain, tier and health. |
-| GET | `/api/v1/pools` | Pools with matched/healthy node counts and a capacity rollup over healthy nodes. |
+| GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
 | POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?}`. Places, creates the legs and assembles. Returns the volume record. |
@@ -177,7 +220,7 @@ with HTTP 404/400/409/502.
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
 | GET | `/api/v1/events?since=<seq>` | Event ring (4096 entries, in memory): `{latest_seq, events}`. |
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
-| GET | `/api/v1/components` | stormview feed: system, pools, nodes, volumes with relations. Volumes carry a delete action. |
+| GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (with a delete action) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
 | POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered}`. Applied only if newer. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
@@ -191,7 +234,8 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
 - `/v1`: `GET nodes/capacity`, `GET|POST volumes`, `DELETE volumes/{id}`,
   `POST volumes/{id}/attach|detach`. Legs are created with `replica_tier`
   `slaves = 0`.
-- `/api/v1`: `GET|POST drives`, `DELETE drives/{id}`,
+- `/api/v1`: `GET slabs`, `GET slabs/{id}/slots`, `GET volumes`,
+  `GET discovery` (local adoption), `GET|POST drives`, `DELETE drives/{id}`,
   `POST arrays`, `GET|DELETE arrays/{id}`,
   `POST arrays/{id}/members`, `DELETE arrays/{id}/members/{member}`.
 
@@ -272,4 +316,7 @@ done. The open work:
 - #2: a consumer export of the assembled mirror;
 - #6: inbound API auth;
 - #7: retrying a failed assembly;
+- #9 follow-ups waiting on other components: the drive under each slab and
+  RAID/replica partners per volume (stormblock#136), each volume's consumer
+  beyond its `owner` (stormblock#138), PV/PVC (rustkube-node#59);
 - phase 3 onward: rebalance and tier migration, native replication, HA.

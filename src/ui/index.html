@@ -53,8 +53,14 @@ form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
 
 <h2>Pools</h2>
 <div class="wrap"><table>
-<thead><tr><th>Pool</th><th>Replicas</th><th>Rung</th><th>Nodes</th><th>Free / Total</th></tr></thead>
+<thead><tr><th>Pool</th><th>Kind</th><th>What</th><th>Vols</th><th>Free / Total</th></tr></thead>
 <tbody id="pools"></tbody>
+</table></div>
+
+<h2>Node volumes</h2>
+<div class="wrap"><table>
+<thead><tr><th>Volume</th><th>Node</th><th>Size / Used</th><th>Role</th><th>Slab</th><th>Owner</th></tr></thead>
+<tbody id="nvols"></tbody>
 </table></div>
 
 <h2>Volumes</h2>
@@ -112,14 +118,26 @@ async function refresh(){
       <td>${x.status.healthy?chip('healthy','c-ok'):chip('unreachable','c-err')}</td>
       <td>${human(x.status.free_bytes)} / ${human(x.status.total_bytes)}</td>
       <td>${x.status.volumes||0}</td></tr>`).join('')
-      ||'<tr><td colspan="7" class="dim">no nodes — add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>';
+      ||'<tr><td colspan="7" class="dim">no nodes — no stormblock on this machine answered; add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>';
+    const what=x=>x.kind==='slab'?`${x.node} · ${x.role} · tier ${x.tier} · ${x.domain}`
+      :x.kind==='tier'?`${x.slabs.length} slab(s) on ${x.nodes.join(', ')}`
+      :`replicas ${x.replicas} at ${x.rung} · ${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}`;
     $('pools').innerHTML=p.pools.map(x=>`<tr>
-      <td>${x.name}</td><td>${x.replicas}</td><td>${x.rung}</td>
-      <td class="dim">${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}</td>
+      <td class="mono">${x.kind==='slab'?x.node+'/'+x.slab.slice(0,8):x.name}</td>
+      <td>${chip(x.kind,x.kind==='policy'?'c-acc':'c-mut')}</td>
+      <td class="dim">${what(x)}</td><td>${x.kind==='policy'?'':x.volumes}</td>
       <td>${human(x.free_bytes)} / ${human(x.total_bytes)}</td></tr>`).join('')
-      ||'<tr><td colspan="5" class="dim">no pools configured</td></tr>';
+      ||'<tr><td colspan="5" class="dim">no pools — no engine found and none configured</td></tr>';
+    const inv=await Promise.all(n.nodes.map(x=>api(`api/v1/nodes/${encodeURIComponent(x.name)}/inventory`)
+      .then(i=>({node:x.name,i})).catch(()=>({node:x.name,i:{volumes:[]}}))));
+    $('nvols').innerHTML=inv.flatMap(({node,i})=>(i.volumes||[]).map(v=>`<tr>
+      <td class="mono">${v.name}${v.sealed?' '+chip('sealed','c-mut'):''}</td><td class="mono">${node}</td>
+      <td>${human(v.virtual_size_bytes)} / ${human(v.allocated_bytes)}</td><td>${v.role}</td>
+      <td class="dim mono">${v.slabs.length?v.slabs.map(s=>s.slice(0,8)).join('+'):'unknown'}</td>
+      <td class="dim">${v.owner?`${v.owner.kind} ${v.owner.namespace?v.owner.namespace+'/':''}${v.owner.name}`:''}</td></tr>`)).join('')
+      ||'<tr><td colspan="6" class="dim">no node volumes</td></tr>';
     const sel=$('v-pool'); const cur=sel.value;
-    sel.innerHTML='<option value="">no pool</option>'+p.pools.map(x=>`<option>${x.name}</option>`).join('');
+    sel.innerHTML='<option value="">no pool</option>'+p.pools.filter(x=>x.kind==='policy').map(x=>`<option>${x.name}</option>`).join('');
     sel.value=cur;
     $('vols').innerHTML=v.volumes.map(x=>`<tr>
       <td class="mono">${x.name}</td><td>${human(x.size_bytes)}</td>
