@@ -14,8 +14,45 @@ pub struct Config {
     pub api: ApiConfig,
     pub replication: ReplicationConfig,
     pub local: LocalConfig,
+    pub recovery: RecoveryConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
+}
+
+/// Re-legging a distributed volume when a node carrying a leg is lost
+/// (#1). A leg counts as lost once its node crosses `poll.fail_threshold`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RecoveryConfig {
+    /// Replace lost legs automatically. Off: legs are still marked lost
+    /// and the volume degraded, and a move is left to the operator.
+    /// Unset: on for a lone instance, off when `[replication] peers` is
+    /// set — every peer sees the same loss, so exactly one of them must
+    /// be told to act (`enabled = true` there).
+    pub enabled: Option<bool>,
+    /// After a failed re-leg attempt (no target, engine error, rebuild
+    /// that never converged), wait this long before the next one.
+    pub cooldown_secs: u64,
+    /// How long a new member may take to rebuild before the replacement
+    /// is abandoned and rolled back.
+    pub rebuild_timeout_secs: u64,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            cooldown_secs: 300,
+            rebuild_timeout_secs: 3600,
+        }
+    }
+}
+
+impl RecoveryConfig {
+    /// Whether this instance replaces lost legs itself.
+    pub fn active(&self, has_peers: bool) -> bool {
+        self.enabled.unwrap_or(!has_peers)
+    }
 }
 
 /// Adopting the stormblock on the machine stormstorage runs on (#9). On a
@@ -93,6 +130,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             replication: ReplicationConfig::default(),
             local: LocalConfig::default(),
+            recovery: RecoveryConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }

@@ -92,6 +92,7 @@ pub async fn poll_once(state: &Arc<AppState>) {
             refresh_inventory(state, &name, &engine).await;
         }
     }
+    crate::orchestrate::reconcile(state).await;
     // Forget inventory of nodes no longer known.
     {
         let fed = state.fed.read().await;

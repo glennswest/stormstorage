@@ -79,6 +79,9 @@ pub enum LegState {
     Created,
     /// Creation failed; message in the leg.
     Failed,
+    /// Was created, and its node has since crossed the unhealthy
+    /// threshold. The reconciler replaces it (#1).
+    Lost,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +117,36 @@ pub enum AssemblyState {
     PendingEngineSupport,
     /// RAID1 assembled on the head across every leg over NVMe-TCP.
     Assembled,
+    /// Assembled, but at least one leg is lost: the array runs short of
+    /// the redundancy asked for until the re-leg converges (#1).
+    Degraded,
+}
+
+/// A leg being replaced: the new leg is a member of the head's array and
+/// rebuilding; the old one leaves when the new one reports active.
+/// Recorded so a restart resumes the wait instead of adding another member.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Replacement {
+    /// Node whose leg is leaving.
+    pub from: String,
+    pub leg: Leg,
+    /// Why: "operator move" or "node lost".
+    pub reason: String,
+    pub started_at: SystemTime,
+}
+
+/// A leg volume left on a node that could not be reached to delete it.
+/// Reaped when the node answers again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Orphan {
+    pub node: String,
+    pub volume_id: String,
+    #[serde(default)]
+    pub master_node: Option<String>,
+    /// The distributed volume it was a leg of.
+    pub of_volume: String,
+    pub reason: String,
+    pub since: SystemTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +165,13 @@ pub struct DistVolume {
     #[serde(default)]
     pub array_id: Option<String>,
     pub created_at: SystemTime,
+    /// The leg replacement in flight, if any (#1).
+    #[serde(default)]
+    pub replacing: Option<Replacement>,
+    /// No automatic re-leg before this — set after a failed attempt so a
+    /// failure is not retried every poll.
+    #[serde(default)]
+    pub next_releg_after: Option<SystemTime>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -143,6 +183,9 @@ pub struct FedState {
     pub revision: u64,
     pub nodes: BTreeMap<String, Node>,
     pub volumes: BTreeMap<String, DistVolume>,
+    /// Leg volumes to delete once their node answers (#1).
+    #[serde(default)]
+    pub orphans: Vec<Orphan>,
 }
 
 impl FedState {

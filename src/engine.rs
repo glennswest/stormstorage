@@ -155,7 +155,10 @@ impl Engine {
         let v = self
             .v1_post(
                 &format!("/v1/volumes/{id}/attach"),
-                serde_json::json!({ "node": node, "mode": "read_write" }),
+                // Network coordinates even though `node` is the engine
+                // itself — the head or client is elsewhere (stormblock#149,
+                // v19.1.1; older engines ignore the field).
+                serde_json::json!({ "node": node, "mode": "read_write", "transport": "nvme_tcp" }),
             )
             .await?;
         match v.get("transport").and_then(|t| t.as_str()) {

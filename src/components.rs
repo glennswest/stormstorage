@@ -204,7 +204,20 @@ fn node_component(n: &Node, inv: Option<&NodeInventory>) -> ComponentSummary {
 
 fn volume_component(v: &DistVolume) -> ComponentSummary {
     let failed_legs = v.legs.iter().filter(|l| l.state == LegState::Failed).count();
-    let health = if failed_legs > 0 { Health::Error } else { Health::Ok };
+    let lost_legs: Vec<&str> = v
+        .legs
+        .iter()
+        .filter(|l| l.state == LegState::Lost)
+        .map(|l| l.node.as_str())
+        .collect();
+    let head_lost = v.head.as_deref().map(|h| lost_legs.contains(&h)).unwrap_or(false);
+    let health = if failed_legs > 0 || head_lost {
+        Health::Error
+    } else if !lost_legs.is_empty() || v.replacing.is_some() {
+        Health::Warn
+    } else {
+        Health::Ok
+    };
     let mut metrics = vec![
         Metric::new("size", stormview::format_bytes(v.size_bytes)),
         Metric::new("legs", v.legs.len().to_string()).tone("accent"),
@@ -216,11 +229,21 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
         AssemblyState::PendingEngineSupport => {
             metrics.push(Metric::new("assembly", "pending").tone("warn"));
         }
+        AssemblyState::Degraded => {
+            metrics.push(Metric::new("assembly", "degraded").tone("warn"));
+        }
         AssemblyState::SingleLeg => {}
+    }
+    if let Some(r) = &v.replacing {
+        metrics.push(Metric::new("rebuilding", format!("{} → {}", r.from, r.leg.node)).tone("warn"));
     }
     let mut relations = vec![Relation::has_many(
         "legs",
-        v.legs.iter().map(|l| format!("node:{}", l.node)).collect(),
+        v.legs
+            .iter()
+            .chain(v.replacing.as_ref().map(|r| &r.leg))
+            .map(|l| format!("node:{}", l.node))
+            .collect(),
     )];
     if let Some(p) = &v.pool {
         relations.push(Relation::belongs_to("pool", format!("pool:{p}")));
@@ -231,13 +254,24 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
         label: v.name.clone(),
         health,
         detail: format!(
-            "{} · {} leg(s) at rung {:?}{}",
+            "{} · {} leg(s) at rung {:?}{}{}{}",
             stormview::format_bytes(v.size_bytes),
             v.legs.len(),
             v.rung,
             v.pool
                 .as_ref()
                 .map(|p| format!(" · pool {p}"))
+                .unwrap_or_default(),
+            if lost_legs.is_empty() {
+                String::new()
+            } else if head_lost {
+                format!(" · head {} lost (re-head not implemented)", lost_legs.join(", "))
+            } else {
+                format!(" · lost: {}", lost_legs.join(", "))
+            },
+            v.replacing
+                .as_ref()
+                .map(|r| format!(" · re-leg {} → {} ({})", r.from, r.leg.node, r.reason))
                 .unwrap_or_default()
         ),
         metrics,
@@ -298,8 +332,13 @@ fn build(
         label: "stormstorage".into(),
         health: system_health,
         detail: format!(
-            "{healthy}/{total_nodes} nodes · {pools} pools · {volumes} volumes · {} free · rev {}",
+            "{healthy}/{total_nodes} nodes · {pools} pools · {volumes} volumes · {} free{} · rev {}",
             stormview::format_bytes(free),
+            if fed.orphans.is_empty() {
+                String::new()
+            } else {
+                format!(" · {} orphaned leg(s) to reap", fed.orphans.len())
+            },
             fed.revision
         ),
         metrics: vec![
@@ -443,6 +482,8 @@ mod tests {
             head: None,
             array_id: None,
             created_at: SystemTime::now(),
+            replacing: None,
+            next_releg_after: None,
         };
         let c = volume_component(&v);
         assert_eq!(c.health, Health::Ok);

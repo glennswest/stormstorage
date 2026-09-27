@@ -29,6 +29,8 @@ pub struct AppState {
     pub state_path: Option<PathBuf>,
     /// Each node's slabs and volumes as last observed (#9). Not persisted.
     pub inventory: RwLock<BTreeMap<String, NodeInventory>>,
+    /// Volumes with a leg replacement in flight in this process (#1).
+    pub replacing: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl AppState {
@@ -39,6 +41,7 @@ impl AppState {
             events: RwLock::new(EventLog::new(4096)),
             state_path,
             inventory: RwLock::new(BTreeMap::new()),
+            replacing: std::sync::Mutex::new(Default::default()),
         }
     }
 }
@@ -482,6 +485,8 @@ async fn create_volume(
         head: None,
         array_id: None,
         created_at: SystemTime::now(),
+        replacing: None,
+        next_releg_after: None,
     };
     {
         let mut fed = s.fed.write().await;
@@ -564,14 +569,29 @@ async fn delete_volume(
         );
         errors.clear();
     }
-    for leg in &vol.legs {
+    // Every leg, and the new leg of a replacement in flight. A leg whose
+    // node is unreachable cannot be deleted now: it is recorded as an
+    // orphan and reaped when the node answers (#1), rather than blocking
+    // the delete forever.
+    let mut orphans = Vec::new();
+    for leg in vol.legs.iter().chain(vol.replacing.as_ref().map(|r| &r.leg)) {
         let Some(id) = &leg.volume_id else { continue };
         let engine = {
             let fed = s.fed.read().await;
-            fed.nodes.get(&leg.node).map(|n| s.engine_for(n))
+            fed.nodes
+                .get(&leg.node)
+                .map(|n| (s.engine_for(n), n.status.healthy))
         };
         match engine {
-            Some(engine) => {
+            Some((_, false)) => orphans.push(crate::model::Orphan {
+                node: leg.node.clone(),
+                volume_id: id.clone(),
+                master_node: leg.master_node.clone(),
+                of_volume: name.clone(),
+                reason: "volume deleted while its node was unreachable".into(),
+                since: SystemTime::now(),
+            }),
+            Some((engine, true)) => {
                 if let Err(e) = engine.delete_volume(id).await {
                     errors.push(format!("{}: {e:#}", leg.node));
                 }
@@ -585,9 +605,11 @@ async fn delete_volume(
             errors.join("; ")
         )));
     }
+    let orphaned = orphans.len();
     {
         let mut fed = s.fed.write().await;
         fed.volumes.remove(&name);
+        fed.orphans.extend(orphans);
         fed.revision += 1;
     }
     crate::replicate::push_to_peers(s.clone());
@@ -595,7 +617,14 @@ async fn delete_volume(
         Some(name.clone()),
         Severity::Info,
         "volume",
-        format!("{name}: deleted ({} legs)", vol.legs.len()),
+        if orphaned == 0 {
+            format!("{name}: deleted ({} legs)", vol.legs.len())
+        } else {
+            format!(
+                "{name}: deleted ({} legs; {orphaned} on unreachable nodes left to reap)",
+                vol.legs.len()
+            )
+        },
     );
     s.persist().await;
     Ok(Json(json!({ "deleted": name })))
@@ -761,6 +790,11 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         .values()
         .filter(|v| v.assembly == AssemblyState::PendingEngineSupport)
         .count();
+    let degraded = fed
+        .volumes
+        .values()
+        .filter(|v| v.assembly == AssemblyState::Degraded)
+        .count();
     let health = if total_nodes == 0 {
         "idle"
     } else if healthy < total_nodes {
@@ -769,12 +803,14 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
         } else {
             "warn"
         }
+    } else if degraded > 0 {
+        "warn"
     } else {
         "ok"
     };
     let detail = format!(
         "{healthy}/{total_nodes} nodes, {slabs} slab pools, {engine_volumes} node volumes, \
-         {volumes} distributed ({pending} pending assembly), {} free",
+         {volumes} distributed ({pending} pending assembly, {degraded} degraded), {} free
         human(free)
     );
     Json(json!({

@@ -142,9 +142,9 @@ async function refresh(){
     $('vols').innerHTML=v.volumes.map(x=>`<tr>
       <td class="mono">${x.name}</td><td>${human(x.size_bytes)}</td>
       <td>${x.pool||''}</td>
-      <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${x.assembly==='assembled'?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
+      <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${(x.assembly==='assembled'||x.assembly==='degraded')&&!x.replacing?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
       <td>${x.rung}${x.head?` <span class="dim">head ${x.head}</span>`:''}</td>
-      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='pending_engine_support'?chip('pending','c-warn'):chip('single leg','c-mut')}</td>
+      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn'):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}</td>
       <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="7" class="dim">no volumes</td></tr>';
     $('evlist').innerHTML=e.events.slice(-30).reverse().map(x=>{

@@ -29,6 +29,9 @@ pub struct Payload {
     /// Configs of self-registered nodes (static nodes travel in each
     /// peer's own config file).
     pub registered: Vec<NodeConfig>,
+    /// Leg volumes waiting to be reaped (#1).
+    #[serde(default)]
+    pub orphans: Vec<crate::model::Orphan>,
 }
 
 pub async fn build_payload(state: &Arc<AppState>) -> Payload {
@@ -42,6 +45,7 @@ pub async fn build_payload(state: &Arc<AppState>) -> Payload {
             .filter(|n| n.status.source == NodeSource::Registered)
             .map(|n| n.config.clone())
             .collect(),
+        orphans: fed.orphans.clone(),
     }
 }
 
@@ -52,6 +56,7 @@ pub async fn apply(state: &Arc<AppState>, payload: Payload) -> bool {
         return false;
     }
     fed.volumes = payload.volumes;
+    fed.orphans = payload.orphans;
     for nc in payload.registered {
         match fed.nodes.get_mut(&nc.name) {
             Some(n) => {
