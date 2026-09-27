@@ -48,6 +48,7 @@ cleanup() {
     wait 2>/dev/null || true
 }
 trap cleanup EXIT
+trap 'fail "line $LINENO: $BASH_COMMAND"' ERR
 
 rm -rf "$W"; mkdir -p "$W"
 
