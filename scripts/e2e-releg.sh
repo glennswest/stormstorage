@@ -65,11 +65,15 @@ start_engine() {
         --no-iscsi --nvmeof-addr "${NVME[$n]}" --nvmeof-nqn "nqn.2024.io.stormblock:e2e-$n" \
         >>"$W/engine-$n.log" 2>&1 &
     PID[$n]=$!
-    for _ in $(seq 1 300); do
-        curl -s -o /dev/null "http://${MGMT[$n]}/api/v1/health" && break
+    # Adopting a slab can take tens of seconds on a busy build box; the
+    # token is minted only once the API is up.
+    local up=
+    for _ in $(seq 1 1800); do
+        curl -s -o /dev/null "http://${MGMT[$n]}/api/v1/health" && { up=1; break; }
         kill -0 "${PID[$n]}" 2>/dev/null || fail "engine $n exited"
         sleep 0.1
     done
+    [ -n "$up" ] || fail "engine $n not answering after 180 s"
     TOKEN[$n]=$(cat "$d/data/api_token" 2>/dev/null || true)
 }
 

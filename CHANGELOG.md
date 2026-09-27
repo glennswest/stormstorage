@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **fix(test):** e2e scripts wait up to 180 s for an engine (slab adoption took 38 s on a busy dev) and fail if it never answers, instead of reading an unminted token.
 - **feat:** Consumer serving (#2). A distributed volume is served to
   consumers as `export` {state, volume_id, node, master_node, coordinates,
   published_at, coordinates_changed, message}. An assembled volume is served
