@@ -180,7 +180,7 @@ async fn setup() -> (String, Arc<AppState>, BTreeMap<String, M>) {
     (format!("http://{api}"), state, mocks)
 }
 
-fn post(url: String, body: Value) -> reqwest::RequestBuilder {
+fn http_post(url: String, body: Value) -> reqwest::RequestBuilder {
     reqwest::Client::new().post(url).json(&body)
 }
 
@@ -188,7 +188,7 @@ fn post(url: String, body: Value) -> reqwest::RequestBuilder {
 async fn assembled_volume_is_served_from_the_array_and_revoked_first() {
     let (api, state, mocks) = setup().await;
 
-    let r = post(format!("{api}/api/v1/volumes"), json!({"name": "mir", "size_bytes": 1u64 << 30, "replicas": 2}))
+    let r = http_post(format!("{api}/api/v1/volumes"), json!({"name": "mir", "size_bytes": 1u64 << 30, "replicas": 2}))
         .send()
         .await
         .unwrap();
@@ -216,7 +216,7 @@ async fn assembled_volume_is_served_from_the_array_and_revoked_first() {
     assert_eq!(ex["coordinates"]["nqn"], format!("nqn.2024.io.stormblock:{head}"));
 
     // Republish: same coordinates, same volume.
-    let r: Value = post(format!("{api}/api/v1/volumes/mir/export"), json!({}))
+    let r: Value = http_post(format!("{api}/api/v1/volumes/mir/export"), json!({}))
         .send()
         .await
         .unwrap()
@@ -249,7 +249,7 @@ async fn assembled_volume_is_served_from_the_array_and_revoked_first() {
 #[tokio::test]
 async fn single_leg_volume_is_served_as_its_leg() {
     let (api, _state, mocks) = setup().await;
-    let v: Value = post(format!("{api}/api/v1/volumes"), json!({"name": "one", "size_bytes": 1u64 << 30}))
+    let v: Value = http_post(format!("{api}/api/v1/volumes"), json!({"name": "one", "size_bytes": 1u64 << 30}))
         .send()
         .await
         .unwrap()
@@ -272,17 +272,17 @@ async fn single_leg_volume_is_served_as_its_leg() {
 #[tokio::test]
 async fn reserved_suffix_and_unassembled_volumes_are_refused() {
     let (api, state, _mocks) = setup().await;
-    let r = post(format!("{api}/api/v1/volumes"), json!({"name": "x-mirror", "size_bytes": 1u64 << 30}))
+    let r = http_post(format!("{api}/api/v1/volumes"), json!({"name": "x-mirror", "size_bytes": 1u64 << 30}))
         .send()
         .await
         .unwrap();
     assert_eq!(r.status(), 400);
 
-    let r = post(format!("{api}/api/v1/volumes/nope/export"), json!({})).send().await.unwrap();
+    let r = http_post(format!("{api}/api/v1/volumes/nope/export"), json!({})).send().await.unwrap();
     assert_eq!(r.status(), 404);
 
     // A volume whose mirror is not assembled has nothing to serve.
-    let v: Value = post(format!("{api}/api/v1/volumes"), json!({"name": "p", "size_bytes": 1u64 << 30, "replicas": 2}))
+    let v: Value = http_post(format!("{api}/api/v1/volumes"), json!({"name": "p", "size_bytes": 1u64 << 30, "replicas": 2}))
         .send()
         .await
         .unwrap()
@@ -292,7 +292,7 @@ async fn reserved_suffix_and_unassembled_volumes_are_refused() {
     assert_eq!(v["assembly"], "assembled");
     state.fed.write().await.volumes.get_mut("p").unwrap().assembly =
         stormstorage::model::AssemblyState::PendingEngineSupport;
-    let r = post(format!("{api}/api/v1/volumes/p/export"), json!({})).send().await.unwrap();
+    let r = http_post(format!("{api}/api/v1/volumes/p/export"), json!({})).send().await.unwrap();
     assert_eq!(r.status(), 409);
     assert_eq!(
         state.fed.read().await.volumes["p"].export.state,
