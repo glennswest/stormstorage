@@ -124,6 +124,9 @@ The source is `src/registry.rs`, `src/placement.rs`,
   the legs.
 - **Peer replication.** Volumes and registered nodes are pushed to peers.
   The newest revision wins. Each peer polls the engines itself.
+- **Consumer serving (#2).** Consumers attach the mirror: a volume pinned
+  to the head's array, served over NVMe-TCP, published at create and
+  revoked first on delete.
 - **Surfaces.** An embedded UI, a stormd card, a stormview feed (REST and
   WebSocket) and an event ring.
 
@@ -135,7 +138,6 @@ The source is `src/registry.rs`, `src/placement.rs`,
 |---|---|
 | Re-leg automatically when a node is lost | #1 (P1) |
 | Inbound API auth (`api_token` is outbound-only today) | #6 (P1) |
-| Export the assembled mirror so consumers can attach it | #2 (P2) |
 | Retry a failed assembly | #7 (P2) |
 | Rebalance on pool watermarks; tier migration between pools | phase 3 |
 | Native `/v1` replication (prestage/fence/promote) | phase 4 |
@@ -217,8 +219,8 @@ Errors return `{error, code}` with HTTP 404/400/409/502.
   - a lost node leaves its volumes degraded but still reported as
     `assembled` (#1);
   - the API is unauthenticated, including `/api/v1/replicate` (#6).
-- **Next:** #1, then #6, then #2, which lets stormfs and CSI consume
-  mirrored volumes.
+- **Next:** #6, then #14 (re-head). With #2 done, stormfs and CSI can
+  consume mirrored volumes.
 
 Docs: `README.md` (reference), `docs/architecture.md` (design),
 `CLAUDE.md` (work plan).
