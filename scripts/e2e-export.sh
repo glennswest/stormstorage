@@ -218,9 +218,18 @@ ok "republished, coordinates unchanged"
 say "single-leg volume"
 curl -s -X POST "$SS/volumes" -H 'Content-Type: application/json' \
     -d '{"name":"sv","size_bytes":268435456,"replicas":1}' >"$W/single.json"
+# On a busy build box the head can miss polls and read as unreachable; a
+# publish then fails, is recorded, and is retried when the node answers.
+first=$(py 'print(d["export"]["state"], d["export"].get("message") or "")' <"$W/single.json")
+for _ in $(seq 1 180); do
+    curl -s "$SS/volumes/sv" >"$W/single.json"
+    [ "$(py 'print(d["export"]["state"])' <"$W/single.json")" = published ] && break
+    sleep 1
+done
 py 'e=d["export"]; l=d["legs"][0]; assert d["assembly"]=="single_leg" and e["state"]=="published" and e["volume_id"]==l["volume_id"] and e["coordinates"]==l["export"], d' \
     <"$W/single.json" || fail "single leg: $(cat "$W/single.json")"
-ok "served as its leg"
+case "$first" in published*) ok "served as its leg" ;;
+    *) ok "served as its leg (on create: $first — published on recovery)" ;; esac
 
 say "delete: the export is revoked first"
 eapi x DELETE "/api/v1/slabs/$CSLAB" >/dev/null || true

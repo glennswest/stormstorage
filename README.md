@@ -102,8 +102,10 @@ stormview components feed on **:9093**.
   `POST /api/v1/volumes/{name}/export` publishes a volume that is not
   served yet, or retries a failed publish. On a published volume it
   re-attaches and sets `coordinates_changed` when the answer differs. A
-  head whose engine answers again after being unreachable is republished
-  the same way. Names ending in `-mirror` are refused on create. Needs
+  publish on a node that is unreachable is recorded as `failed` with its
+  message and an event; a failed export keeps the last coordinates it
+  handed out. A node whose engine answers again after being unreachable
+  republishes every export it serves, published or failed. Names ending in `-mirror` are refused on create. Needs
   stormblock ≥ v19.1.1 (dedicated arrays and pinning #150, NVMe-TCP attach
   on the master #149).
 - **Delete.** Revokes the export first: it detaches the served volume and

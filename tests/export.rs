@@ -300,3 +300,42 @@ async fn reserved_suffix_and_unassembled_volumes_are_refused() {
         "an attempt that cannot start leaves the record alone"
     );
 }
+
+#[tokio::test]
+async fn publish_on_an_unreachable_node_is_recorded_and_retried_on_recovery() {
+    let (api, state, _mocks) = setup().await;
+    let v: Value = http_post(format!("{api}/api/v1/volumes"), json!({"name": "flap", "size_bytes": 1u64 << 30}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["export"]["state"], "published", "{v}");
+    let node = v["legs"][0]["node"].as_str().unwrap().to_string();
+    let coords = v["export"]["coordinates"].clone();
+
+    // The node stops answering polls; a publish now fails, and says so.
+    state.fed.write().await.nodes.get_mut(&node).unwrap().status.healthy = false;
+    let r = http_post(format!("{api}/api/v1/volumes/flap/export"), json!({})).send().await.unwrap();
+    assert!(!r.status().is_success());
+    {
+        let fed = state.fed.read().await;
+        let ex = &fed.volumes["flap"].export;
+        assert_eq!(ex.state, ExportState::Failed);
+        assert!(ex.message.as_deref().unwrap_or("").contains("unreachable"), "{ex:?}");
+        assert_eq!(ex.node.as_deref(), Some(node.as_str()));
+        assert!(ex.volume_id.is_some(), "the served volume is still known, for revoke");
+    }
+    let evs = state.events.read().await.since(0);
+    assert!(evs.iter().any(|e| e.message.starts_with("flap: export failed")), "no failure event");
+
+    // It answers again: the failed export is retried and published.
+    state.fed.write().await.nodes.get_mut(&node).unwrap().status.healthy = true;
+    stormstorage::orchestrate::republish_on(&state, &node).await;
+    let fed = state.fed.read().await;
+    let ex = &fed.volumes["flap"].export;
+    assert_eq!(ex.state, ExportState::Published, "{ex:?}");
+    assert_eq!(serde_json::to_value(&ex.coordinates).unwrap(), coords);
+    assert!(!ex.coordinates_changed);
+}

@@ -257,15 +257,18 @@ DistVolume.export  { state: none | published | failed,
 - `single_leg`: the coordinates are the only leg's own export — the same
   field, so consumers need no special case.
 - **When:** at the end of create, once the mirror is assembled. A failure
-  is recorded as `failed` with its message and an error event, and the
-  volume is kept.
+  (including a serving node that reads as unreachable) is recorded as
+  `failed` with its message and an error event, keeping the last
+  coordinates handed out, and the volume is kept. A volume with nothing to
+  serve yet (not assembled) is refused and its record left alone.
 - **Delete** revokes first: it detaches the served volume and deletes it,
   and only then tears the array down. A dedicated array answers 409 while a
   volume is pinned to it, so a revoke that fails on a reachable head
   keeps the record and returns 502. An unreachable head is skipped, since
   its array goes with its legs.
 - **Republish** (`POST /api/v1/volumes/{name}/export`, and automatically
-  when the serving node's engine answers again after being unhealthy)
+  for published and failed exports when the serving node's engine answers
+  again after being unhealthy)
   re-attaches, which is idempotent on the engine. It records whether the
   coordinates changed (`coordinates_changed`, an event that says consumers
   must reconnect). NSID reuse (stormblock#96) is why the record keeps the

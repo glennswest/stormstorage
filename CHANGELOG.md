@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **fix:** A publish on an unreachable node was returned but not recorded: the create response showed `export.state: none` with no message or event. It is now `failed` with the reason and an event, keeps the last coordinates, and a node that answers again retries its failed exports as well as republishing its published ones. `coordinates_changed` compares against the last coordinates handed out, published or not (#2, found by the e2e).
 - **fix(test):** e2e-export matches the victim against whole leg names; victim `b` matched the "b" in "assembled" and the converged re-leg read as failed (#2).
 - **fix(test):** e2e-export polls with `fail_threshold = 5`, so a slow capacity poll on a busy build box does not mark a live node lost mid-test (#2).
 - **fix:** Engine write timeout 60 s → 300 s: an array create (a slab format through the RAID) took 47 s on a loaded engine and the next run timed out at 60 s (#2, #21).

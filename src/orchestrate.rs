@@ -852,18 +852,49 @@ fn serve_at(
 /// changed. A failure is recorded on the volume (`export.state = failed`)
 /// and returned.
 pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate::model::Export> {
-    let (vol, at) = {
+    let ready = {
         let fed = state.fed.read().await;
         let vol = fed
             .volumes
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        // Nothing to serve yet (not assembled): refused, record untouched.
         let at = serve_at(state, &fed, &vol)?;
-        if !fed.nodes.get(&at.node).map(|n| n.status.healthy).unwrap_or(false) {
-            anyhow::bail!("{name}: {} is unreachable — cannot serve from it", at.node);
+        if fed.nodes.get(&at.node).map(|n| n.status.healthy).unwrap_or(false) {
+            Ok((vol, at))
+        } else {
+            Err((
+                at.node.clone(),
+                anyhow::anyhow!("{name}: {} is unreachable — cannot serve from it", at.node),
+            ))
         }
-        (vol, at)
+    };
+    let (vol, at) = match ready {
+        Ok(r) => r,
+        Err((node, e)) => {
+            // Recorded like any other failure, so the create response and
+            // the events say why, and the node's recovery retries it.
+            let recorded = {
+                let mut fed = state.fed.write().await;
+                match fed.volumes.get_mut(name) {
+                    Some(v) => {
+                        v.export.state = crate::model::ExportState::Failed;
+                        v.export.message = Some(format!("{e:#}"));
+                        v.export.node = Some(node);
+                        fed.revision += 1;
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if recorded {
+                crate::replicate::push_to_peers(state.clone());
+                state.persist().await;
+                event(state, name, Severity::Error, format!("{name}: export failed: {e:#}")).await;
+            }
+            return Err(e);
+        }
     };
     let mut volume_id = at.volume_id.clone();
     let mut master_node = at.master_node.clone();
@@ -910,8 +941,10 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
         match &result {
             Ok(coords) => {
                 ex.state = crate::model::ExportState::Published;
-                ex.coordinates_changed = previous.state == crate::model::ExportState::Published
-                    && previous.coordinates.as_ref() != Some(coords);
+                // Against the last coordinates handed out, published or not:
+                // a consumer may still hold them after a failed attempt.
+                ex.coordinates_changed =
+                    previous.coordinates.as_ref().is_some_and(|c| c != coords);
                 ex.coordinates = Some(coords.clone());
                 ex.published_at = Some(SystemTime::now());
                 if v.assembly == AssemblyState::SingleLeg {
@@ -923,6 +956,7 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
             Err(e) => {
                 ex.state = crate::model::ExportState::Failed;
                 ex.message = Some(format!("{e:#}"));
+                ex.coordinates = previous.coordinates.clone();
             }
         }
         v.export = ex.clone();
@@ -933,10 +967,10 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
     state.persist().await;
     match (&result, &export.coordinates) {
         (Ok(_), Some(c)) => {
-            let what = if previous.state != crate::model::ExportState::Published {
-                "published"
-            } else if export.coordinates_changed {
+            let what = if export.coordinates_changed {
                 "republished with NEW coordinates — consumers must reconnect"
+            } else if previous.state != crate::model::ExportState::Published {
+                "published"
             } else {
                 "republished, coordinates unchanged"
             };
@@ -980,17 +1014,20 @@ pub async fn revoke(state: &Arc<AppState>, vol: &DistVolume) -> anyhow::Result<(
         .map_err(|e| anyhow::anyhow!("{node}: consumer volume {vid}: {e:#}"))
 }
 
-/// Republish every published export served from `node` — run when the
-/// node's engine answers again after being unreachable, since a restarted
-/// engine may hand out different coordinates.
+/// Republish every published or failed export served from `node` — run
+/// when the node's engine answers again after being unreachable, since a
+/// restarted engine may hand out different coordinates, and a publish that
+/// failed while the node was unreachable can now succeed.
 pub async fn republish_on(state: &Arc<AppState>, node: &str) {
     let names: Vec<String> = {
         let fed = state.fed.read().await;
         fed.volumes
             .values()
             .filter(|v| {
-                v.export.state == crate::model::ExportState::Published
-                    && v.export.node.as_deref() == Some(node)
+                matches!(
+                    v.export.state,
+                    crate::model::ExportState::Published | crate::model::ExportState::Failed
+                ) && v.export.node.as_deref() == Some(node)
             })
             .map(|v| v.name.clone())
             .collect()
