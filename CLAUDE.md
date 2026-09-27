@@ -141,6 +141,14 @@ active → remove_member → drop old drive/volume.
       and a head node coming back healthy republishes. API, feed, UI,
       docs; tests/export.rs against a mock engine; e2e on dev
       (scripts/e2e-export.sh via sc-build).
+      **Status 2026-09-27 (session restart):** code, docs, tests/export.rs
+      done and pushed; `sc-build` passes (28 unit + 2 adopt + 3 export).
+      Open: live e2e `sc-build scripts/e2e-export.sh` — run 1 failed on a
+      harness race (fixed: 180 s engine wait), run 2 exited silently right
+      after create (URI one-liner rewritten, ERR trap added), run 3 was in
+      flight at restart — re-run it. When it passes: close #17 (harness
+      build-failure) and #2 with what was verified, then request the
+      golden once. #13 and #16 closed.
 - [ ] Retry a failed assembly (#7). Today the volume stays pending.
 
 ### Docs from code — DONE (#4, 2026-09-24)
