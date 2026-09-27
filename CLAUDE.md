@@ -148,9 +148,17 @@ active → remove_member → drop old drive/volume.
       after create (URI one-liner rewritten, ERR trap added), run 3 was in
       flight at restart. Run 3 never started (dev.g8.lo rebooted); run 4
       failed: engine a took >5 s to answer a leg create (#19) → engine
-      writes now time out after 60 s (95d4a20). Run 5 in flight. When it
-      passes: close #17, #18, #19 (harness build-failures) and #2 with what
-      was verified, then request the golden once. #13 and #16 closed.
+      writes now time out after 60 s (95d4a20), then 300 s (a172e5c: array
+      create formats a slab, 47 s loaded). Runs 5–9 fixed harness bugs
+      (array lists engine uuids; victim "b" matched "assembled") and one
+      real one: a publish on an unreachable node was not recorded — now
+      `failed` + event, retried on recovery (b64c3ee, test in export.rs).
+      Run 9 passed everything up to delete: the head's engine did not answer
+      the served-volume DELETE in 300 s (it finished later). Run 10
+      instruments that (latency probe head vs other engine, loadavg) to
+      tell an engine stall (→ stormblock issue) from box load. When it
+      passes: close #17, #18, #19, #21 (harness build-failures) and #2 with
+      what was verified, then request the golden once. #13 and #16 closed.
 - [ ] Retry a failed assembly (#7). Today the volume stays pending.
 
 ### Docs from code — DONE (#4, 2026-09-24)
