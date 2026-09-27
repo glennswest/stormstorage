@@ -192,12 +192,13 @@ t0=$SECONDS
 kill -9 "${PID[$VICTIM]}"; wait "${PID[$VICTIM]}" 2>/dev/null || true; unset "PID[$VICTIM]"
 for _ in $(seq 1 300); do
     s=$(vol | py 'print(d["assembly"], "replacing" if d.get("replacing") else "-", " ".join(sorted(l["node"] for l in d["legs"])))')
-    case "$s" in "assembled - "*) [[ "$s" != *"$VICTIM"* ]] && break ;; esac
+    case "$s" in "assembled - "*) [[ " ${s#assembled - } " != *" $VICTIM "* ]] && break ;; esac
     sleep 1
 done
 echo "  after $((SECONDS - t0)) s: $s"
 case "$s" in "assembled - "*) ;; *) fail "re-leg did not converge: $s" ;; esac
-[[ "$s" != *"$VICTIM"* ]] || fail "victim still a leg: $s"
+# Match whole leg names: a victim "b" is in "assembled".
+[[ " ${s#assembled - } " != *" $VICTIM "* ]] || fail "victim still a leg: $s"
 [ "$(vol | py 'print(d["export"]["state"], d["export"]["volume_id"])')" = "published $SERVED" ] ||
     fail "export changed by the re-leg: $(vol | py 'print(d["export"])')"
 ok "re-legged; export untouched"
