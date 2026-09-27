@@ -146,9 +146,11 @@ active → remove_member → drop old drive/volume.
       Open: live e2e `sc-build scripts/e2e-export.sh` — run 1 failed on a
       harness race (fixed: 180 s engine wait), run 2 exited silently right
       after create (URI one-liner rewritten, ERR trap added), run 3 was in
-      flight at restart — re-run it. When it passes: close #17 (harness
-      build-failure) and #2 with what was verified, then request the
-      golden once. #13 and #16 closed.
+      flight at restart. Run 3 never started (dev.g8.lo rebooted); run 4
+      failed: engine a took >5 s to answer a leg create (#19) → engine
+      writes now time out after 60 s (95d4a20). Run 5 in flight. When it
+      passes: close #17, #18, #19 (harness build-failures) and #2 with what
+      was verified, then request the golden once. #13 and #16 closed.
 - [ ] Retry a failed assembly (#7). Today the volume stays pending.
 
 ### Docs from code — DONE (#4, 2026-09-24)
