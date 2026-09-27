@@ -169,13 +169,15 @@ vol | py "assert all(l['volume_id']!='$SERVED' for l in d['legs']), 'served volu
 ok "published $SERVED on $HEAD at $URI"
 
 eapi "$HEAD" GET "/api/v1/arrays/$ARRAY" >"$W/array.json"
-python3 - "$W/array.json" "$SERVED" <<'EOF' || fail "head array: $(cat "$W/array.json")"
+# The array lists the engine's own volume uuid, not the /v1 id, so match
+# the served volume by name.
+python3 - "$W/array.json" "ev-mirror" <<'EOF' || fail "head array: $(cat "$W/array.json")"
 import json, sys
 a = json.load(open(sys.argv[1])); served = sys.argv[2]
 print("  array slab:", {k: a["slab"].get(k) for k in ("id", "dedicated", "role")})
 print("  on it:", a["volumes"])
 assert a["slab"]["dedicated"] is True, "array slab is not dedicated"
-assert any(v["id"] == served and v["pinned"] for v in a["volumes"]), "served volume not pinned to the array"
+assert any(v["name"] == served and v["pinned"] for v in a["volumes"]), "served volume not pinned to the array"
 EOF
 ok "served volume pinned to the dedicated array"
 
