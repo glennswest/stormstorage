@@ -43,6 +43,13 @@ cluster_peers = true
 # name       = "…"                      # default: the engine's own name
 # token_file = "/etc/stormblock/api_token"  # $STORMBLOCK_API_TOKEN wins
 
+# Re-leg a distributed volume when a leg's node is lost (#1).
+[recovery]
+# enabled = true           # default: on alone, off with [replication] peers —
+#                          # with peers, set true on exactly one instance
+cooldown_secs        = 300   # after a failed attempt
+rebuild_timeout_secs = 3600  # new member must be active by then
+
 [[pools]]
 name     = "fast"
 selector = { tier = "high" }

@@ -3,6 +3,30 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-09-27
+- **feat:** Re-leg on node loss (#1). A reconciler runs after every poll: a
+  leg whose node is unhealthy becomes `lost` and its volume `degraded`, and
+  one replacement per volume is started through the leg-move sequence
+  (`reason: node lost`). Dead-side cleanup never blocks it: undeletable old
+  legs become orphans (`GET /api/v1/orphans`), reaped when the node answers.
+  There is a cooldown after a failed attempt, and a lost leg stays lost, so
+  a flapping node gives one re-leg. A lost head is reported, not recovered
+  (#14). New `[recovery]` config. With replication peers, only an instance
+  with `enabled = true` acts.
+- **feat:** A leg replacement (operator move or re-leg) is recorded on the
+  volume (`replacing`). A restart resumes the rebuild wait instead of losing
+  the new leg, and a second concurrent move is refused. A replacement that
+  fails part-way, or never rebuilds, undoes its new leg.
+- **feat:** Deleting a volume with a leg on an unreachable node succeeds and
+  leaves that leg as an orphan instead of returning 502 forever. The delete
+  also removes an in-flight replacement leg.
+- **feat:** Feed, summary and UI show `degraded`, lost legs, a re-leg in
+  progress and orphans. The move button also works on degraded volumes.
+- **fix:** `/v1` attach sends `transport: nvme_tcp` (stormblock#149, v19.1.1),
+  so leg exports get NVMe-TCP coordinates on engines that offer ublk.
+- **test:** `scripts/e2e-releg.sh`: three real engines, kill the non-head,
+  re-leg converges, orphan reaped on restart.
+
 ### 2026-09-25
 - **fix:** A leg attach answered with ublk now fails with an error that
   names the cause (stormblock#149) and the workaround

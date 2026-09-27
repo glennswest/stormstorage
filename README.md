@@ -67,11 +67,31 @@ stormview components feed on **:9093**.
   4. it then removes the old member, closes the old head drive and
      deletes the old volume.
 
-  Progress is logged to the event feed.
+  Progress is logged to the event feed. The replacement in flight is
+  recorded on the volume (`replacing`), so a restart of stormstorage
+  resumes the wait rather than adding another member; one replacement per
+  volume at a time. If the new member never becomes active within
+  `recovery.rebuild_timeout_secs`, the new leg is undone and the old one
+  kept.
+- **Re-leg on node loss (#1).** After every poll a reconciler checks the
+  assembled volumes. A leg whose node has crossed `poll.fail_threshold` is
+  marked `lost` and the volume `degraded`. The lost leg is then replaced
+  automatically, using the same sequence as a leg move (target from the
+  same placement rules, `reason: "node lost"`). Cleanup of the dead side
+  never blocks the rebuild. A leg volume that cannot be deleted is
+  recorded as an **orphan** (`GET /api/v1/orphans`) and deleted when its
+  node answers again. A failed attempt waits `recovery.cooldown_secs`
+  before the next. A lost leg stays lost even if its node comes back, so a
+  flapping node gives one re-leg. A lost **head** is reported and not
+  recovered, because the array lives there; re-head is #14. With
+  `[replication] peers` set, only an instance with
+  `[recovery] enabled = true` acts, because every peer sees the same loss.
 - **Delete.** Tears the assembly down first (array, head drives, leg
   exports). This step is best-effort, and problems are logged as a warning
-  event. Then it deletes every leg volume. If any leg delete fails, the
-  volume record is kept and the API returns 502.
+  event. Then it deletes every leg volume, including a replacement leg in
+  flight. A leg on an unreachable node is recorded as an orphan to reap
+  later. If a leg delete on a reachable node fails, the volume record is
+  kept and the API returns 502.
 - **Peer replication.** Durable intent (volume records and self-registered
   node configs) is pushed to every `[replication] peers` URL on each
   change. A peer applies a payload only if its revision is newer. Poll
@@ -84,9 +104,9 @@ stormview components feed on **:9093**.
   `/api/v1/components` and `/ws/components` serve the stormview feed,
   which stormconsole's `stormstorage` plugin and stormd/stormsh render.
 
-**Not done yet** (tracked in issues, see [Status](#status)): automatic
-re-leg when a node is lost (#1), an attachable export of the assembled
-mirror for consumers (#2), rebalancing, tier migration, native `/v1`
+**Not done yet** (tracked in issues, see [Status](#status)): re-head when
+the head node is lost (#14), an attachable export of the assembled mirror
+for consumers (#2), rebalancing, tier migration, native `/v1`
 replication, and HA state.
 
 ## Running
@@ -133,6 +153,9 @@ worked example.
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
 | `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
+| `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
+| `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg attempt before the next one. |
+| `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
 | `[[nodes]]` | none | Static nodes, see below. Names must be unique. |
 | `[[pools]]` | none | Pools, see below. |
 
@@ -218,6 +241,7 @@ with HTTP 404/400/409/502.
 | GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids), head, array id, assembly. |
 | DELETE | `/api/v1/volumes/{name}` | Tear down the assembly, then delete the legs. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
+| GET | `/api/v1/orphans` | Leg volumes left on unreachable nodes: `{orphans: [{node, volume_id, master_node, of_volume, reason, since}]}`. Reaped when the node answers. |
 | GET | `/api/v1/events?since=<seq>` | Event ring (4096 entries, in memory): `{latest_seq, events}`. |
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
 | GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (with a delete action) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
@@ -262,6 +286,18 @@ issue on this repo.
 Note that `stormview` is a git dependency, and `Cargo.lock` pins the
 exact commit that gets compiled. A fix in stormview does not reach this
 binary until `cargo update -p stormview` is committed here.
+
+### Live test: re-leg on node loss
+
+`scripts/e2e-releg.sh` runs three real stormblock engines (built from
+GitHub `main`, or `STORMBLOCK_BIN`) on loopback, unprivileged. It creates
+a 2-leg volume, kills the non-head engine, checks the re-leg converges
+(both members active, one re-leg, the orphan recorded), then restarts the
+engine and checks the orphan is reaped:
+
+```
+sc-build scripts/e2e-releg.sh
+```
 
 ## How it ships
 
@@ -312,7 +348,7 @@ snippet adds a `[process.ui]` block with `proxy` pointing at the UI and
 feed, peer replication) and 2 (leg wiring: assembled RAID1, leg move) are
 done. The open work:
 
-- #1: re-leg on node loss;
+- #14: re-head when the head node is lost;
 - #2: a consumer export of the assembled mirror;
 - #6: inbound API auth;
 - #7: retrying a failed assembly;

@@ -94,8 +94,8 @@ Nodes enter the registry three ways:
 Every way, the poller enriches each node from its engine
 (`GET /v1/nodes/capacity`: totals + topology labels) and marks nodes
 unhealthy after `poll.fail_threshold` consecutive failures. Marking a
-node unhealthy removes it from placement. Nothing yet acts on the
-volumes that have legs there (#1).
+node unhealthy removes it from placement, and the reconciler marks
+the legs there lost and re-legs their volumes (#1, see below).
 
 ### The federation tree
 
@@ -179,7 +179,25 @@ optimization.
   primitive; the same sequence serves failure recovery, rebalancing, tier
   migration, and shelf/node evacuation. (Rebuild-error hardening is
   stormblock#69.)
-- **Head failover** (*design, not implemented*): the legs are plain volumes — a new head can attach
+- **Re-leg on node loss** (*implemented, #1*): after every poll a
+  reconciler marks a leg `lost` once its node crosses
+  `poll.fail_threshold`, marks the volume `degraded`, and starts one
+  replacement per volume through the leg-move sequence. The replacement
+  is recorded on the volume (`replacing`), so it survives a restart and
+  is never started twice. Nothing on the dead side may block it: member
+  removal and head-drive close are best-effort, and a leg volume that
+  cannot be deleted becomes an **orphan**, reaped when its node answers
+  again. A failed attempt waits `recovery.cooldown_secs`. Once lost, a leg
+  stays lost, so a flapping node is one re-leg. A lost **head** is
+  reported, not recovered (re-head, #14). With replication peers, exactly
+  one instance acts (`[recovery] enabled = true`).
+  ```
+  LegState      created | failed | lost
+  AssemblyState single_leg | pending_engine_support | assembled | degraded
+  DistVolume    … replacing: {from, leg, reason, started_at}?, next_releg_after?
+  FedState      … orphans: [{node, volume_id, master_node, of_volume, reason, since}]
+  ```
+- **Head failover** (*design, not implemented — #14*): the legs are plain volumes — a new head can attach
   the surviving legs and reassemble (RAID superblocks identify members).
   Orchestrated re-head is a later phase; the data is never trapped.
 - **Implemented (v0.3.0)**: stormblock#73 landed (2026-08-28) — the
@@ -189,7 +207,7 @@ optimization.
   Proven live: create → assembled RAID1; move → converged with both
   members active and the old leg's volume deleted.
 - **Not implemented yet:**
-  - failure-driven re-leg when a node is lost (#1);
+  - re-head when the head node is lost (#14);
   - an export of the assembled array that consumers can attach (#2).
     Today only the legs are exported, for the head. Decided, blocked on
     the engine — see *Consumer serving* below.
@@ -336,6 +354,7 @@ POST /api/v1/placement/plan           dry-run: {size_bytes, pool?, replicas?, ru
 GET|POST /api/v1/volumes              distributed volumes; create places, creates legs, assembles
 GET|DELETE /api/v1/volumes/{name}
 POST /api/v1/volumes/{name}/move      {from: node, to?: node} — leg move
+GET  /api/v1/orphans                  leg volumes to reap when their node answers
 GET  /api/v1/events?since=
 GET  /api/v1/summary                  stormd RemoteSummary card
 GET  /api/v1/components               stormview feed (also WS /ws/components)
