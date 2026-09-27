@@ -40,8 +40,9 @@ pub struct Capacity {
 
 /// Reads and polls: short, so a dead node is marked unhealthy quickly.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Writes: see [`Engine::req`].
-const MUTATE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Writes: see [`Engine::req`]. Array create formats a slab through the
+/// RAID; on a loaded box that took 47 s for 512 MiB.
+const MUTATE_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl Engine {
     pub fn new(url: &str, token: Option<String>) -> Self {
