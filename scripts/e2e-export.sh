@@ -161,7 +161,7 @@ vol() { curl -s "$SS/volumes/ev"; }
 HEAD=$(vol | py 'print(d["head"])')
 ARRAY=$(vol | py 'print(d["array_id"])')
 SERVED=$(vol | py 'print(d["export"]["volume_id"])')
-URI=$(vol | py 'c=d["export"]["coordinates"]; print(f"nvme-tcp://{c[\"traddr\"]}:{c[\"trsvcid\"]}/{c[\"nqn\"]}?nsid={c[\"nsid\"]}")')
+URI=$(vol | py 'c=d["export"]["coordinates"]; print("nvme-tcp://%s:%s/%s?nsid=%s" % (c["traddr"], c["trsvcid"], c["nqn"], c["nsid"]))')
 VICTIM=$(vol | py 'print([l["node"] for l in d["legs"] if l["node"]!=d["head"]][0])')
 [ "$(vol | py 'print(d["export"]["node"])')" = "$HEAD" ] || fail "served from elsewhere than the head"
 vol | py "assert all(l['volume_id']!='$SERVED' for l in d['legs']), 'served volume is a leg'" || fail "served a leg"
