@@ -817,7 +817,7 @@ async fn summary(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     };
     let detail = format!(
         "{healthy}/{total_nodes} nodes, {slabs} slab pools, {engine_volumes} node volumes, \
-         {volumes} distributed ({pending} pending assembly, {degraded} degraded), {} free
+         {volumes} distributed ({pending} pending assembly, {degraded} degraded), {} free",
         human(free)
     );
     Json(json!({
