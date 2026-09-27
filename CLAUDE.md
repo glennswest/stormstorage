@@ -128,16 +128,19 @@ active → remove_member → drop old drive/volume.
       (stormblock#149, v19.1.1). Verify with unit tests of the decisions
       and `test/e2e-releg.sh` (3 engines on dev via sc-build: create 2-leg,
       stop non-head, re-leg converges, restart reaps the orphan).
-- [ ] Consumer serving (#2): **decided** — a volume carved on the array,
-      exported like any volume (docs/architecture.md "Consumer serving").
-      **Blocked** on stormblock#150 (pin a volume to an array's slab;
-      array slabs out of general allocation) and stormblock#149 (/v1
-      attach returns ublk to the master since stormblock 2337c8a — this
-      also breaks leg assembly where ublk is available). When both land:
-      `DistVolume.export` (state/volume_id/node/coordinates/republished),
-      single-leg serves its leg through the same field, delete revokes
-      first, `POST /api/v1/volumes/{name}/export` republishes; API, feed,
-      UI; e2e on dev incl. pulling a leg's node under client I/O.
+- [ ] Consumer serving (#2) — IN PROGRESS (2026-09-27). Unblocked:
+      stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
+      pins a /v1 volume) and v19.1.1 (#149: `transport: nvme_tcp` attach).
+      Plan: `DistVolume.export` {state none|published|failed, volume_id,
+      node, master_node, coordinates, published_at, coordinates_changed,
+      message}. Assembled/degraded: `<name>-mirror` /v1 volume pinned to the
+      array on the head, attached nvme_tcp. Single leg: the leg's own
+      attach, same field. Published at the end of create; delete revokes
+      first (detach + delete the pinned volume, else the array delete is a
+      409); `POST /api/v1/volumes/{name}/export` publishes or republishes,
+      and a head node coming back healthy republishes. API, feed, UI,
+      docs; tests/export.rs against a mock engine; e2e on dev
+      (scripts/e2e-export.sh via sc-build).
 - [ ] Retry a failed assembly (#7). Today the volume stays pending.
 
 ### Docs from code — DONE (#4, 2026-09-24)
