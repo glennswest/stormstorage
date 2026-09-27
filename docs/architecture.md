@@ -159,8 +159,8 @@ the remote legs over NVMe-TCP and mirrors across them.
 
 ```
 DistVolume { name, size_bytes, pool, replicas, rung, created_at,
-             assembly: single_leg | pending_engine_support | assembled,
-             head: node?, array_id?,
+             assembly: single_leg | pending_engine_support | assembled | degraded,
+             head: node?, array_id?, export: {state, volume_id, node, coordinates, …},
              legs: [ {node, volume_id, state: created|failed, message,
                       master_node, export: {nqn, traddr, trsvcid, nsid},
                       drive_uuid, member_uuid} ] }
@@ -206,15 +206,14 @@ optimization.
   `POST /api/v1/volumes/{name}/move` with a background rebuild-wait.
   Proven live: create → assembled RAID1; move → converged with both
   members active and the old leg's volume deleted.
+- **Served to consumers** (*implemented, #2*): a volume pinned to the
+  head's array, attached over NVMe-TCP — see *Consumer serving* below.
 - **Not implemented yet:**
   - re-head when the head node is lost (#14);
-  - an export of the assembled array that consumers can attach (#2).
-    Today only the legs are exported, for the head. Decided, blocked on
-    the engine — see *Consumer serving* below.
   - retrying a failed assembly (#7). The volume stays
     `pending_engine_support`.
 
-#### Consumer serving (#2) — *decided 2026-09-25, blocked on stormblock#149/#150*
+#### Consumer serving (#2) — *implemented 2026-09-27 (stormblock ≥ v19.1.1)*
 
 A client must attach **the mirror**, never a leg: a leg's own export is
 one unreplicated side, written behind the head's back.
@@ -227,45 +226,56 @@ array itself as a namespace (option 2). Why:
   ublk fast path when the consumer is on the head — and stormblock-csi
   and stormfs need no new kind of thing. Option 2 is a new export kind
   with none of that.
-- **It survives a re-head.** `POST /api/v1/arrays` already formats a slab
-  on the array, and a slab carries its own volume records. A new head
-  that re-assembles the same members can adopt the slab and the consumer
-  volume comes with it, so republishing is "attach it again on the new
-  head". A raw array namespace has no identity of its own to carry.
-- **Option 2 conflicts with what the engine does today.** The array
-  already holds a slab, so serving the raw array would expose slab
-  metadata to a client writing over it.
+- **It survives a re-head.** `POST /api/v1/arrays` makes a *dedicated*
+  array whose slab carries the records of the volumes pinned to it. A new
+  head that re-assembles the same members and adopts the slab gets the
+  consumer volume back, still pinned, so republishing is "attach it again
+  on the new head" (#14).
+- **Option 2 conflicts with what the engine does.** The array holds a
+  slab, so serving the raw array would expose slab metadata to a client
+  writing over it.
 
-Shape, once the engine can do it:
+The record, on every DistVolume:
 
 ```
-DistVolume.export  { state: none | pending_engine_support | published | failed,
-                     volume_id,              // the consumer volume (head, or the leg's node for single_leg)
-                     node,                   // where it is served
+DistVolume.export  { state: none | published | failed,
+                     volume_id,              // the served volume (on the head, or the only leg)
+                     node, master_node,      // where it is served; the attach is asked as master_node
                      coordinates: {nqn, traddr, trsvcid, nsid},   // the AttachedLeg shape
-                     published_at, republished: bool, message }
+                     published_at, coordinates_changed: bool, message }
 ```
 
+- `assembled` / `degraded`: `POST /v1/volumes {name: "<name>-mirror",
+  replica_tier: {slaves: 0}, placement: {array_id}}` on the head, which
+  puts every extent on the array (stormblock#150). Then
+  `POST /v1/volumes/{id}/attach {node: <master>, mode: read_write,
+  transport: nvme_tcp}` (stormblock#149). The `-mirror` name is separate
+  from the leg name because a /v1 create is name-idempotent and the head
+  holds a leg named after the volume. Names ending in `-mirror` are
+  therefore refused on create. Leg moves and re-legs do not touch the
+  export: it lives on the array, not on a leg.
 - `single_leg`: the coordinates are the only leg's own export — the same
   field, so consumers need no special case.
-- `assembled`: a volume pinned to the array on the head, exported.
-- **Delete** detaches the consumer export first, then the array teardown.
-- **Republish** (`POST /api/v1/volumes/{name}/export`, and on noticing
-  the head engine restarted) re-attaches and records whether the
-  coordinates changed. NSID reuse (stormblock#96) is why the record keeps
-  the volume id beside the coordinates.
-
-What it needs from stormblock:
-- **stormblock#150** — create a volume pinned to an array's slab, and keep
-  array slabs out of general allocation. Today `array_id` on create is
-  checked and then ignored, and the head's own volumes can land on a
-  mirror's slab.
-- **stormblock#149** — `/v1` attach cannot return NVMe-TCP coordinates
-  for a locally backed volume. Since stormblock 2337c8a (2026-08-30) an
-  attach by the master node (which is every attach stormstorage makes)
-  gets ublk wherever ublk is available. That also breaks **leg assembly**
-  on such engines until #149 lands or the engine sets
-  `[management] ublk_transport = false`.
+- **When:** at the end of create, once the mirror is assembled. A failure
+  is recorded as `failed` with its message and an error event, and the
+  volume is kept.
+- **Delete** revokes first: it detaches the served volume and deletes it,
+  and only then tears the array down. A dedicated array answers 409 while a
+  volume is pinned to it, so a revoke that fails on a reachable head
+  keeps the record and returns 502. An unreachable head is skipped, since
+  its array goes with its legs.
+- **Republish** (`POST /api/v1/volumes/{name}/export`, and automatically
+  when the serving node's engine answers again after being unhealthy)
+  re-attaches, which is idempotent on the engine. It records whether the
+  coordinates changed (`coordinates_changed`, an event that says consumers
+  must reconnect). NSID reuse (stormblock#96) is why the record keeps the
+  volume id beside the coordinates. An engine restart shorter than
+  `poll.fail_threshold` polls is not noticed; call the endpoint. The same
+  endpoint publishes a volume created before #2, or retries a failed
+  publish.
+- *Not done:* a head lost for good (#14). The engine does not reassemble
+  API-created arrays itself, so until re-head exists, a republish on a
+  restarted head fails and says so.
 
 *Design, not implemented:* native `/v1` replication (prestage, fence/promote, epoch-carrying writes
 — stormblock #5/#6/#7) is the *second* redundancy mechanism when its data

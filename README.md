@@ -86,7 +86,27 @@ stormview components feed on **:9093**.
   recovered, because the array lives there; re-head is #14. With
   `[replication] peers` set, only an instance with
   `[recovery] enabled = true` acts, because every peer sees the same loss.
-- **Delete.** Tears the assembly down first (array, head drives, leg
+- **Consumer serving (#2).** A consumer attaches **the mirror**, never a
+  leg. When an assembled volume is created, a `<name>-mirror` volume is
+  carved on the head's array. It is pinned there (`placement.array_id`), so
+  every extent is on the array. It is then attached over NVMe-TCP, and the
+  coordinates are recorded in the volume's `export`
+  (`{state, volume_id, node, master_node, coordinates: {nqn, traddr,
+  trsvcid, nsid}, published_at, coordinates_changed, message}`). A
+  single-leg volume is served as its leg, in the same field. A consumer
+  opens `nvme-tcp://<traddr>:<trsvcid>/<nqn>?nsid=<nsid>`. Leg moves and
+  re-legs leave the export as it is, because it is on the array.
+  `POST /api/v1/volumes/{name}/export` publishes a volume that is not
+  served yet, or retries a failed publish. On a published volume it
+  re-attaches and sets `coordinates_changed` when the answer differs. A
+  head whose engine answers again after being unreachable is republished
+  the same way. Names ending in `-mirror` are refused on create. Needs
+  stormblock ≥ v19.1.1 (dedicated arrays and pinning #150, NVMe-TCP attach
+  on the master #149).
+- **Delete.** Revokes the export first: it detaches the served volume and
+  deletes it. The head's array refuses deletion while a volume is pinned
+  to it, so if this fails on a reachable head, the record is kept and the
+  API returns 502. It then tears the assembly down (array, head drives, leg
   exports). This step is best-effort, and problems are logged as a warning
   event. Then it deletes every leg volume, including a replacement leg in
   flight. A leg on an unreachable node is recorded as an orphan to reap
@@ -105,8 +125,7 @@ stormview components feed on **:9093**.
   which stormconsole's `stormstorage` plugin and stormd/stormsh render.
 
 **Not done yet** (tracked in issues, see [Status](#status)): re-head when
-the head node is lost (#14), an attachable export of the assembled mirror
-for consumers (#2), rebalancing, tier migration, native `/v1`
+the head node is lost (#14), rebalancing, tier migration, native `/v1`
 replication, and HA state.
 
 ## Running
@@ -238,13 +257,14 @@ with HTTP 404/400/409/502.
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
 | POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?}`. Places, creates the legs and assembles. Returns the volume record. |
-| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids), head, array id, assembly. |
-| DELETE | `/api/v1/volumes/{name}` | Tear down the assembly, then delete the legs. |
+| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids), head, array id, assembly, and `export` (what consumers attach). |
+| POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Returns the `export` record; 409 when it cannot be served (not assembled, node unreachable, engine error). |
+| DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
 | GET | `/api/v1/orphans` | Leg volumes left on unreachable nodes: `{orphans: [{node, volume_id, master_node, of_volume, reason, since}]}`. Reaped when the node answers. |
 | GET | `/api/v1/events?since=<seq>` | Event ring (4096 entries, in memory): `{latest_seq, events}`. |
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
-| GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (with a delete action) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
+| GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (an `export` metric, Publish/Republish and delete actions) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
 | POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered}`. Applied only if newer. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
@@ -257,7 +277,8 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
 
 - `/v1`: `GET nodes/capacity`, `GET|POST volumes`, `DELETE volumes/{id}`,
   `POST volumes/{id}/attach|detach`. Legs are created with `replica_tier`
-  `slaves = 0`.
+  `slaves = 0`. A served mirror is also created with
+  `placement: {array_id}`. Every attach sends `transport: nvme_tcp`.
 - `/api/v1`: `GET slabs`, `GET slabs/{id}/slots`, `GET volumes`,
   `GET discovery` (local adoption), `GET|POST drives`, `DELETE drives/{id}`,
   `POST arrays`, `GET|DELETE arrays/{id}`,
@@ -297,6 +318,21 @@ engine and checks the orphan is reaped:
 
 ```
 sc-build scripts/e2e-releg.sh
+```
+
+### Live test: consumer serving
+
+`scripts/e2e-export.sh` runs three storage engines and a fourth engine,
+with no drives, as the consumer. It creates a 2-leg volume and checks that
+it is published as a volume pinned to the head's dedicated array. The
+consumer formats a data slab on the published NVMe-TCP namespace. The
+script then kills the non-head leg's engine under it, waits for the re-leg,
+and checks that the export is unchanged and the consumer reads its slab
+header back through the mirror. It also checks republish, a single-leg
+volume, and that delete leaves no served volume, array or leg behind:
+
+```
+sc-build scripts/e2e-export.sh
 ```
 
 ## How it ships
@@ -349,7 +385,6 @@ feed, peer replication) and 2 (leg wiring: assembled RAID1, leg move) are
 done. The open work:
 
 - #14: re-head when the head node is lost;
-- #2: a consumer export of the assembled mirror;
 - #6: inbound API auth;
 - #7: retrying a failed assembly;
 - #9 follow-ups waiting on other components: the drive under each slab and
