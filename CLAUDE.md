@@ -114,7 +114,20 @@ active → remove_member → drop old drive/volume.
 - [x] e2e on dev: 3 engines — create → assembled RAID1 on head (member
       uuids captured); move node-c → node-d converged, both members
       active, old volume gone
-- [ ] Node-loss handling: re-leg from surviving copies (#1, P1)
+- [ ] Node-loss handling: re-leg from surviving copies (#1, P1) — IN PROGRESS
+      Plan: `LegState::Lost` (was created, node now unhealthy) and
+      `AssemblyState::Degraded`; a reconciler on every poll marks legs
+      lost and starts one re-leg per volume through the move machinery.
+      The replacement is recorded on the volume (`replacing`) so a restart
+      resumes the wait instead of adding a second member, and there is a
+      per-volume cooldown after a failed attempt (so a flapping node gives
+      one re-leg). Cleanup of the dead side is best-effort: an undeletable
+      old leg goes to `orphans` and is reaped when its node answers again.
+      A lost **head** is reported (degraded, event) but not recovered: that
+      is re-head, a later phase. /v1 attach sends `transport: nvme_tcp`
+      (stormblock#149, v19.1.1). Verify with unit tests of the decisions
+      and `test/e2e-releg.sh` (3 engines on dev via sc-build: create 2-leg,
+      stop non-head, re-leg converges, restart reaps the orphan).
 - [ ] Consumer serving (#2): **decided** — a volume carved on the array,
       exported like any volume (docs/architecture.md "Consumer serving").
       **Blocked** on stormblock#150 (pin a volume to an array's slab;
