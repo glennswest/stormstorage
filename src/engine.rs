@@ -120,6 +120,28 @@ impl Engine {
         Ok(body)
     }
 
+    /// POST /v1/volumes pinned to an array on this engine (stormblock#150,
+    /// v19.0.0): every extent on the array's dedicated slab, so the array's
+    /// redundancy is the volume's. Name-idempotent like any /v1 create.
+    pub async fn create_pinned_volume(
+        &self,
+        name: &str,
+        size_bytes: u64,
+        array_id: &str,
+    ) -> anyhow::Result<Value> {
+        self.v1_post(
+            "/v1/volumes",
+            serde_json::json!({
+                "name": name,
+                "size_bytes": size_bytes,
+                "replica_tier": { "slaves": 0 },
+                "placement": { "array_id": array_id },
+            }),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("create {name} on array {array_id}: {e:#}"))
+    }
+
     /// The engine's own node name for a /v1 volume — read-write attach is
     /// gated on asking as the master node.
     pub fn master_node_of(v: &Value) -> Option<String> {

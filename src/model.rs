@@ -149,6 +149,49 @@ pub struct Orphan {
     pub since: SystemTime,
 }
 
+/// Whether a distributed volume is served to consumers (#2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportState {
+    /// Not served: not assembled yet, revoked, or created before #2.
+    #[default]
+    None,
+    /// Consumers attach `coordinates`.
+    Published,
+    /// The last publish failed; `message` says why.
+    Failed,
+}
+
+/// What a consumer attaches: the mirror, never one side of it. For an
+/// assembled volume it is a /v1 volume pinned to the head's array
+/// (`<name>-mirror`); for a single-leg volume it is that leg's own export.
+/// The volume id is kept beside the coordinates because an NSID can be
+/// reused (stormblock#96).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Export {
+    #[serde(default)]
+    pub state: ExportState,
+    /// The served volume's id on `node`'s engine.
+    #[serde(default)]
+    pub volume_id: Option<String>,
+    /// Where it is served: the head, or the only leg's node.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// That engine's own node name — the attach and detach are asked as it.
+    #[serde(default)]
+    pub master_node: Option<String>,
+    #[serde(default)]
+    pub coordinates: Option<crate::engine::AttachedLeg>,
+    #[serde(default)]
+    pub published_at: Option<SystemTime>,
+    /// The last republish returned different coordinates than before, so
+    /// consumers must reconnect to the new ones.
+    #[serde(default)]
+    pub coordinates_changed: bool,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistVolume {
     pub name: String,
@@ -172,6 +215,9 @@ pub struct DistVolume {
     /// failure is not retried every poll.
     #[serde(default)]
     pub next_releg_after: Option<SystemTime>,
+    /// How consumers attach this volume (#2).
+    #[serde(default)]
+    pub export: Export,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

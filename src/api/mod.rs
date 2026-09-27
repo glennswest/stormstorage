@@ -107,6 +107,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes", get(list_volumes).post(create_volume))
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
         .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
+        .route("/api/v1/volumes/{name}/export", post(export_volume))
         .route("/api/v1/orphans", get(list_orphans))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
@@ -400,6 +401,14 @@ async fn create_volume(
     if req.name.is_empty() || req.size_bytes == 0 {
         return Err(ApiError::bad_request("name and size_bytes required"));
     }
+    if req.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
+        // The head names the consumer volume `<name>-mirror`; a leg of that
+        // name would be answered as the consumer volume (name-idempotent).
+        return Err(ApiError::bad_request(format!(
+            "names ending in {:?} are reserved for served mirrors",
+            crate::orchestrate::MIRROR_SUFFIX
+        )));
+    }
     {
         let fed = s.fed.read().await;
         if fed.volumes.contains_key(&req.name) {
@@ -488,6 +497,7 @@ async fn create_volume(
         created_at: SystemTime::now(),
         replacing: None,
         next_releg_after: None,
+        export: Default::default(),
     };
     {
         let mut fed = s.fed.write().await;
@@ -512,15 +522,26 @@ async fn create_volume(
     // Wire the legs into a mirror. Failure leaves the volume stored with
     // assembly pending (partial export progress persisted) plus an error
     // event — the legs and their data are never rolled back for this.
-    if multi_leg {
-        if let Err(e) = crate::orchestrate::assemble(&s, &req.name).await {
-            s.events.write().await.push(
-                Some(req.name.clone()),
-                Severity::Error,
-                "assemble",
-                format!("{}: assembly failed (legs kept, retry by re-creating or moving): {e:#}", req.name),
-            );
+    let assembled = if multi_leg {
+        match crate::orchestrate::assemble(&s, &req.name).await {
+            Ok(()) => true,
+            Err(e) => {
+                s.events.write().await.push(
+                    Some(req.name.clone()),
+                    Severity::Error,
+                    "assemble",
+                    format!("{}: assembly failed (legs kept, retry by re-creating or moving): {e:#}", req.name),
+                );
+                false
+            }
         }
+    } else {
+        true
+    };
+    // Serve it (#2). A failure is recorded on the volume and in the events;
+    // `POST /api/v1/volumes/{name}/export` retries.
+    if assembled {
+        let _ = crate::orchestrate::publish(&s, &req.name).await;
     }
     let response = {
         let fed = s.fed.read().await;
@@ -558,7 +579,14 @@ async fn delete_volume(
             .cloned()
             .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?
     };
-    // Unwire the mirror first (array, head drives, exports) — best-effort;
+    // Stop serving first (#2): consumers lose the volume before any leg
+    // does, and the head's array cannot go while a volume is pinned to it.
+    if let Err(e) = crate::orchestrate::revoke(&s, &vol).await {
+        return Err(ApiError::upstream(format!(
+            "export not revoked: {e:#} — volume record kept"
+        )));
+    }
+    // Unwire the mirror (array, head drives, exports) — best-effort;
     // a half-torn assembly must not block deleting the legs.
     let mut errors = crate::orchestrate::teardown(&s, &vol).await;
     if !errors.is_empty() {
@@ -652,6 +680,21 @@ async fn move_volume_leg(
         .await
         .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
     Ok(Json(json!({ "moving": body.from, "to": target, "status": "rebuilding" })))
+}
+
+/// Publish the volume to consumers, or republish it and report whether the
+/// coordinates changed (#2). Returns the export record.
+async fn export_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !s.fed.read().await.volumes.contains_key(&name) {
+        return Err(ApiError::not_found(format!("volume {name:?}")));
+    }
+    let ex = crate::orchestrate::publish(&s, &name)
+        .await
+        .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    Ok(Json(serde_json::to_value(ex).unwrap_or_default()))
 }
 
 /// stormblock's own registration heartbeat shape (stormblock

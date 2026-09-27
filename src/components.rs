@@ -6,7 +6,7 @@
 
 use crate::api::AppState;
 use crate::inventory::{NodeInventory, PlacedBy, PlacedVolume, Slab, TierRollup};
-use crate::model::{AssemblyState, DistVolume, LegState, Node};
+use crate::model::{AssemblyState, DistVolume, ExportState, LegState, Node};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use stormview::{Action, ComponentSummary, Health, Metric, Relation};
@@ -234,6 +234,14 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
         }
         AssemblyState::SingleLeg => {}
     }
+    match v.export.state {
+        ExportState::Published => {
+            let tone = if v.export.coordinates_changed { "warn" } else { "ok" };
+            metrics.push(Metric::new("export", "published").tone(tone));
+        }
+        ExportState::Failed => metrics.push(Metric::new("export", "failed").tone("error")),
+        ExportState::None => {}
+    }
     if let Some(r) = &v.replacing {
         metrics.push(Metric::new("rebuilding", format!("{} → {}", r.from, r.leg.node)).tone("warn"));
     }
@@ -254,7 +262,7 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
         label: v.name.clone(),
         health,
         detail: format!(
-            "{} · {} leg(s) at rung {:?}{}{}{}",
+            "{} · {} leg(s) at rung {:?}{}{}{}{}",
             stormview::format_bytes(v.size_bytes),
             v.legs.len(),
             v.rung,
@@ -272,17 +280,35 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
             v.replacing
                 .as_ref()
                 .map(|r| format!(" · re-leg {} → {} ({})", r.from, r.leg.node, r.reason))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            match (&v.export.state, &v.export.coordinates) {
+                (ExportState::Published, Some(c)) => format!(" · served at {}", c.drive_uri()),
+                (ExportState::Failed, _) => format!(
+                    " · export failed: {}",
+                    v.export.message.as_deref().unwrap_or("")
+                ),
+                _ => String::new(),
+            }
         ),
         metrics,
-        actions: vec![Action {
+        actions: vec![
+            Action {
+                id: "export".into(),
+                label: if v.export.state == ExportState::Published { "Republish" } else { "Publish" }.into(),
+                method: "POST".into(),
+                path: format!("/api/v1/volumes/{}/export", v.name),
+                enabled: v.assembly != AssemblyState::PendingEngineSupport,
+                danger: false,
+            },
+            Action {
             id: "delete".into(),
             label: "Delete".into(),
             method: "DELETE".into(),
             path: format!("/api/v1/volumes/{}", v.name),
             enabled: true,
             danger: true,
-        }],
+        },
+        ],
         relations,
         link: None,
     }
@@ -484,13 +510,14 @@ mod tests {
             created_at: SystemTime::now(),
             replacing: None,
             next_releg_after: None,
+            export: Default::default(),
         };
         let c = volume_component(&v);
         assert_eq!(c.health, Health::Ok);
         assert!(c.relations.iter().any(|r| r.name == "pool" && r.targets == vec!["pool:fast".to_string()]));
         let legs = c.relations.iter().find(|r| r.name == "legs").unwrap();
         assert_eq!(legs.targets, vec!["node:a".to_string(), "node:b".to_string()]);
-        let del = &c.actions[0];
+        let del = c.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(del.method, "DELETE");
         assert!(del.danger);
         assert!(c.metrics.iter().any(|m| m.label == "assembly"));

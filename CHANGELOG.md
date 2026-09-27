@@ -4,6 +4,23 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **feat:** Consumer serving (#2). A distributed volume is served to
+  consumers as `export` {state, volume_id, node, master_node, coordinates,
+  published_at, coordinates_changed, message}. An assembled volume is served
+  as a `<name>-mirror` /v1 volume pinned to the head's array
+  (`placement.array_id`, stormblock#150 v19.0.0), attached over NVMe-TCP. A
+  single-leg volume is served as its leg, with the same field. It is
+  published at the end of create. `POST /api/v1/volumes/{name}/export`
+  publishes or republishes and reports whether the coordinates changed. A
+  head whose engine answers again is republished. Delete revokes the export
+  first (detach, then delete the pinned volume) and keeps the record if that
+  fails, because a dedicated array refuses deletion while a volume is
+  pinned. Feed: `export` metric, Publish/Republish action. UI: Export column.
+- **BREAKING:** volume names ending in `-mirror` are refused (reserved for
+  served mirrors; a /v1 create is name-idempotent).
+- **test:** `tests/export.rs`, mock engines keeping stormblock's rules:
+  assembled → served from the array, republish unchanged, revoke before
+  array delete; single-leg served as its leg; refusals.
 - **feat:** Re-leg on node loss (#1). A reconciler runs after every poll: a
   leg whose node is unhealthy becomes `lost` and its volume `degraded`, and
   one replacement per volume is started through the leg-move sequence

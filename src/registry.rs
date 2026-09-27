@@ -61,6 +61,8 @@ pub async fn poll_once(state: &Arc<AppState>) {
                         "node",
                         format!("{name}: engine reachable ({url})"),
                     );
+                    // It may have restarted: re-attach what it serves (#2).
+                    crate::orchestrate::republish_on(state, &name).await;
                 }
             }
             Err(e) => {

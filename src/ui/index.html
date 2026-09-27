@@ -72,7 +72,7 @@ form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
   <button type="submit">Create</button>
 </form>
 <div class="wrap"><table>
-<thead><tr><th>Volume</th><th>Size</th><th>Pool</th><th>Legs</th><th>Rung</th><th>Assembly</th><th></th></tr></thead>
+<thead><tr><th>Volume</th><th>Size</th><th>Pool</th><th>Legs</th><th>Rung</th><th>Assembly</th><th>Export</th><th></th></tr></thead>
 <tbody id="vols"></tbody>
 </table></div>
 
@@ -101,6 +101,11 @@ window.moveLeg=(name,from)=>{
     act(post(`api/v1/volumes/${encodeURIComponent(name)}/move`,{from}));
 };
 window.act=(p)=>p.then(refresh).catch(e=>{fail(e);refresh();});
+window.pubVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/export`,{}));
+const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=`<button title="publish / republish" onclick="pubVol('${x.name}')">↻</button>`;
+  if(e.state==='published'&&c)return `<span class="mono" title="${c.nqn}">${c.traddr}:${c.trsvcid} ns ${c.nsid}</span>${e.coordinates_changed?' '+chip('moved','c-warn'):''} ${b}`;
+  if(e.state==='failed')return `${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
+  return x.assembly==='pending_engine_support'?'':b;};
 window.delVol=(n)=>{ if(confirm(`Delete volume ${n} and all its legs?`))
   fetch(API+`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
     .then(r=>{ if(!r.ok) return r.json().then(j=>{throw new Error(j.error||r.status)}); refresh(); })
@@ -145,8 +150,9 @@ async function refresh(){
       <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${(x.assembly==='assembled'||x.assembly==='degraded')&&!x.replacing?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
       <td>${x.rung}${x.head?` <span class="dim">head ${x.head}</span>`:''}</td>
       <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn'):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}</td>
+      <td>${expo(x)}</td>
       <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
-      ||'<tr><td colspan="7" class="dim">no volumes</td></tr>';
+      ||'<tr><td colspan="8" class="dim">no volumes</td></tr>';
     $('evlist').innerHTML=e.events.slice(-30).reverse().map(x=>{
       const t=x.time&&x.time.secs_since_epoch?new Date(x.time.secs_since_epoch*1000).toLocaleTimeString():'';
       const cls={info:'',warning:'c-warn',error:'c-err'}[x.severity]||'';

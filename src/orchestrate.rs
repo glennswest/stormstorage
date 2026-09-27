@@ -782,6 +782,224 @@ pub async fn reap_orphans(state: &Arc<AppState>) {
     }
 }
 
+/// Suffix of the consumer volume carved on an assembled volume's array.
+/// Distinct from the leg name, because a /v1 create is name-idempotent and
+/// the head carries a leg named after the volume itself.
+pub const MIRROR_SUFFIX: &str = "-mirror";
+
+/// Where a volume is served and which engine volume that is: the only leg
+/// for a single-leg volume, the pinned consumer volume on the head for an
+/// assembled one (`None`: not created yet).
+struct ServeAt {
+    node: String,
+    engine: crate::engine::Engine,
+    volume_id: Option<String>,
+    master_node: Option<String>,
+    array_id: Option<String>,
+}
+
+fn serve_at(
+    state: &Arc<AppState>,
+    fed: &crate::model::FedState,
+    vol: &DistVolume,
+) -> anyhow::Result<ServeAt> {
+    let name = &vol.name;
+    match vol.assembly {
+        AssemblyState::SingleLeg => {
+            let leg = vol
+                .legs
+                .first()
+                .filter(|l| l.state == LegState::Created && l.volume_id.is_some())
+                .ok_or_else(|| anyhow::anyhow!("{name}: its leg is not created"))?;
+            Ok(ServeAt {
+                node: leg.node.clone(),
+                engine: engine_of(state, fed, &leg.node)?,
+                volume_id: leg.volume_id.clone(),
+                master_node: leg.master_node.clone(),
+                array_id: None,
+            })
+        }
+        AssemblyState::Assembled | AssemblyState::Degraded => {
+            let head = vol.head.clone().ok_or_else(|| anyhow::anyhow!("{name}: no head"))?;
+            let array_id = vol
+                .array_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("{name}: no array id"))?;
+            // A consumer volume already made on this head is reused.
+            let (volume_id, master_node) = if vol.export.node.as_deref() == Some(head.as_str()) {
+                (vol.export.volume_id.clone(), vol.export.master_node.clone())
+            } else {
+                (None, None)
+            };
+            Ok(ServeAt {
+                engine: engine_of(state, fed, &head)?,
+                node: head,
+                volume_id,
+                master_node,
+                array_id: Some(array_id),
+            })
+        }
+        AssemblyState::PendingEngineSupport => {
+            anyhow::bail!("{name}: not assembled — nothing to serve until the mirror exists")
+        }
+    }
+}
+
+/// Publish a volume to consumers, or republish it (#2): make sure the
+/// served volume exists, attach it for NVMe-TCP, and record the
+/// coordinates. Idempotent — the engine re-returns an attach it already
+/// made — so it is also how a republish learns whether the coordinates
+/// changed. A failure is recorded on the volume (`export.state = failed`)
+/// and returned.
+pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate::model::Export> {
+    let (vol, at) = {
+        let fed = state.fed.read().await;
+        let vol = fed
+            .volumes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        let at = serve_at(state, &fed, &vol)?;
+        if !fed.nodes.get(&at.node).map(|n| n.status.healthy).unwrap_or(false) {
+            anyhow::bail!("{name}: {} is unreachable — cannot serve from it", at.node);
+        }
+        (vol, at)
+    };
+    let mut volume_id = at.volume_id.clone();
+    let mut master_node = at.master_node.clone();
+    let result: anyhow::Result<crate::engine::AttachedLeg> = async {
+        if volume_id.is_none() {
+            let array_id = at.array_id.as_deref().expect("assembled");
+            let created = at
+                .engine
+                .create_pinned_volume(&format!("{name}{MIRROR_SUFFIX}"), vol.size_bytes, array_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))?;
+            let id = created
+                .get("id")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| anyhow::anyhow!("{}: create returned no id", at.node))?
+                .to_string();
+            if vol.legs.iter().any(|l| l.volume_id.as_deref() == Some(id.as_str())) {
+                anyhow::bail!("{}: the engine answered with a leg ({id}), not a volume on the array", at.node);
+            }
+            volume_id = Some(id);
+            master_node = crate::engine::Engine::master_node_of(&created);
+        }
+        let vid = volume_id.clone().expect("set");
+        let master = master_node.clone().unwrap_or_else(|| "localhost".into());
+        at.engine
+            .attach_volume(&vid, &master)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))
+    }
+    .await;
+
+    let (export, previous) = {
+        let mut fed = state.fed.write().await;
+        let Some(v) = fed.volumes.get_mut(name) else {
+            anyhow::bail!("{name}: deleted while it was being published");
+        };
+        let previous = v.export.clone();
+        let mut ex = crate::model::Export {
+            volume_id: volume_id.clone(),
+            node: Some(at.node.clone()),
+            master_node: master_node.clone(),
+            ..Default::default()
+        };
+        match &result {
+            Ok(coords) => {
+                ex.state = crate::model::ExportState::Published;
+                ex.coordinates_changed = previous.state == crate::model::ExportState::Published
+                    && previous.coordinates.as_ref() != Some(coords);
+                ex.coordinates = Some(coords.clone());
+                ex.published_at = Some(SystemTime::now());
+                if v.assembly == AssemblyState::SingleLeg {
+                    if let Some(leg) = v.legs.first_mut() {
+                        leg.export = Some(coords.clone());
+                    }
+                }
+            }
+            Err(e) => {
+                ex.state = crate::model::ExportState::Failed;
+                ex.message = Some(format!("{e:#}"));
+            }
+        }
+        v.export = ex.clone();
+        fed.revision += 1;
+        (ex, previous)
+    };
+    crate::replicate::push_to_peers(state.clone());
+    state.persist().await;
+    match (&result, &export.coordinates) {
+        (Ok(_), Some(c)) => {
+            let what = if previous.state != crate::model::ExportState::Published {
+                "published"
+            } else if export.coordinates_changed {
+                "republished with NEW coordinates — consumers must reconnect"
+            } else {
+                "republished, coordinates unchanged"
+            };
+            event(state, name, Severity::Info, format!("{name}: {what} on {} at {}", at.node, c.drive_uri())).await;
+        }
+        _ => {
+            let e = export.message.clone().unwrap_or_default();
+            event(state, name, Severity::Error, format!("{name}: export failed: {e}")).await;
+        }
+    }
+    result.map(|_| export)
+}
+
+/// Stop serving a volume before it is torn down (#2): detach the consumer
+/// volume and delete it, so the head's array can go (a dedicated array
+/// refuses deletion while a volume is pinned to it). A single-leg volume's
+/// export is its leg, which the leg teardown detaches. A head that cannot
+/// be reached is not an error — its array goes with its legs.
+pub async fn revoke(state: &Arc<AppState>, vol: &DistVolume) -> anyhow::Result<()> {
+    let (Some(node), Some(vid)) = (&vol.export.node, &vol.export.volume_id) else {
+        return Ok(());
+    };
+    if vol.legs.iter().any(|l| l.volume_id.as_ref() == Some(vid)) {
+        return Ok(());
+    }
+    let engine = {
+        let fed = state.fed.read().await;
+        match fed.nodes.get(node).filter(|n| n.status.healthy) {
+            Some(n) => state.engine_for(n),
+            None => return Ok(()),
+        }
+    };
+    let master = vol.export.master_node.clone().unwrap_or_else(|| "localhost".into());
+    if vol.export.coordinates.is_some() {
+        // Best-effort: the delete below is what must succeed.
+        let _ = engine.detach_volume(vid, &master).await;
+    }
+    engine
+        .delete_volume(vid)
+        .await
+        .map_err(|e| anyhow::anyhow!("{node}: consumer volume {vid}: {e:#}"))
+}
+
+/// Republish every published export served from `node` — run when the
+/// node's engine answers again after being unreachable, since a restarted
+/// engine may hand out different coordinates.
+pub async fn republish_on(state: &Arc<AppState>, node: &str) {
+    let names: Vec<String> = {
+        let fed = state.fed.read().await;
+        fed.volumes
+            .values()
+            .filter(|v| {
+                v.export.state == crate::model::ExportState::Published
+                    && v.export.node.as_deref() == Some(node)
+            })
+            .map(|v| v.name.clone())
+            .collect()
+    };
+    for name in names {
+        let _ = publish(state, &name).await;
+    }
+}
+
 /// Poll the head's array until the member reports active. False on timeout
 /// or persistent errors.
 async fn wait_member_active(
@@ -861,6 +1079,7 @@ mod tests {
             created_at: SystemTime::now(),
             replacing: None,
             next_releg_after: None,
+            export: Default::default(),
         }
     }
 
