@@ -33,7 +33,7 @@ declare -A NVME=([a]=127.0.0.1:14421 [b]=127.0.0.1:14422 [c]=127.0.0.1:14423 [x]
 declare -A PID=() TOKEN=()
 SSPID=
 
-say() { printf '\n== %s\n' "$*"; }
+say() { printf '\n== %s  [%s load %s]\n' "$*" "$(date -u +%H:%M:%S)" "$(cut -d' ' -f1-3 /proc/loadavg)"; }
 ok() { printf '  OK: %s\n' "$*"; }
 fail() {
     printf '\nFAIL: %s\n' "$*" >&2
@@ -234,9 +234,39 @@ case "$first" in published*) ok "served as its leg" ;;
 say "delete: the export is revoked first"
 eapi x DELETE "/api/v1/slabs/$CSLAB" >/dev/null || true
 eapi x DELETE "/api/v1/drives/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$URI")?force=true" >/dev/null || true
+# Probe engine latency while deleting: the head against another live
+# engine, to tell an engine stall from a loaded box.
+OTHER=$(for n in a b c; do [ "$n" != "$HEAD" ] && [ -n "${PID[$n]:-}" ] && echo "$n"; done | head -1)
+( while :; do
+    for n in "$HEAD" $OTHER; do
+        t=$(curl -s -o /dev/null -w '%{time_total}' -m 30 -H "Authorization: Bearer ${TOKEN[$n]:-}" \
+            "http://${MGMT[$n]}/v1/nodes/capacity" || echo timeout)
+        printf '%s %s:%s ' "$(date -u +%H:%M:%S)" "$n" "$t"
+    done
+    echo "load $(cut -d' ' -f1 /proc/loadavg)"
+    sleep 5
+  done ) >"$W/probe.log" 2>&1 &
+PROBE=$!
 for v in ev sv; do
-    curl -s -X DELETE "$SS/volumes/$v" | py "assert d.get('deleted')=='$v', d" || fail "delete $v"
+    t0=$SECONDS
+    curl -s -X DELETE "$SS/volumes/$v" >"$W/del.json"
+    if ! py "assert d.get('deleted')=='$v'" <"$W/del.json" 2>/dev/null; then
+        # The documented contract: a revoke the head did not answer keeps
+        # the record (502) — retry once the head answers again.
+        echo "  delete $v: $((SECONDS - t0)) s, not done: $(cat "$W/del.json")"
+        echo "  latency (head $HEAD, other $OTHER):"; sed 's/^/    /' "$W/probe.log" | tail -80
+        t1=$SECONDS
+        for _ in $(seq 1 300); do
+            [ "$(curl -s "$SS/nodes" | py "print(any(n['name']=='$HEAD' and n['status']['healthy'] for n in (d if isinstance(d,list) else d.get('nodes',[]))))")" = True ] && break
+            sleep 1
+        done
+        curl -s -X DELETE "$SS/volumes/$v" | py "assert d.get('deleted')=='$v', d" || fail "delete $v (retry)"
+        ok "delete $v on retry, $((SECONDS - t1)) s after the first attempt returned"
+    else
+        echo "  delete $v: $((SECONDS - t0)) s"
+    fi
 done
+kill "$PROBE" 2>/dev/null || true
 LIVE=$(for n in a b c; do [ -n "${PID[$n]:-}" ] && echo "$n"; done)
 for n in $LIVE; do
     left=$(eapi "$n" GET /v1/volumes | py 'print(len(d if isinstance(d,list) else d.get("volumes",[])))')
