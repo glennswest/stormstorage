@@ -38,13 +38,18 @@ pub struct Capacity {
     pub topology: BTreeMap<String, String>,
 }
 
+/// Reads and polls: short, so a dead node is marked unhealthy quickly.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Writes: see [`Engine::req`].
+const MUTATE_TIMEOUT: Duration = Duration::from_secs(60);
+
 impl Engine {
     pub fn new(url: &str, token: Option<String>) -> Self {
         Self {
             url: url.trim_end_matches('/').to_string(),
             token,
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
+                .timeout(READ_TIMEOUT)
                 .build()
                 .expect("reqwest client"),
         }
@@ -58,8 +63,14 @@ impl Engine {
         }
     }
 
+    /// Mutations (create, attach, arrays, deletes). A loaded engine can take
+    /// well over the 5 s read timeout to answer one, and giving up early
+    /// leaves the engine finishing a create nobody records.
     fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let r = self.http.request(method, format!("{}{path}", self.url));
+        let r = self
+            .http
+            .request(method, format!("{}{path}", self.url))
+            .timeout(MUTATE_TIMEOUT);
         match &self.token {
             Some(t) if !t.is_empty() => r.bearer_auth(t),
             _ => r,

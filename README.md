@@ -22,7 +22,9 @@ stormview components feed on **:9093**.
   `GET /v1/nodes/capacity` and records total/free bytes and the engine's
   topology labels. After `poll.fail_threshold` consecutive failures the
   node is marked unhealthy and an event is logged. One success marks it
-  healthy again.
+  healthy again. Engine reads and polls time out after 5 s; engine writes
+  (volume create, attach, arrays, deletes) after 60 s, since a loaded
+  engine can take longer than a poll should wait.
 - **Node inventory.** Each poll also reads every reachable engine's slabs
   (`GET /api/v1/slabs`), all its volumes (`GET /api/v1/volumes`) and each
   slab's slot table (`GET /api/v1/slabs/{id}/slots`), and places every
