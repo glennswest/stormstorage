@@ -107,6 +107,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes", get(list_volumes).post(create_volume))
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
         .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
+        .route("/api/v1/orphans", get(list_orphans))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
         .route("/api/v1/storage/register", post(register_node))
@@ -745,6 +746,12 @@ async fn deregister_node(
         s.persist().await;
     }
     Json(json!({ "accepted": true }))
+}
+
+/// Leg volumes left on unreachable nodes, waiting to be reaped (#1).
+async fn list_orphans(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let fed = s.fed.read().await;
+    Json(json!({ "orphans": fed.orphans }))
 }
 
 #[derive(Deserialize)]
