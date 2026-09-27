@@ -128,7 +128,7 @@ data_dir = "$W/ss"
 
 [poll]
 interval_secs = 2
-fail_threshold = 2
+fail_threshold = 5
 
 [local]
 enabled = false

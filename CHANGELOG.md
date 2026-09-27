@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **fix(test):** e2e-export polls with `fail_threshold = 5`, so a slow capacity poll on a busy build box does not mark a live node lost mid-test (#2).
 - **fix:** Engine write timeout 60 s → 300 s: an array create (a slab format through the RAID) took 47 s on a loaded engine and the next run timed out at 60 s (#2, #21).
 - **fix(test):** e2e-export checks the served volume on the head's array by name: the array lists the engine's volume uuid, not the /v1 id (#2).
 - **fix:** Engine writes (volume create, attach, arrays, deletes) time out after 60 s instead of 5 s. On a loaded engine a leg create took longer than 5 s, failed the create, and could leave the engine finishing a volume nobody recorded. Reads and polls keep 5 s (#2, found by the e2e, #19).
