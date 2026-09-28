@@ -218,6 +218,17 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
 ### Open: security
 - [ ] Inbound API auth. `api.api_token` is outbound-only, and
       `/api/v1/replicate` accepts any payload (#6).
+      IN PROGRESS 2026-09-28. Plan: a middleware on the router. With
+      `api.api_token` set, every mutation (create/delete/move/export
+      volume, replicate) needs `Authorization: Bearer <token>` → else 401
+      `{error, code: "unauthorized"}`, constant-time compare. Reads (GET,
+      ws, the dry-run `placement/plan`) stay open: family posture.
+      `storage/register|deregister` stay open: stormblock's heartbeat sends
+      no token (stormblock `src/stormfs.rs`), and enrolling needs no engine
+      change; a stormblock issue asks for a token on it. Empty token = open,
+      as today. The embedded UI asks for the token on a 401 (sessionStorage).
+      tests/auth.rs: token + no header → 401, right header → 2xx, wrong →
+      401, reads open, register open, empty token → open.
 
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters
