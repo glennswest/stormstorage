@@ -84,7 +84,7 @@ stormview components feed on **:9093**.
   refuses. Once assembled, the volume is served (#2). An assembly never
   runs beside a re-leg or another assembly of the same volume.
 - **Leg move.** `POST /api/v1/volumes/{name}/move` works on an assembled
-  volume and runs these steps:
+  or degraded volume and runs these steps:
   1. create a new leg on the target node;
   2. attach it and add it as a RAID member on the head;
   3. a background task waits (up to 1 h) for that member to report
@@ -108,7 +108,9 @@ stormview components feed on **:9093**.
   node answers again. A failed attempt waits `recovery.cooldown_secs`
   before the next. A lost leg stays lost even if its node comes back, so a
   flapping node gives one re-leg. A lost **head** is reported and not
-  recovered, because the array lives there; re-head is #14. With
+  recovered, because the array lives there; re-head is #14. A head that
+  only stalled past the threshold keeps its leg `lost` and the volume
+  `degraded` after it answers again (#26). With
   `[replication] peers` set, only an instance with
   `[recovery] enabled = true` acts, because every peer sees the same loss.
 - **Consumer serving (#2).** A consumer attaches **the mirror**, never a
@@ -127,9 +129,24 @@ stormview components feed on **:9093**.
   publish on a node that is unreachable is recorded as `failed` with its
   message and an event; a failed export keeps the last coordinates it
   handed out. A node whose engine answers again after being unreachable
-  republishes every export it serves, published or failed. Names ending in `-mirror` are refused on create. Needs
-  stormblock ≥ v19.1.1 (dedicated arrays and pinning #150, NVMe-TCP attach
-  on the master #149).
+  republishes every export it serves, published or failed. Names ending
+  in `-mirror` are refused on create. Needs stormblock ≥ v19.1.1
+  (dedicated arrays and pinning #150, NVMe-TCP attach on the master
+  #149). An engine with stormblock #210 refuses an attach that names no
+  `host_nqn` unless it sets `[nvmeof] allow_any_host`. stormstorage does
+  not send one yet (#27), so on such an engine assembly, export and
+  re-leg fail.
+
+  Kubernetes claims on stormcos do not come through here: a PVC is the
+  built-in `stormblock` driver, where the kubelet clones a blank on the
+  pod's node and attaches it over ublk. CSI (stormblock-csi) is for
+  third-party drivers and foreign clusters (#36). Claims replicated across
+  servers are wanted (rustkube-node#68), and that path is re-leg (#1).
+
+  Unit and mock-engine tests cover re-leg, serving and assembly retry
+  (`tests/export.rs`). The live runs against real engines
+  (`scripts/e2e-releg.sh`, `scripts/e2e-export.sh`) have not passed yet:
+  they need a built stormblock in the build job (stormcentral#131).
 - **Delete.** Revokes the export first: it detaches the served volume and
   deletes it. The head's array refuses deletion while a volume is pinned
   to it, so if this fails on a reachable head, the record is kept and the
@@ -139,21 +156,30 @@ stormview components feed on **:9093**.
   flight. A leg on an unreachable node is recorded as an orphan to reap
   later. If a leg delete on a reachable node fails, the volume record is
   kept and the API returns 502.
-- **Peer replication.** Durable intent (volume records and self-registered
-  node configs) is pushed to every `[replication] peers` URL on each
+- **Peer replication.** Durable intent (volume records, self-registered
+  node configs and orphaned legs to reap) is pushed to every `[replication] peers` URL on each
   change. A peer applies a payload only if its revision is newer. Poll
   status is not replicated: each peer polls the engines itself.
 - **Persistence.** State is written to `<data_dir>/state.json`. With no
   `data_dir`, state lives only in memory and a warning is logged.
-- **UI and feeds.** The embedded UI at `/` shows nodes, pools and volumes
-  with leg states and assembly, plus a create form, a per-leg move button
-  and delete. `/api/v1/summary` serves a stormd dashboard card.
+- **UI and feeds.** The embedded UI at `/` shows:
+  - nodes, and pools (policy, slab with its drive, tier);
+  - node volumes with their slab and drive, RAID partners, consumer, kind
+    and in-use state;
+  - distributed volumes with leg states, assembly and export, plus
+    buttons to move a leg, publish/republish, assemble a pending volume
+    and delete;
+  - a create form and the event feed.
+
+  When a write gets a 401 it asks for the API token once and keeps it for
+  the tab. `/api/v1/summary` serves a stormd dashboard card.
   `/api/v1/components` and `/ws/components` serve the stormview feed,
   which stormconsole's `stormstorage` plugin and stormd/stormsh render.
 
 **Not done yet** (tracked in issues, see [Status](#status)): re-head when
-the head node is lost (#14), rebalancing, tier migration, native `/v1`
-replication, and HA state.
+the head node is lost (#14), reassembly after the head's engine restarts
+(#15), rebalancing (#30), IO-load placement (#31), tier migration (#32),
+native `/v1` replication (#33) and HA state (#34).
 
 ## Running
 
@@ -200,7 +226,7 @@ worked example.
 | `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
-| `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg attempt before the next one. |
+| `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
 | `[[nodes]]` | none | Static nodes, see below. Names must be unique. |
 | `[[pools]]` | none | Pools, see below. |
@@ -426,9 +452,11 @@ stormstorage is a stormcos **service component** and ships in goldens:
 
 stormd supervises it on the node with
 `--config /etc/stormstorage/stormstorage.toml`. The shipped config sets
-only `listen_addr = "0.0.0.0:9093"` and
-`data_dir = "/var/lib/stormstorage"`, so a stock node starts with no
-static nodes or pools. The health check is `/api/v1/health` on 9093, and
+`listen_addr = "0.0.0.0:9093"`, `data_dir = "/var/lib/stormstorage"` and
+`[local] token_file = "/run/stormblock/engine/api_token"`, the engine's
+minted token (stormcos `deploy/build-goldens.sh`). A stock node has no
+static nodes or pools. `[local]` is on by default, so it adopts its own
+engine, and that engine's cluster peers, once the engine answers. The health check is `/api/v1/health` on 9093, and
 the node gateway routes `storage.storm1.g8.lo` to `127.0.0.1:9093` (stormcos `deploy/manifests/85-routes.yaml`). The
 component entry lives in stormcentral's `components/stormcos.toml`.
 
@@ -463,8 +491,15 @@ snippet adds a `[process.ui]` block with `proxy` pointing at the UI and
 feed, peer replication) and 2 (leg wiring: assembled RAID1, leg move) are
 done. The open work:
 
-- #14: re-head when the head node is lost;
+- #1, #2: re-leg and consumer serving are in the code; their live runs
+  wait on stormcentral#131, and current engines need #27 (`host_nqn`);
+- #8: the test suites are in; a pass on a test machine is pending;
+- #14: re-head when the head node is lost; #15: reassemble after the
+  head's engine restarts; #26: a stalled head's leg stays lost;
+- #12: the engine token's default path and peer calls;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #28: each node volume's PV/PVC, waiting on rustkube-node#59;
-- phase 3 onward: rebalance and tier migration, native replication, HA.
+- #30–#36: rebalance, IO-load placement, tier migration, native
+  replication, HA state, forwarding announcements to stormfs, and the
+  stormblock-csi analysis.

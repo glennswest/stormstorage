@@ -12,7 +12,8 @@ style: |
 <!--
 Render: npx @marp-team/marp-cli docs/presentation.md          (HTML)
         npx @marp-team/marp-cli docs/presentation.md --pdf    (PDF)
-Written from the code at v0.3.0 (2026-09-24). Every claim points at a file;
+Written from the code at v0.3.0 (2026-09-24), refreshed from main on
+2026-09-28 (unreleased work since v0.3.0 is marked). Every claim points at a file;
 README.md has the full reference. Diagrams are ASCII because Marp does not
 render Mermaid.
 -->
@@ -97,9 +98,14 @@ The source is `src/registry.rs`, `src/placement.rs`,
 
 ## What it does today (1/2)
 
-- **Registry.** Nodes come from static `[[nodes]]` or from stormblock's
-  existing heartbeat, with no engine changes. The poller marks a node
-  unhealthy after `fail_threshold` (default 3) failed polls.
+- **Registry.** Nodes come from static `[[nodes]]`, from stormblock's
+  existing heartbeat (no engine changes), or are **adopted**: the engine
+  on this machine and its cluster peers (`[local]`, on by default). The
+  poller marks a node unhealthy after `fail_threshold` (default 3)
+  failed polls.
+- **Node inventory.** Every poll reads each engine's slabs (with their
+  drive) and volumes with where they live: slabs, drives, RAID partners,
+  rebuild state, kind, in use and consumer. Slabs show as pools.
 - **Pools.** A pool is a selector (tier, labels, names) plus default
   `replicas` and `rung`. Pools may overlap.
 - **Placement.** Takes one node per distinct failure domain at a rung.
@@ -127,6 +133,11 @@ The source is `src/registry.rs`, `src/placement.rs`,
 - **Consumer serving (#2).** Consumers attach the mirror: a volume pinned
   to the head's array, served over NVMe-TCP, published at create and
   revoked first on delete.
+- **Re-leg on node loss (#1)** and **assembly retry (#7)**: automatic,
+  through the leg-move sequence; `POST …/assemble` retries at once.
+- **Auth (#6).** With `[api] api_token` set, every write needs the token.
+- Kubernetes PVCs on stormcos are the **built-in stormblock driver** on
+  the pod's node, not this; CSI is for third-party drivers.
 - **Surfaces.** An embedded UI, a stormd card, a stormview feed (REST and
   WebSocket) and an event ring.
 
@@ -136,13 +147,13 @@ The source is `src/registry.rs`, `src/placement.rs`,
 
 | | Issue |
 |---|---|
-| Re-leg automatically when a node is lost | #1 (P1) |
-| Inbound API auth (`api_token` is outbound-only today) | #6 (P1) |
-| Retry a failed assembly | #7 (P2) |
-| Rebalance on pool watermarks; tier migration between pools | phase 3 |
-| Native `/v1` replication (prestage/fence/promote) | phase 4 |
-| HA state in StormKV/fastetcd | phase 5 |
-| Head failover; placement by IO load | design |
+| Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
+| Attach with the head's `host_nqn` (engines with stormblock #210) | #27 (P1) |
+| Re-head; reassemble after the head's engine restarts; stalled head | #14, #15, #26 |
+| Rebalance on pool watermarks; placement by IO load | #30, #31 (phase 3) |
+| Tier migration between pools | #32 (phase 3) |
+| Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |
+| HA state in StormKV/fastetcd | #34 (phase 5) |
 
 ---
 
@@ -154,8 +165,9 @@ file means all defaults. Logging is set with `RUST_LOG`.
 
 **Config:** `listen_addr` (default `0.0.0.0:9093`), `data_dir`,
 `[federation] rungs`, `[poll] interval_secs=15 fail_threshold=3`,
-`[api] api_token`, `[replication] peers`, `[[nodes]]`, `[[pools]]`.
-README.md lists every key with its default.
+`[api] api_token`, `[replication] peers`, `[local]` (adoption, engine
+token), `[recovery] enabled cooldown_secs=300 rebuild_timeout_secs=3600`,
+`[[nodes]]`, `[[pools]]`. README.md lists every key with its default.
 
 **Self-registration:** in the engine's config, set `[stormfs] enabled = true`,
 `metadata_url = "http://<host>:9093"` and `advertise_addr = "<engine>:9090"`.
@@ -164,14 +176,15 @@ README.md lists every key with its default.
 
 ## Interfaces: API on :9093
 
-Errors return `{error, code}` with HTTP 404/400/409/502.
+Errors return `{error, code}` with HTTP 404/400/409/502, and 401 on a
+write without the token when `api_token` is set.
 
 | Endpoints | Purpose |
 |---|---|
 | `/api/v1/health` | health |
-| `nodes`, `topology`, `pools` | registry |
+| `nodes`, `nodes/{name}/inventory`, `topology`, `pools` | registry, inventory |
 | `placement/plan` | dry-run placement |
-| `volumes[/{name}[/move]]` | volumes |
+| `volumes[/{name}[/move\|/export\|/assemble]]`, `orphans` | volumes |
 | `events`, `summary` | events, stormd card |
 | `components`, `/ws/components` | stormview feed |
 | `replicate`, `replication/status` | peers |
@@ -194,8 +207,8 @@ Errors return `{error, code}` with HTTP 404/400/409/502.
 
 - **Start.** stormd supervises it with
   `--config /etc/stormstorage/stormstorage.toml`. The shipped config sets
-  only `listen_addr` and `data_dir`, so a node starts with an empty
-  registry until engines register.
+  `listen_addr`, `data_dir` and `[local] token_file` (the engine's minted
+  token), and the node adopts its own engine once it answers.
 - **Health** is `GET /api/v1/health` on 9093. The gateway route is
   `storage.storm1.g8.lo`.
 - **Update.**
@@ -212,15 +225,18 @@ Errors return `{error, code}` with HTTP 404/400/409/502.
   - Phase 1 (v0.1.0): registry, pools, placement, volumes.
   - Phase 1.5 (v0.2.0): stormview feed, peer replication.
   - Phase 2 (v0.3.0): RAID1 assembly and leg move, proven on dev.
-- **18 unit tests** (placement, config, move targets, engine response
-  shapes, state persistence, components feed, events), run by
-  `sc-build`.
+- **Since v0.3.0 (unreleased):** local adoption and inventory (#9, #11),
+  auth (#6), re-leg (#1), serving (#2), assembly retry (#7), test
+  container (#8).
+- **Tests:** 35 unit, plus integration tests against mock engines
+  (`tests/adopt.rs`, `auth.rs`, `export.rs`), run by `sc-build`. The node
+  suites `/test short|medium|long` (`test/`) have not passed on a test
+  machine yet.
 - **Biggest risks today:**
-  - a lost node leaves its volumes degraded but still reported as
-    `assembled` (#1);
-  - the API is unauthenticated, including `/api/v1/replicate` (#6).
-- **Next:** #6, then #14 (re-head). With #2 done, stormfs and CSI can
-  consume mirrored volumes.
+  - re-leg and serving are not yet verified on live engines
+    (stormcentral#131);
+  - engines with stormblock #210 refuse attaches without `host_nqn` (#27).
+- **Next:** #27, the live runs, then #14 (re-head).
 
 Docs: `README.md` (reference), `docs/architecture.md` (design),
 `CLAUDE.md` (work plan).

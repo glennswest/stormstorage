@@ -36,7 +36,8 @@ across domains, movable across nodes.
 ## The stack
 
 ```
-            consumers: k8s (CSI/wander), VMs, micro-VMs, containers, apps
+  consumers: VMs, micro-VMs, containers, stormfs, apps; k8s PVCs are the
+             built-in stormblock driver on the pod's node (CSI: third-party)
                                    │
       ┌────────────────────────────┼──────────────────────────────┐
       │                            ▼                              │
@@ -163,7 +164,8 @@ the remote legs over NVMe-TCP and mirrors across them.
 DistVolume { name, size_bytes, pool, replicas, rung, created_at,
              assembly: single_leg | pending_engine_support | assembled | degraded,
              head: node?, array_id?, export: {state, volume_id, node, coordinates, …},
-             legs: [ {node, volume_id, state: created|failed, message,
+             replacing?, next_releg_after?, next_assemble_after?,
+             legs: [ {node, volume_id, state: created|failed|lost, message,
                       master_node, export: {nqn, traddr, trsvcid, nsid},
                       drive_uuid, member_uuid} ] }
 ```
@@ -191,8 +193,10 @@ optimization.
   cannot be deleted becomes an **orphan**, reaped when its node answers
   again. A failed attempt waits `recovery.cooldown_secs`. Once lost, a leg
   stays lost, so a flapping node is one re-leg. A lost **head** is
-  reported, not recovered (re-head, #14). With replication peers, exactly
-  one instance acts (`[recovery] enabled = true`).
+  reported, not recovered (re-head, #14); a head that only stalled keeps
+  its leg lost after it answers again (#26). With replication peers,
+  exactly one instance acts (`[recovery] enabled = true`). Unit-tested;
+  the live run (`scripts/e2e-releg.sh`) waits on stormcentral#131.
   ```
   LegState      created | failed | lost
   AssemblyState single_leg | pending_engine_support | assembled | degraded
@@ -211,7 +215,11 @@ optimization.
 - **Served to consumers** (*implemented, #2*): a volume pinned to the
   head's array, attached over NVMe-TCP — see *Consumer serving* below.
 - **Not implemented yet:**
-  - re-head when the head node is lost (#14).
+  - re-head when the head node is lost (#14);
+  - reassembly when the head's engine restarts (#15);
+  - attaching with the head's `host_nqn`, which engines with stormblock
+    #210 require on a closed node (#27). Until then assembly, export and
+    re-leg fail there unless the engine sets `allow_any_host`.
 - **Assembly retry** (*implemented, #7*): a failed assembly stays
   `pending_engine_support` and is retried by the reconciler once every
   leg's node is healthy, after `recovery.cooldown_secs`, or at once via
@@ -287,7 +295,7 @@ DistVolume.export  { state: none | published | failed,
   API-created arrays itself, so until re-head exists, a republish on a
   restarted head fails and says so.
 
-*Design, not implemented:* native `/v1` replication (prestage, fence/promote, epoch-carrying writes
+*Design, not implemented (#33):* native `/v1` replication (prestage, fence/promote, epoch-carrying writes
 — stormblock #5/#6/#7) is the *second* redundancy mechanism when its data
 path lands; stormstorage orchestrates either through one DistVolume
 model.
@@ -302,20 +310,20 @@ capacity ≥ size ∩ tier match), rung, replica count.
 3. Within each domain, **load-balance**: the highest free-capacity ratio
    wins. Domains are then taken emptiest-first. A node that reports no
    capacity scores 0 but stays eligible. *(Design: score by live IO load
-   as well, so hot nodes shed new legs. Not implemented.)*
+   as well, so hot nodes shed new legs. Not implemented, #31.)*
 4. Deterministic given equal inputs (testable); ties broken by name.
 
 A leg move's automatic target uses the same function over healthy nodes
 that carry no leg and sit in a domain distinct from every staying leg.
 
-**Rebalance** (phase 3, *design, not implemented*) reuses leg moves: when a new node/shelf/cluster
+**Rebalance** (phase 3, *design, not implemented*, #30) reuses leg moves: when a new node/shelf/cluster
 joins a pool, stormstorage proposes leg moves from the fullest domains to
 the emptiest until spread converges — same operation as failure
 recovery, driven by policy instead of alarm.
 
 ### Tiering across clusters
 
-*Design, not implemented.* Today a tier is only a node attribute that
+*Design, not implemented (#32).* Today a tier is only a node attribute that
 pool selectors and create requests filter on.
 
 A tier can be an entire cluster (testbed: 2.5" = high, 3.5" = medium,
@@ -328,7 +336,7 @@ when it lands), not a synchronous mirror member.
 
 *Design.* The stormstorage side exists (`GET /api/v1/nodes`,
 `POST /api/v1/volumes`). Consuming it is stormfs#64. Forwarding
-announcements to a stormfs endpoint is not implemented.
+announcements to a stormfs endpoint is not implemented (#35).
 
 stormfs v2 puts its namespace in an embedded sharded KV across fleet
 nodes and writes file data **directly** to stormblock volumes over
@@ -358,7 +366,7 @@ applies only newer revisions. Poll status deliberately does not replicate
 — each peer watches the engines itself, so freshness is local and peers
 cannot ping-pong overwrites. This is honest async last-writer-wins for
 state that is also rebuildable from the engines; consensus
-(StormKV/fastetcd) is the phase-5 ladder, same as stormblock's GEM (#44).
+(StormKV/fastetcd, #34) is the phase-5 ladder, same as stormblock's GEM (#44).
 State persists per-instance in `<data_dir>/state.json` (atomic writes).
 
 ## API (:9093)
@@ -372,13 +380,15 @@ GET  /api/v1/topology                 rungs + each node's label chain
 GET  /api/v1/pools                    policy, slab and tier pools with rollups
 POST /api/v1/placement/plan           dry-run: {size_bytes, pool?, replicas?, rung?, tier?} → legs
 GET|POST /api/v1/volumes              distributed volumes; create places, creates legs, assembles
-GET|DELETE /api/v1/volumes/{name}
+GET|DELETE /api/v1/volumes/{name}      delete revokes the export first
 POST /api/v1/volumes/{name}/move      {from: node, to?: node} — leg move
+POST /api/v1/volumes/{name}/export    publish / republish what consumers attach
+POST /api/v1/volumes/{name}/assemble  retry a pending assembly now
 GET  /api/v1/orphans                  leg volumes to reap when their node answers
 GET  /api/v1/events?since=
 GET  /api/v1/summary                  stormd RemoteSummary card
 GET  /api/v1/components               stormview feed (also WS /ws/components)
-POST /api/v1/replicate                peer push {revision, volumes, registered}
+POST /api/v1/replicate                peer push {revision, volumes, registered, orphans}
 GET  /api/v1/replication/status       {revision, peers}
 POST /api/v1/storage/register         stormblock-compatible self-registration
 POST /api/v1/storage/deregister
@@ -386,7 +396,7 @@ POST /api/v1/storage/deregister
 
 Error envelope `{error, code}` (family convention). `[api] api_token`,
 when set, is required as a bearer token on every inbound write (volume
-create/delete/move/export, replicate) and sent on outbound peer pushes.
+create/delete/move/export/assemble, replicate) and sent on outbound peer pushes.
 Reads, the placement dry run and stormblock self-registration stay open;
 register/deregister close once the heartbeat carries a token
 (stormblock#214). Empty = open (#6).
@@ -396,9 +406,13 @@ register/deregister close once the heartbeat carries a token
 stormd newer-UI extension, same contract as stormdrive: `[process.ui]`
 with `proxy` (embedded page at `/`, proxy-prefix aware) + `summary`
 (dashboard card); see `deploy/stormd-ui.toml`. The stormview feed also
-drives stormconsole's `stormstorage` plugin. Page: nodes table (health, capacity, labels), pools
-(policy, slab, tier), node volumes with their slab and owner, distributed
-volumes with leg states, create-volume form, event feed.
+drives stormconsole's `stormstorage` plugin. Page: nodes table (health,
+capacity, labels), pools (policy, slab with its drive, tier), node volumes
+(slab and drive, RAID partners, consumer, kind, in use), distributed
+volumes (leg states, assembly, export; move, publish, assemble, delete),
+create-volume form, event feed. A write answered 401 asks for the API
+token. stormd's proxy and stormconsole send no token yet (stormd#10,
+stormconsole#53).
 
 ## Phases
 
@@ -407,12 +421,16 @@ volumes with leg states, create-volume form, event feed.
    legs created per node via `/v1`, assembly `pending` on #73, UI, card.
 2. **Leg wiring** (*done, v0.3.0*, except the last item): exports per
    leg, head assembly via #73, leg move (add/rebuild/remove sequence).
-   Failure-driven re-leg on node loss is still open (#1).
-3. **Rebalance + tier migration**: policy-driven leg moves; pool
-   capacity watermarks.
-4. **Native replication**: orchestrate /v1 prestage/fence/promote when
-   the engine data path (#5/#6/#7) lands; async backup legs.
-5. **HA**: state to StormKV/fastetcd; multiple instances.
+   Failure-driven re-leg on node loss (#1), consumer serving (#2) and
+   assembly retry (#7) are in the code (unreleased, after v0.3.0); the
+   live runs of #1 and #2 wait on stormcentral#131.
+   Also since v0.3.0: local adoption and node inventory (#9, #11), inbound
+   API auth (#6), and the test container (#8).
+3. **Rebalance + tier migration** (#30, #32): policy-driven leg moves;
+   pool capacity watermarks; IO-load placement (#31).
+4. **Native replication** (#33): orchestrate /v1 prestage/fence/promote
+   when the engine data path (#5/#6/#7) lands; async backup legs.
+5. **HA** (#34): state to StormKV/fastetcd; multiple instances.
 
 ## What this asked of the neighbours
 
@@ -425,3 +443,9 @@ volumes with leg states, create-volume form, event feed.
   a private registry (issue filed on stormfs).
 - **stormdrive**: none — its labels/health flow through stormblock and
   (later) directly to stormstorage's load model.
+- Open asks, filed on the neighbours: stormblock#214 (a token on the
+  self-registration heartbeat), stormblock#215 (array create must refuse
+  drives already in an array), stormblock#218 (listing generation must
+  move on attach/detach and slab state), stormconsole#53 and stormd#10
+  (send the API token on feed actions and through the UI proxy),
+  rustkube-node#59 (PV/PVC per volume, #28).

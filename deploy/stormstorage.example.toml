@@ -41,13 +41,16 @@ enabled       = true
 engine_url    = "http://127.0.0.1:9090"
 cluster_peers = true
 # name       = "…"                      # default: the engine's own name
-# token_file = "/etc/stormblock/api_token"  # $STORMBLOCK_API_TOKEN wins
+# token_file = "/etc/stormblock/api_token"  # $STORMBLOCK_API_TOKEN wins;
+#                                            # stormcos ships /run/stormblock/engine/api_token
+# tier       = "high"                   # tier role for adopted nodes
 
-# Re-leg a distributed volume when a leg's node is lost (#1).
+# Re-leg a distributed volume when a leg's node is lost (#1), and retry a
+# failed assembly (#7).
 [recovery]
 # enabled = true           # default: on alone, off with [replication] peers —
 #                          # with peers, set true on exactly one instance
-cooldown_secs        = 300   # after a failed attempt
+cooldown_secs        = 300   # after a failed re-leg or assembly attempt
 rebuild_timeout_secs = 3600  # new member must be active by then
 
 [[pools]]
@@ -71,12 +74,13 @@ replicas = 2
 rung     = "cluster"
 
 [api]
-# Sent as a bearer token on outbound peer pushes only. It is not checked
-# on inbound requests yet (#6).
+# Set: every write (volume create/delete/move/export/assemble, replicate)
+# needs `Authorization: Bearer <token>`, and peer pushes send it, so peers
+# share one token. Reads and self-registration stay open. Empty: no auth (#6).
 api_token = ""
 
 # Peer stormstorage instances (one per site/cluster). Durable state
-# (volumes, registered nodes) replicates to peers on change,
+# (volumes, registered nodes, orphaned legs) replicates to peers on change,
 # last-writer-wins by revision; each peer polls the engines itself.
 [replication]
 peers = []          # e.g. ["http://siteb:9093"]

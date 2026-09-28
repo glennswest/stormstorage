@@ -87,14 +87,18 @@ keeps the rungs distinct.
       durable intent (volumes + registered nodes); poll status stays
       local per peer. Live-verified: create on peer A → visible on B <2s
 
-### Open: CSI relationship (Glenn, 2026-08-26)
-stormblock is the default-everywhere storage; rustkube and the rest of
-the Storm stack integrate it natively, which makes CSI the compatibility
-path for *foreign* Kubernetes, not the primary path. Still wanted, but
-stormblock-first. To look at: stormblock-csi targets a single engine's
-/v1 today — with stormstorage above the engines it should target
-stormstorage (fleet placement) instead. Needs an analysis pass over
-stormblock-csi before changing anything.
+### Open: CSI relationship (Glenn, 2026-08-26) — #36
+stormblock is the default-everywhere storage. **PVCs on stormcos are the
+built-in `stormblock` driver**: the kubelet clones the sealed blank of the
+claim's size class on the pod's node and attaches it over ublk, with no CSI
+(stormblock CLAUDE.md, rustkube `docs/storage.md`). CSI (stormblock-csi) is
+the compatibility path for third-party drivers and *foreign* Kubernetes:
+still wanted, not primary. To look at (#36): stormblock-csi targets a
+single engine's /v1 today; for a foreign multi-node cluster it could
+target stormstorage (fleet placement, mirrored volumes, #2's export)
+instead. Needs an analysis pass over stormblock-csi before changing
+anything. Replicated claims across servers (rustkube-node#68) go through
+re-leg (#1).
 
 ### Phase 2: Leg wiring — DONE (v0.3.0, 2026-08-28)
 stormblock now attaches `nvme-tcp://host:port/<nqn>?nsid=N` as a drive via
@@ -114,7 +118,9 @@ active → remove_member → drop old drive/volume.
 - [x] e2e on dev: 3 engines — create → assembled RAID1 on head (member
       uuids captured); move node-c → node-d converged, both members
       active, old volume gone
-- [ ] Node-loss handling: re-leg from surviving copies (#1, P1) — IN PROGRESS
+- [ ] Node-loss handling: re-leg from surviving copies (#1, P1) — code
+      done (999556f, 5deffda, c7d71f9); live run waits on
+      stormcentral#131, and current engines need #27 (host_nqn).
       Plan: `LegState::Lost` (was created, node now unhealthy) and
       `AssemblyState::Degraded`; a reconciler on every poll marks legs
       lost and starts one re-leg per volume through the move machinery.
@@ -135,7 +141,8 @@ active → remove_member → drop old drive/volume.
       pass. It now carries e2e-export's loaded-box fixes. Blocked like #2 on
       stormcentral#131 (no stormblock binary for an sc-build job, #25).
       When it passes: close #1 with the run, then the golden.
-- [ ] Consumer serving (#2) — IN PROGRESS (2026-09-27). Unblocked:
+- [ ] Consumer serving (#2) — code done; live e2e waits on
+      stormcentral#131 (#25) and #27. History (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
       pins a /v1 volume) and v19.1.1 (#149: `transport: nvme_tcp` attach).
       Plan: `DistVolume.export` {state none|published|failed, volume_id,
@@ -280,15 +287,24 @@ Containerfile goes; build.sh's static binary stays.
       401, reads open, register open, empty token → open.
 
 ### Phase 3: Rebalance + tier migration
-- [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters
-- [ ] Cross-cluster tier migration (pool → pool)
+- [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30)
+- [ ] Placement by live IO load, not only free ratio (#31)
+- [ ] Cross-cluster tier migration (pool → pool) (#32)
 
 ### Phase 4: Native replication
 - [ ] Orchestrate /v1 prestage/fence/promote when stormblock #5/#6/#7 data
-      path lands; async catchup legs for the backup tier
+      path lands; async catchup legs for the backup tier (#33)
 
 ### Phase 5: HA
-- [ ] State to StormKV/fastetcd; multiple stormstorage instances
+- [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34)
+
+### Other open
+- [ ] #12 engine token default path and peer calls; #14 re-head; #15
+      reassemble after head engine restart; #26 stalled head leg stays
+      lost; #27 host_nqn on attach; #28 PV/PVC; #35 forward announcements
+      to stormfs.
+- Docs refreshed from the code 2026-09-28 (README, docs/, example config,
+  this file); the promises without code are #30–#36.
 
 ## Rules recap
 - Conventional commits; changelog every change; docs ship with code.
