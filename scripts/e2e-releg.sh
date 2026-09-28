@@ -30,7 +30,7 @@ declare -A NVME=([a]=127.0.0.1:14421 [b]=127.0.0.1:14422 [c]=127.0.0.1:14423)
 declare -A PID=() TOKEN=()
 SSPID=
 
-say() { printf '\n== %s\n' "$*"; }
+say() { printf '\n== %s  [%s load %s]\n' "$*" "$(date -u +%H:%M:%S)" "$(cut -d' ' -f1-3 /proc/loadavg)"; }
 ok() { printf '  OK: %s\n' "$*"; }
 fail() {
     printf '\nFAIL: %s\n' "$*" >&2
@@ -105,7 +105,9 @@ data_dir = "$W/ss"
 
 [poll]
 interval_secs = 2
-fail_threshold = 2
+# A killed engine refuses connections at once, so 15 polls is still ~30 s
+# to detect; a live engine stalled on a loaded build box is not marked lost.
+fail_threshold = 15
 
 [local]
 enabled = false
@@ -130,6 +132,13 @@ done
 [ "$h" = 3 ] || fail "only $h of 3 nodes healthy"
 ok "3 nodes healthy"
 
+# /v1 volumes on an engine (the list is bare or under "volumes").
+eapi_count() {
+    local t=${TOKEN[$1]:-} a=()
+    [ -n "$t" ] && a=(-H "Authorization: Bearer $t")
+    curl -s "${a[@]}" "http://${MGMT[$1]}/v1/volumes" | py 'print(len(d if isinstance(d,list) else d.get("volumes",[])))'
+}
+
 say "create a 2-leg volume"
 curl -s -X POST "$SS/volumes" -H 'Content-Type: application/json' \
     -d '{"name":"rv","size_bytes":268435456,"replicas":2}' >"$W/create.json"
@@ -146,7 +155,7 @@ ok "assembled on $HEAD across [$LEGS], array $ARRAY; victim $VICTIM, spare $SPAR
 say "kill -9 $VICTIM"
 t0=$SECONDS
 kill -9 "${PID[$VICTIM]}"; wait "${PID[$VICTIM]}" 2>/dev/null || true; unset "PID[$VICTIM]"
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
     [ "$(vol | py 'print(d["assembly"])')" = degraded ] && break
     [ -n "$(vol | py 'print(d.get("replacing") or "")')" ] && break
     sleep 1
@@ -197,7 +206,7 @@ done
 [ -z "$(curl -s "$SS/orphans" | py 'print(" ".join(o["node"] for o in d["orphans"]))')" ] || fail "orphan not reaped"
 VT=${TOKEN[$VICTIM]}
 VAUTH=(); [ -n "$VT" ] && VAUTH=(-H "Authorization: Bearer $VT")
-left=$(curl -s "${VAUTH[@]}" "http://${MGMT[$VICTIM]}/v1/volumes" | py "print(sum(1 for v in d if v.get('id')=='$OLD_VID'))")
+left=$(curl -s "${VAUTH[@]}" "http://${MGMT[$VICTIM]}/v1/volumes" | py "print(sum(1 for v in (d if isinstance(d,list) else d.get('volumes',[])) if v.get('id')=='$OLD_VID'))")
 [ "$left" = 0 ] || fail "old leg $OLD_VID still on $VICTIM"
 ok "old leg volume gone from $VICTIM"
 sleep 6
@@ -206,7 +215,19 @@ n=$(curl -s "$SS/events" | py 'print(sum(1 for e in d["events"] if "rv: replacin
 ok "victim back: still exactly one re-leg"
 
 say "delete the volume"
-curl -s -X DELETE "$SS/volumes/rv" | py 'assert d.get("deleted")=="rv", d' || fail "delete"
-ok "deleted"
+if ! curl -s -X DELETE "$SS/volumes/rv" | py 'assert d.get("deleted")=="rv", d' 2>/dev/null; then
+    # A teardown the head did not answer keeps the record (502): retry once
+    # the head reads healthy again.
+    for _ in $(seq 1 300); do
+        [ "$(curl -s "$SS/nodes" | py "print(any(n['name']=='$HEAD' and n['status']['healthy'] for n in d['nodes']))")" = True ] && break
+        sleep 1
+    done
+    curl -s -X DELETE "$SS/volumes/rv" | py 'assert d.get("deleted")=="rv", d' || fail "delete (retry)"
+fi
+for n in "${!PID[@]}"; do
+    left=$(eapi_count "$n")
+    [ "$left" = 0 ] || fail "$n still has $left /v1 volumes"
+done
+ok "deleted; no leg left on any engine"
 echo
 echo "PASS: re-leg on node loss (#1)"

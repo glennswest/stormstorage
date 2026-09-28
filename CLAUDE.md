@@ -128,6 +128,13 @@ active → remove_member → drop old drive/volume.
       (stormblock#149, v19.1.1). Verify with unit tests of the decisions
       and `test/e2e-releg.sh` (3 engines on dev via sc-build: create 2-leg,
       stop non-head, re-leg converges, restart reaps the orphan).
+      **Status 2026-09-28:** code, unit tests and docs done (999556f,
+      5deffda, c7d71f9). The re-leg itself converged on real engines inside
+      the #2 e2e (b64c3ee run: `b → c (node lost)`, cleanup pending,
+      republished unchanged), but `scripts/e2e-releg.sh` has no recorded
+      pass. It now carries e2e-export's loaded-box fixes. Blocked like #2 on
+      stormcentral#131 (no stormblock binary for an sc-build job, #25).
+      When it passes: close #1 with the run, then the golden.
 - [ ] Consumer serving (#2) — IN PROGRESS (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
       pins a /v1 volume) and v19.1.1 (#149: `transport: nvme_tcp` attach).

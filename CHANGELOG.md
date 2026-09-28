@@ -5,6 +5,7 @@
 
 ### 2026-09-28
 - **fix(test):** e2e-export and e2e-releg never compile stormblock: a fat-LTO stormblock build held a dev build slot for over an hour. They require `STORMBLOCK_BIN` (a built stormblock, from its golden bin once sc-build jobs can reach one: stormcentral#131), stop at once without it, and print the stormblock version they ran against (#25).
+- **fix(test):** e2e-releg gets e2e-export's fixes for a loaded build box: `fail_threshold = 15` (was 2, so a head stalled for 4 s read as lost; a killed engine still reads lost in ~30 s), steps stamped with time and load, a `/v1/volumes` list read bare or under `volumes`, and a delete the head did not answer retried once it is healthy. After delete it checks that no engine still holds a leg (#1).
 
 ### 2026-09-27
 - **fix(test):** e2e-export `fail_threshold = 15`: at load 48–67 on 16 cores a live head missed 5 polls and read as lost; a killed engine still fails fast (connection refused), so detection stays ~30 s. The head-stays-degraded gap it exposed is #26 (#2).
