@@ -31,10 +31,19 @@ data_dir = "$W/data"
 [local]
 enabled = false
 CFG
-target/debug/stormstorage --config "$W/ss.toml" >"$W/ss.log" 2>&1 &
+# sc-build keeps cargo's target dir outside the checkout: ask cargo.
+TDIR=$(cargo metadata --format-version 1 --no-deps | sed 's/.*"target_directory":"\([^"]*\)".*/\1/')
+[ -x "$TDIR/debug/stormstorage" ] || fail "no stormstorage in $TDIR/debug"
+"$TDIR/debug/stormstorage" --config "$W/ss.toml" >"$W/ss.log" 2>&1 &
 SS=$!
 trap 'kill $SS 2>/dev/null || true' EXIT
-for _ in $(seq 1 100); do curl -s -o /dev/null http://127.0.0.1:19093/api/v1/health && break; sleep 0.1; done
+up=
+for _ in $(seq 1 300); do
+    curl -s -o /dev/null http://127.0.0.1:19093/api/v1/health && { up=1; break; }
+    kill -0 $SS 2>/dev/null || fail "stormstorage exited: $(cat "$W/ss.log")"
+    sleep 0.1
+done
+[ -n "$up" ] || fail "stormstorage not answering after 30 s: $(cat "$W/ss.log")"
 
 set +e
 STORM_STORMSTORAGE_URL=http://127.0.0.1:19093 STORM_RUN_ID=check STORM_RESULTS="$W/r1" "$T" short >"$W/short.out"
