@@ -1,0 +1,19 @@
+[package]
+name = "stormstorage-test"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "stormstorage's test container: short, medium and long suites, per stormcentral docs/test-standard.md (#8)."
+publish = false
+
+# A workspace member, so the one Cargo.lock pins it and sc-build compiles it.
+# It drives the stormstorage running on the node through its REST API, the
+# way anything on the fleet does; no library code of the component is used.
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[[bin]]
+name = "stormstorage-test"
+path = "src/main.rs"

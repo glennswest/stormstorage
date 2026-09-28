@@ -1,0 +1,64 @@
+# stormstorage-test — how stormcentral runs stormstorage's tests on a test
+# machine, per stormcentral docs/test-standard.md (#8).
+#
+# Test metadata (what the runner matches against the machine):
+#   suites:   short (< 2 min), medium (< 30 min), long (the night window)
+#   requires: []            (no hardware of its own: it drives the node's
+#                            stormstorage, which drives the node's stormblock)
+#             raid1-across-nodes needs 2 healthy storage nodes registered with
+#             that stormstorage; with fewer it reports skip, never pass.
+#   api:      none          (no ServiceAccount token; nothing is created in the
+#                            cluster)
+#   node:     STORM_NODE:9093, the node's stormstorage. Reads are open. Writes
+#             create volumes named t-<run id>-… (64 MiB, one leg unless the
+#             test says otherwise) on the node's engine(s) and delete them, on
+#             success and on failure. With the node's [api] api_token set,
+#             writes need STORM_STORMSTORAGE_TOKEN (a Secret, when the runner
+#             has the token); without it they are skips.
+#             Not answering is exit 2.
+#   external: none
+#   resources: long sizes its waves from the healthy nodes' free bytes: one
+#             64 MiB volume per 1.25 GiB free, 4 to 64, 8 created at a time;
+#             STORM_WAVE_MAX caps it.
+#
+# The runner creates the namespace test-stormstorage-<suite>-<run id>, fills
+# in NAMESPACE / RUN_ID / NODE / SUITE / TIMEOUT / TIMEOUT_PLUS_MARGIN /
+# COMMIT / IMAGE, applies this, waits for the Job, collects /results with the
+# logs, and deletes the namespace.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stormstorage-test
+  namespace: ${NAMESPACE}
+  labels: { storm.io/test-run: "${RUN_ID}" }
+spec:
+  backoffLimit: 0            # a retry would hide the finding
+  activeDeadlineSeconds: ${TIMEOUT_PLUS_MARGIN}
+  template:
+    metadata:
+      labels: { storm.io/test-run: "${RUN_ID}" }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: stormstorage-test
+          image: ${IMAGE}
+          command: ["/test", "${SUITE}"]
+          env:
+            - { name: STORM_NAMESPACE, value: "${NAMESPACE}" }
+            - { name: STORM_RUN_ID, value: "${RUN_ID}" }
+            - { name: STORM_NODE, value: "${NODE}" }
+            - { name: STORM_SUITE, value: "${SUITE}" }
+            - { name: STORM_TIMEOUT, value: "${TIMEOUT}" }
+            - { name: STORM_COMPONENT, value: stormstorage }
+            - { name: STORM_COMMIT, value: "${COMMIT}" }
+          volumeMounts:
+            - { name: results, mountPath: /results }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - { name: results, emptyDir: {} }

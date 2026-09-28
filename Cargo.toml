@@ -6,6 +6,12 @@ rust-version = "1.75"
 description = "Storage control plane across Storm nodes and clusters — registry, pools, placement, distributed volumes, tiering"
 license = "MIT"
 
+# The test container's crate (test/, #8) is a member so the one Cargo.lock
+# pins it and `cargo build`/`cargo test` compile it.
+[workspace]
+members = [".", "test"]
+default-members = [".", "test"]
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }

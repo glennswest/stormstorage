@@ -238,7 +238,7 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.
 
-### Test suites (#8) — IN PROGRESS 2026-09-28
+### Test suites (#8) — code done 2026-09-28; verifying on dev
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`

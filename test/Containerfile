@@ -1,0 +1,16 @@
+# stormstorage-test — stormstorage's test image, per stormcentral
+# docs/test-standard.md (#8). One image for all three suites: the Job runs
+# `/test short|medium|long`.
+#
+# test/build.sh builds the static (musl) test binary on the build box and
+# stages it; this packages it. The test drives the stormstorage running on
+# the node under test (STORM_NODE:9093) through its REST API: no
+# privileges, no devices, no tools, no stormblock binary of its own.
+#
+# The build context is the repo root (the standard's); the binary is taken
+# from test/.stage/, where test/build.sh put it.
+FROM scratch
+ARG COMMIT=unknown
+LABEL storm.io/test-of="stormstorage" storm.io/test-commit="${COMMIT}"
+COPY test/.stage/stormstorage-test /test
+ENTRYPOINT ["/test"]

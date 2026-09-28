@@ -29,3 +29,6 @@ temp/
 # Local claude state
 .claude/settings.local.json
 .claude/*.lock
+
+# test/build.sh stages the test binary here (#8)
+test/.stage/

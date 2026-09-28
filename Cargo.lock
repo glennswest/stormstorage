@@ -1262,6 +1262,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "stormstorage-test"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "stormview"
 version = "0.1.0"
 source = "git+https://github.com/glennswest/stormview?branch=main#81ef1d2875d9c8247cb1b41fd7db2985bdf2ce60"

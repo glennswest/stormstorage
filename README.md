@@ -382,6 +382,38 @@ starting anything, and they print the stormblock version they ran
 against. An sc-build job has no stormblock binary to point at until
 stormblock ships as a golden bin a job can reach (stormcentral#131).
 
+### Test suites on a node (the stormcos test standard)
+
+`test/` is stormstorage's test container, per stormcentral
+`docs/test-standard.md` (#8): one static binary, `/test short|medium|long`,
+run by stormcentral as a Job (`test/stormstorage-test.yaml`) on every test
+machine. It drives the **stormstorage running on the node**
+(`STORM_NODE:9093`) through its REST API. It needs no privileges and no
+devices, and carries no stormblock of its own.
+
+| suite | budget | what it checks |
+|---|---|---|
+| `short` | < 2 min | the API answers; a healthy storage node (the adopted local engine); slab pools and the feed; a single-leg volume created, served as its leg, and deleted |
+| `medium` | < 30 min | the short checks, plus: the leg is a real volume on the engine and goes on delete; placement dry run (fits, and an explained refusal); refusals (duplicate 409, reserved `-mirror`, unplaceable replicas leave nothing); republish unchanged; assemble and move refused on a single leg; 404s; auth (open, or closed to writes without the token); RAID1 across two nodes (skip with fewer); events; no orphans; cleanup |
+| `long` | the night window | waves of 64 MiB volumes sized from the healthy nodes' free bytes (4 to 64, `STORM_WAVE_MAX` caps), 8 at a time: create p50/max per wave, then delete and settle, then count what is left (volumes, engine legs, orphans). A wave with errors, a residue, or a p50 over twice wave 1's fails; `trend` names the first regressed wave |
+
+Every volume is named `t-<run id>-…` and is deleted on success, on failure
+and on timeout. With the node's `[api] api_token` set, writes need
+`STORM_STORMSTORAGE_TOKEN`; without it they are skips, never passes.
+Results are JSON lines on stdout and in `/results/results.jsonl`. Exit
+codes: 0 all passed, 1 a test failed, 2 the run could not happen (no
+`STORM_NODE`, or stormstorage not answering).
+
+`test/build.sh` builds only the test crate (static musl) and stages it in
+`test/.stage/`. `STAGE_ONLY=1` stops there; otherwise it also runs
+`podman build` with `test/Containerfile` (`FROM scratch`). When
+stormcentral#121 moves tests to golden bins, the Containerfile goes and the
+staged binary stays. Against any instance:
+
+```
+STORM_STORMSTORAGE_URL=http://host:9093 STORM_RESULTS=tmp/results test/.stage/stormstorage-test short
+```
+
 ## How it ships
 
 stormstorage is a stormcos **service component** and ships in goldens:
