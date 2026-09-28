@@ -238,6 +238,26 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.
 
+### Test suites (#8) — IN PROGRESS 2026-09-28
+Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
+workspace member crate `stormstorage-test` (static musl `/test`),
+`test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
+FROM scratch, `test/stormstorage-test.yaml` (Job + metadata). The suites
+drive the **node's own stormstorage** at `STORM_NODE:9093` through its API
+(no stormblock binary in the image: #25). Writes use
+`STORM_STORMSTORAGE_TOKEN` when the node's `api_token` is set, else they
+are skips. Volumes are named `t-<run id>-…`, 64 MiB, deleted on success
+and failure. short: up, local engine adopted, pools + feed, single-leg
+create→published→delete. medium: + dry-run placement, refusals (dup,
+`-mirror`, too many replicas leaves no leg), leg on the engine and gone
+after delete (inventory), republish unchanged, assemble/move refused on
+one node, 404s, auth guard, RAID1 when ≥2 healthy storage nodes
+(`requires: storage-nodes>=2`, else skip). long: waves sized from free
+capacity (STORM_WAVE_MAX caps), create latency per wave, residue after
+each (volumes, engine legs, orphans); a slower wave or growing residue
+fails. When stormcentral#121 lands (golden bins, no podman) the
+Containerfile goes; build.sh's static binary stays.
+
 ### Open: security
 - [x] Inbound API auth (#6), 2026-09-28. Register/deregister stay open
       until stormblock#214; then close them too. Plan: a middleware on the router. With
