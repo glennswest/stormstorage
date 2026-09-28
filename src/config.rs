@@ -185,8 +185,11 @@ impl Default for PollConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApiConfig {
-    /// Bearer token sent on outbound replication pushes to peers. Not
-    /// checked on inbound requests yet — the API is unauthenticated (#6).
+    /// Bearer token. Non-empty: every inbound write (volume create,
+    /// delete, move, export; replicate) needs `Authorization: Bearer
+    /// <token>`, and outbound replication pushes send it — peers share one
+    /// token. Reads and stormblock self-registration stay open. Empty = no
+    /// auth (#6).
     pub api_token: String,
 }
 

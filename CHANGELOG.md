@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-28
+- **feat:** Inbound API auth (#6). With `[api] api_token` set, volume create, delete, move and export and `POST /api/v1/replicate` need `Authorization: Bearer <token>`, else 401 `{code: "unauthorized"}`. The token is compared in constant time. Reads, the placement dry run and `storage/register|deregister` stay open: stormblock's heartbeat sends no token yet (stormblock#214). An empty token (the default) leaves the API open. The embedded UI asks for the token on a 401. `tests/auth.rs`.
 - **fix(test):** e2e-export and e2e-releg never compile stormblock: a fat-LTO stormblock build held a dev build slot for over an hour. They require `STORMBLOCK_BIN` (a built stormblock, from its golden bin once sc-build jobs can reach one: stormcentral#131), stop at once without it, and print the stormblock version they ran against (#25).
 - **fix(test):** e2e-releg gets e2e-export's fixes for a loaded build box: `fail_threshold = 15` (was 2, so a head stalled for 4 s read as lost; a killed engine still reads lost in ~30 s), steps stamped with time and load, a `/v1/volumes` list read bare or under `volumes`, and a delete the head did not answer retried once it is healthy. After delete it checks that no engine still holds a leg (#1).
 

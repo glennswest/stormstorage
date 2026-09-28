@@ -377,9 +377,12 @@ POST /api/v1/storage/register         stormblock-compatible self-registration
 POST /api/v1/storage/deregister
 ```
 
-Error envelope `{error, code}` (family convention). `[api] api_token` is
-in the config, but today it is only sent on outbound peer pushes. No
-inbound request is checked (#6).
+Error envelope `{error, code}` (family convention). `[api] api_token`,
+when set, is required as a bearer token on every inbound write (volume
+create/delete/move/export, replicate) and sent on outbound peer pushes.
+Reads, the placement dry run and stormblock self-registration stay open;
+register/deregister close once the heartbeat carries a token
+(stormblock#214). Empty = open (#6).
 
 ## UI
 

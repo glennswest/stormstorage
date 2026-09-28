@@ -1,6 +1,8 @@
 //! REST API on :9093, the embedded UI, the stormd card, and the
 //! stormblock-compatible self-registration endpoints.
 
+pub mod auth;
+
 use crate::config::{Config, NodeConfig, PoolConfig};
 use crate::engine::Engine;
 use crate::events::{EventLog, Severity};
@@ -113,6 +115,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/summary", get(summary))
         .route("/api/v1/storage/register", post(register_node))
         .route("/api/v1/storage/deregister", post(deregister_node))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_token))
         .with_state(state)
 }
 

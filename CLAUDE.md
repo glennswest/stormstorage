@@ -216,9 +216,8 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
   fails until that is fixed.
 
 ### Open: security
-- [ ] Inbound API auth. `api.api_token` is outbound-only, and
-      `/api/v1/replicate` accepts any payload (#6).
-      IN PROGRESS 2026-09-28. Plan: a middleware on the router. With
+- [x] Inbound API auth (#6), 2026-09-28. Register/deregister stay open
+      until stormblock#214; then close them too. Plan: a middleware on the router. With
       `api.api_token` set, every mutation (create/delete/move/export
       volume, replicate) needs `Authorization: Bearer <token>` → else 401
       `{error, code: "unauthorized"}`, constant-time compare. Reads (GET,

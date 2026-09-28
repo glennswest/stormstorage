@@ -84,7 +84,16 @@ const $ = id => document.getElementById(id);
 function human(b){ if(!b) return '0'; const u=['B','KiB','MiB','GiB','TiB','PiB']; let i=0;
   while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b>=100||i===0?0:1)+' '+u[i]; }
 function chip(t,c){return `<span class="chip ${c}">${t}</span>`}
-async function api(p,o){ const r=await fetch(API+p,o);
+// [api] api_token (#6): a write answered 401 asks for the token once and
+// keeps it for this tab.
+function tok(){try{return sessionStorage.getItem('ss-token')||''}catch(e){return ''}}
+async function call(p,o){ o=o||{}; const h=()=>{const t=tok(); return Object.assign({},o.headers||{},t?{Authorization:'Bearer '+t}:{})};
+  let r=await fetch(API+p,Object.assign({},o,{headers:h()}));
+  if(r.status===401){ const t=prompt('This stormstorage needs its API token for changes:');
+    if(t){ try{sessionStorage.setItem('ss-token',t.trim())}catch(e){}
+      r=await fetch(API+p,Object.assign({},o,{headers:h()})); } }
+  return r; }
+async function api(p,o){ const r=await call(p,o);
   if(!r.ok){ let msg=r.status+' '+r.statusText; try{const j=await r.json(); if(j.error)msg=j.error}catch(e){}
     throw new Error(msg); } return r.json(); }
 function post(p,b){return api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})}
@@ -107,7 +116,7 @@ const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=`<button title="publish 
   if(e.state==='failed')return `${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
   return x.assembly==='pending_engine_support'?'':b;};
 window.delVol=(n)=>{ if(confirm(`Delete volume ${n} and all its legs?`))
-  fetch(API+`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
+  call(`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
     .then(r=>{ if(!r.ok) return r.json().then(j=>{throw new Error(j.error||r.status)}); refresh(); })
     .catch(fail); };
 async function refresh(){

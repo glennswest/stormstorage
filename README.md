@@ -169,7 +169,7 @@ worked example.
 | `[federation] rungs` | `["site","building","room","row","rack","multicluster","cluster","node"]` | Top-down rung order for failure domains. Every pool's `rung` must be in it. |
 | `[poll] interval_secs` | `15` | Seconds between engine polls. Must be non-zero. |
 | `[poll] fail_threshold` | `3` | Consecutive failed polls before a node is marked unhealthy. |
-| `[api] api_token` | `""` | Sent as a bearer token on **outbound** replication pushes to peers. It is **not checked on inbound requests** today: the API has no auth (#6). |
+| `[api] api_token` | `""` | Set: every inbound write needs `Authorization: Bearer <token>` (see *Auth* under API), and outbound replication pushes send it, so replicating peers share one token. Empty: no auth. |
 | `[replication] peers` | `[]` | Base URLs of peer instances, e.g. `["http://siteb:9093"]`. |
 | `[local] enabled` | `true` | Adopt the engine on this machine, see [Local adoption](#local-adoption). |
 | `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
@@ -248,8 +248,21 @@ want a node whose `engine_url` other engines can reach (`[[nodes]]`).
 
 ## API (:9093)
 
-Errors return `{"error": "...", "code": "not_found|bad_request|conflict|engine"}`
-with HTTP 404/400/409/502.
+Errors return `{"error": "...", "code": "not_found|bad_request|conflict|engine|unauthorized"}`
+with HTTP 404/400/409/502/401.
+
+**Auth (#6).** With `[api] api_token` set, these need
+`Authorization: Bearer <token>`, else 401 `unauthorized`: volume create,
+delete, move and export, and `POST /api/v1/replicate`. Open with or
+without a token:
+- reads (every GET, `/ws/components`) and the `placement/plan` dry run.
+  Anyone who can reach the port may look (the family posture).
+- `storage/register` and `storage/deregister`: stormblock's heartbeat sends
+  no token yet (stormblock#214).
+
+The embedded UI asks for the token the first time a change gets a 401 and
+keeps it for the tab. stormd's proxy and stormconsole send no token, so
+with a token set, their Delete/Publish actions get 401.
 
 | Method | Path | What |
 |---|---|---|
@@ -396,7 +409,8 @@ feed, peer replication) and 2 (leg wiring: assembled RAID1, leg move) are
 done. The open work:
 
 - #14: re-head when the head node is lost;
-- #6: inbound API auth;
+- stormblock#214: a token on self-registration, so register/deregister
+  can close too (#6);
 - #7: retrying a failed assembly;
 - #9 follow-ups waiting on other components: the drive under each slab and
   RAID/replica partners per volume (stormblock#136), each volume's consumer
