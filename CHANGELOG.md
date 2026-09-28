@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-09-27
+- **fix(test):** e2e-export `fail_threshold = 15`: at load 48–67 on 16 cores a live head missed 5 polls and read as lost; a killed engine still fails fast (connection refused), so detection stays ~30 s. The head-stays-degraded gap it exposed is #26 (#2).
 - **test:** e2e-export stamps each step with time and load, probes the head's and another engine's latency during delete, and retries a delete the head did not answer (the documented 502 contract) once the head is healthy again (#2).
 - **fix:** A publish on an unreachable node was returned but not recorded: the create response showed `export.state: none` with no message or event. It is now `failed` with the reason and an event, keeps the last coordinates, and a node that answers again retries its failed exports as well as republishing its published ones. `coordinates_changed` compares against the last coordinates handed out, published or not (#2, found by the e2e).
 - **fix(test):** e2e-export matches the victim against whole leg names; victim `b` matched the "b" in "assembled" and the converged re-leg read as failed (#2).
