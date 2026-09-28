@@ -253,6 +253,10 @@ stormstorage of the commit (no nodes: api-up pass, node checks fail, exit
 machine: C2NR0Q2 (the only one) last install failed and its :9093 refused.
 Queued `stormcentral test run stormstorage short` = run d3d347cb97. When a
 run there passes short (and medium), close #8 with it.
+2026-09-28 later: blocked outside this repo. C2NR0Q2 is down (stormcos#165,
+stormcentral#63), and on 11.50 stormstorage did not answer on the node at
+all (stormcos#139: neither :9093 nor its stormd :9193). #8 proposed after
+stormcos#139. No code change pending.
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
