@@ -107,16 +107,21 @@ pub async fn poll_once(state: &Arc<AppState>) {
     state.persist().await;
 }
 
-/// Read one node's slabs, volumes and slot owners, and place the volumes.
+/// Read one node's slabs and volumes (with their placement; slot owners
+/// only from an older engine), and place the volumes.
 /// A failed read keeps the previous inventory and records why.
 async fn refresh_inventory(state: &Arc<AppState>, name: &str, engine: &Engine) {
     let result: anyhow::Result<NodeInventory> = async {
         let slabs = engine.list_slabs().await?;
         let volumes = engine.list_engine_volumes().await?;
         let mut owners: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for slab in &slabs {
-            for vid in engine.slab_volume_ids(&slab.id).await? {
-                owners.entry(vid).or_default().insert(slab.id.clone());
+        // The slot scan is only for engines that report no placement
+        // (older than stormblock v17.1.0).
+        if inventory::needs_slot_scan(&volumes) {
+            for slab in &slabs {
+                for vid in engine.slab_volume_ids(&slab.id).await? {
+                    owners.entry(vid).or_default().insert(slab.id.clone());
+                }
             }
         }
         let volumes = inventory::place(&slabs, volumes, &owners);

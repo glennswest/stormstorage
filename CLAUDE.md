@@ -209,7 +209,7 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
       with volumes, `nvol:<node>/<id>` with owner; summary + UI.
 - [x] tests/adopt.rs: two mock stormblocks (local + cluster peer) → adopt,
       place, pools, feed. sc-build passes.
-- [ ] #11 follow-ups — IN PROGRESS 2026-09-28. stormblock#136 (v17.1.0)
+- [x] #11 follow-ups (except PV/PVC) — done 2026-09-28. stormblock#136 (v17.1.0)
       and #138 (v18.1.0) landed; rustkube-node#59 (PV/PVC) is still open.
       Plan: poll `GET /api/v1/volumes?placement=true` (full read each
       poll; `?since` is not used because attach/detach and slab state do

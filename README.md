@@ -27,14 +27,25 @@ stormview components feed on **:9093**.
   create formats a slab through the RAID and a loaded engine can take
   far longer than a poll should wait.
 - **Node inventory.** Each poll also reads every reachable engine's slabs
-  (`GET /api/v1/slabs`), all its volumes (`GET /api/v1/volumes`) and each
-  slab's slot table (`GET /api/v1/slabs/{id}/slots`), and places every
-  volume on the slab(s) it lives on: the slabs where it owns slots; for a
-  volume owning none (a fresh clone), its parent's; failing that, the only
-  slab of its role on the node. Anything still ambiguous is reported as
-  `unknown` rather than guessed (stormblock#136 will report placement
-  directly). Inventory is observed state: in memory only, never replicated,
-  and dropped when the node goes unhealthy.
+  (`GET /api/v1/slabs`, each naming its `drive`: serial, WWN, model, path)
+  and all its volumes (`GET /api/v1/volumes?placement=true`). Each volume
+  arrives with where it lives (stormblock ≥ v17.1.0, stormblock#136):
+  `placement` names its slabs with their drive, node and state
+  (`ok`/`failed`/`quarantined`/`draining`/`missing`), its drives, its legs
+  (expected, missing, unreadable), `rebuild`, and for drive-level RAID each
+  partner with its drive, node and state. From v18.1.0 (stormblock#138) it
+  also says its `kind` (`volume`, `golden`, `blank`, `media`, `snapshot`,
+  `template`), whether it is `in_use`, its `attachments` and its
+  `consumer` (the owner, e.g. a PVC, else a mount). The volume is placed on
+  the slabs its placement names (`placed_by: engine`). For an older engine
+  that sends no placement, each slab's slot table
+  (`GET /api/v1/slabs/{id}/slots`) is read instead: the slabs where the
+  volume owns slots, else its parent's (a fresh clone), else the only slab
+  of its role, else `unknown`, never guessed. The listing is read in full
+  every poll. `?since` is not used, because attaches and slab state changes
+  do not bump the engine's generation. Inventory is observed state: in
+  memory only, never replicated, and dropped when the node goes
+  unhealthy.
 - **Pools.** Three kinds, all in `GET /api/v1/pools`:
   - `slab`: every slab of every node is a pool, with its tier, role,
     failure domain, total/free/allocated bytes and its volume count;
@@ -269,7 +280,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/`, `/ui`, `/ui/` | Embedded UI. |
 | GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. |
 | GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered` or `local`). |
-| GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume with `slabs` and `placed_by` (`slots`, `parent`, `role`, `unknown`); `fetched_at`, `error`. |
+| GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume as the engine reports it (with `placement`, `kind`, `in_use`, `attachments`, `consumer` when the engine sends them) plus `slabs` and `placed_by` (`engine`, else `slots`, `parent`, `role`, `unknown`); each slab with its `drive`; `fetched_at`, `error`. |
 | GET | `/api/v1/topology` | Rungs, plus each node's label chain, tier and health. |
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
@@ -412,7 +423,5 @@ done. The open work:
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #7: retrying a failed assembly;
-- #9 follow-ups waiting on other components: the drive under each slab and
-  RAID/replica partners per volume (stormblock#136), each volume's consumer
-  beyond its `owner` (stormblock#138), PV/PVC (rustkube-node#59);
+- #11: each node volume's PV/PVC, waiting on rustkube-node#59;
 - phase 3 onward: rebalance and tier migration, native replication, HA.

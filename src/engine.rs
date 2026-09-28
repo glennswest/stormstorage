@@ -454,11 +454,12 @@ impl Engine {
             .collect())
     }
 
-    /// GET /api/v1/volumes — every volume the engine holds (the /v1 list
-    /// is only what was created through /v1).
+    /// GET /api/v1/volumes?placement=true — every volume the engine holds
+    /// (the /v1 list is only what was created through /v1), each with where
+    /// it lives (stormblock#136; an older engine ignores the query).
     pub async fn list_engine_volumes(&self) -> anyhow::Result<Vec<crate::inventory::EngineVolume>> {
         Ok(self
-            .get_items("/api/v1/volumes")
+            .get_items("/api/v1/volumes?placement=true")
             .await?
             .into_iter()
             .filter_map(|v| serde_json::from_value(v).ok())

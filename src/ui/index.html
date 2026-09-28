@@ -59,7 +59,7 @@ form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
 
 <h2>Node volumes</h2>
 <div class="wrap"><table>
-<thead><tr><th>Volume</th><th>Node</th><th>Size / Used</th><th>Role</th><th>Slab</th><th>Owner</th></tr></thead>
+<thead><tr><th>Volume</th><th>Node</th><th>Size / Used</th><th>Role</th><th>Slab / Drive</th><th>Partners</th><th>Consumer</th></tr></thead>
 <tbody id="nvols"></tbody>
 </table></div>
 
@@ -133,7 +133,8 @@ async function refresh(){
       <td>${human(x.status.free_bytes)} / ${human(x.status.total_bytes)}</td>
       <td>${x.status.volumes||0}</td></tr>`).join('')
       ||'<tr><td colspan="7" class="dim">no nodes — no stormblock on this machine answered; add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>';
-    const what=x=>x.kind==='slab'?`${x.node} · ${x.role} · tier ${x.tier} · ${x.domain}`
+    const drv=d=>d?(d.serial||d.wwn||d.path||'?'):'';
+    const what=x=>x.kind==='slab'?`${x.node} · ${x.role} · tier ${x.tier} · ${x.drive?'drive '+drv(x.drive):x.domain}`
       :x.kind==='tier'?`${x.slabs.length} slab(s) on ${x.nodes.join(', ')}`
       :`replicas ${x.replicas} at ${x.rung} · ${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}`;
     $('pools').innerHTML=p.pools.map(x=>`<tr>
@@ -145,11 +146,13 @@ async function refresh(){
     const inv=await Promise.all(n.nodes.map(x=>api(`api/v1/nodes/${encodeURIComponent(x.name)}/inventory`)
       .then(i=>({node:x.name,i})).catch(()=>({node:x.name,i:{volumes:[]}}))));
     $('nvols').innerHTML=inv.flatMap(({node,i})=>(i.volumes||[]).map(v=>`<tr>
-      <td class="mono">${v.name}${v.sealed?' '+chip('sealed','c-mut'):''}</td><td class="mono">${node}</td>
+      <td class="mono">${v.name}${v.sealed?' '+chip('sealed','c-mut'):''}${v.kind&&v.kind!=='volume'?' '+chip(v.kind,'c-mut'):''}${v.in_use?' '+chip('in use '+(v.attachments||[]).map(a=>a.transport).join('+'),'c-acc'):''}</td><td class="mono">${node}</td>
       <td>${human(v.virtual_size_bytes)} / ${human(v.allocated_bytes)}</td><td>${v.role}</td>
-      <td class="dim mono">${v.slabs.length?v.slabs.map(s=>s.slice(0,8)).join('+'):'unknown'}</td>
-      <td class="dim">${v.owner?`${v.owner.kind} ${v.owner.namespace?v.owner.namespace+'/':''}${v.owner.name}`:''}</td></tr>`)).join('')
-      ||'<tr><td colspan="6" class="dim">no node volumes</td></tr>';
+      <td class="dim mono">${v.placement?(v.placement.slabs||[]).map(s=>`${s.id.slice(0,8)} ${drv(s.drive)}${s.node&&s.node!==node?'@'+s.node:''}${s.state!=='ok'?' '+chip(s.state,'c-err'):''}`).join('<br>')
+        :v.slabs.length?v.slabs.map(s=>s.slice(0,8)).join('+'):'unknown'}${v.placement&&v.placement.rebuild&&v.placement.rebuild!=='none'?' '+chip('rebuild '+v.placement.rebuild,'c-warn'):''}</td>
+      <td class="dim mono">${v.placement?(v.placement.arrays||[]).flatMap(a=>a.members).map(m=>`${drv(m.drive)}@${m.node} ${m.state==='active'?m.state:chip(m.state,'c-warn')}`).join('<br>'):''}</td>
+      <td class="dim">${(c=>c?`${c.kind} ${c.namespace?c.namespace+'/':''}${c.name}`:'')(v.consumer||v.owner)}</td></tr>`)).join('')
+      ||'<tr><td colspan="7" class="dim">no node volumes</td></tr>';
     const sel=$('v-pool'); const cur=sel.value;
     sel.innerHTML='<option value="">no pool</option>'+p.pools.filter(x=>x.kind==='policy').map(x=>`<option>${x.name}</option>`).join('');
     sel.value=cur;

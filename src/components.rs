@@ -56,7 +56,10 @@ fn slab_component(node: &Node, inv: &NodeInventory, slab: &Slab) -> ComponentSum
             vols.len(),
             slab.tier,
             slab.role,
-            slab.domain
+            slab.drive
+                .as_ref()
+                .map(|d| format!("drive {}", d.describe()))
+                .unwrap_or_else(|| slab.domain.clone())
         ),
         metrics: vec![
             Metric::new("free", stormview::format_bytes(slab.free_bytes)),
@@ -65,6 +68,11 @@ fn slab_component(node: &Node, inv: &NodeInventory, slab: &Slab) -> ComponentSum
             Metric::new("vols", vols.len().to_string()).tone("accent"),
             Metric::new("tier", slab.tier.clone()),
             Metric::new("role", slab.role.clone()),
+            Metric::new(
+                "drive",
+                slab.drive.as_ref().map(|d| d.describe()).unwrap_or_else(|| "?".into()),
+            )
+            .tone("muted"),
         ],
         actions: Vec::new(),
         relations: vec![
@@ -111,17 +119,36 @@ fn tier_component(t: &TierRollup) -> ComponentSummary {
 /// One volume on a node's engine, in its pool(s), with what owns it.
 fn node_volume_component(node: &str, v: &PlacedVolume) -> ComponentSummary {
     let ev = &v.volume;
-    let health = match ev.health.as_str() {
+    let pl = ev.placement.as_ref();
+    let mut health = match ev.health.as_str() {
         "healthy" => Health::Ok,
         "degraded" => Health::Warn,
         "failed" => Health::Error,
         _ => Health::Unknown,
     };
+    // A failed slab or a partner that is not active is at least a warning,
+    // whatever the volume's own health says.
+    if matches!(health, Health::Ok | Health::Unknown)
+        && pl.is_some_and(|p| p.bad_slabs() > 0 || p.partners_down() > 0 || (p.rebuild != "none" && !p.rebuild.is_empty()))
+    {
+        health = Health::Warn;
+    }
     let consumer = ev
-        .owner
-        .as_ref()
+        .consumer()
         .map(|o| o.describe())
         .unwrap_or_else(|| if ev.sealed { "sealed".into() } else { "unowned".into() });
+    let drives: Vec<String> = pl
+        .map(|p| p.drives.iter().map(|d| format!("{}@{}", d.drive.describe(), d.node)).collect())
+        .unwrap_or_default();
+    let partners: Vec<String> = pl
+        .map(|p| {
+            p.arrays
+                .iter()
+                .flat_map(|a| &a.members)
+                .map(|m| format!("{}@{} {}", m.drive.describe(), m.node, m.state))
+                .collect()
+        })
+        .unwrap_or_default();
     let placed = match v.placed_by {
         PlacedBy::Unknown => "slab unknown".to_string(),
         _ => format!(
@@ -136,6 +163,27 @@ fn node_volume_component(node: &str, v: &PlacedVolume) -> ComponentSummary {
     ];
     if ev.sealed {
         metrics.push(Metric::new("sealed", "yes").tone("muted"));
+    }
+    if let Some(k) = &ev.kind {
+        metrics.push(Metric::new("kind", k.clone()).tone("muted"));
+    }
+    if let Some(u) = ev.in_use {
+        let transports: Vec<&str> = ev.attachments.iter().map(|a| a.transport.as_str()).collect();
+        metrics.push(if u {
+            Metric::new("in use", transports.join("+")).tone("accent")
+        } else {
+            Metric::new("in use", "no").tone("muted")
+        });
+    }
+    if !drives.is_empty() {
+        metrics.push(Metric::new("drives", drives.join(" ")));
+    }
+    if !partners.is_empty() {
+        let down = pl.map(|p| p.partners_down()).unwrap_or(0);
+        metrics.push(Metric::new("partners", partners.join(" ")).tone(if down > 0 { "warn" } else { "ok" }));
+    }
+    if let Some(p) = pl.filter(|p| !p.rebuild.is_empty() && p.rebuild != "none") {
+        metrics.push(Metric::new("rebuild", p.rebuild.clone()).tone("warn"));
     }
     let mut relations = vec![Relation::belongs_to("node", format!("node:{node}"))];
     if !v.slabs.is_empty() {
@@ -521,5 +569,34 @@ mod tests {
         assert_eq!(del.method, "DELETE");
         assert!(del.danger);
         assert!(c.metrics.iter().any(|m| m.label == "assembly"));
+    }
+
+    #[test]
+    fn node_volume_shows_consumer_drives_and_partners() {
+        let ev: crate::inventory::EngineVolume = serde_json::from_value(serde_json::json!({
+            "id": "v1", "name": "db", "health": "healthy", "kind": "volume", "in_use": true,
+            "attachments": [{"transport": "nvme-tcp", "nsid": 3}],
+            "consumer": {"kind": "PersistentVolumeClaim", "namespace": "shop", "name": "db"},
+            "placement": {
+                "slabs": [{"id": "d1", "drive": {"serial": "WD1"}, "node": "n1", "state": "ok"}],
+                "drives": [{"drive": {"serial": "WD1"}, "node": "n1"}],
+                "rebuild": "none",
+                "arrays": [{"id": "a", "level": "raid1", "members": [
+                    {"index": 0, "state": "active", "drive": {"serial": "WD1"}, "node": "n1"},
+                    {"index": 1, "state": "rebuilding", "drive": {"serial": "S3"}, "node": "n2"}]}]
+            }
+        }))
+        .unwrap();
+        let p = crate::inventory::place(&[], vec![ev], &Default::default());
+        let c = node_volume_component("n1", &p[0]);
+        let m = |l: &str| c.metrics.iter().find(|m| m.label == l).map(|m| m.value.clone());
+        assert_eq!(m("kind").as_deref(), Some("volume"));
+        assert_eq!(m("in use").as_deref(), Some("nvme-tcp"));
+        assert_eq!(m("drives").as_deref(), Some("WD1@n1"));
+        assert_eq!(m("partners").as_deref(), Some("WD1@n1 active S3@n2 rebuilding"));
+        assert!(c.detail.contains("PersistentVolumeClaim shop/db"), "{}", c.detail);
+        assert!(c.detail.contains("on d1"), "{}", c.detail);
+        assert!(matches!(c.health, Health::Warn), "a partner rebuilding is a warning");
+        assert!(c.relations.iter().any(|r| r.name == "pools" && r.targets == vec!["pool:n1/d1".to_string()]));
     }
 }

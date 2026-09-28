@@ -141,13 +141,15 @@ node-local pool; stormblock#71 adds sub-node spreading.)
 shown as pools in their own right: each slab of each node is a `slab`
 pool (tier, role, failure domain, total/free/allocated), and slabs of one
 tier are summed across nodes as a `tier` pool. The poller reads each
-node's slabs, volumes and slab slot tables and places every engine volume
-on its slab(s): where it owns slots, else where its parent does (a fresh
-clone), else the only slab of its role — otherwise `unknown`, never
+node's slabs, each naming its drive, and its volumes with their
+`placement` (stormblock#136: slabs, drives, legs, rebuild, RAID partners
+and their states) and their `kind`, `in_use`, `attachments` and
+`consumer` (stormblock#138). A volume is placed where its placement says.
+For an engine older than stormblock v17.1.0 it is placed from the slab
+slot tables instead: where it owns slots, else where its parent does (a
+fresh clone), else the only slab of its role, otherwise `unknown`, never
 guessed. This inventory is observed state (memory only, not replicated).
-Still to come from the engine: the drive under each slab and each
-volume's RAID/replica partners (stormblock#136), and each volume's
-consumer beyond its `owner` (stormblock#138).
+Still to come: each volume's PV/PVC (rustkube-node#59, #11).
 
 ### DistVolume — RAID across individual volumes
 

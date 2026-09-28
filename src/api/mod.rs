@@ -264,6 +264,7 @@ async fn list_pools(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
                 "tier": slab.tier,
                 "role": slab.role,
                 "domain": slab.domain,
+                "drive": slab.drive,
                 "total_bytes": slab.total_bytes,
                 "free_bytes": slab.free_bytes,
                 "allocated_bytes": slab.allocated_bytes(),
