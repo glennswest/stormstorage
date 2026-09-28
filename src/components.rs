@@ -349,6 +349,14 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
                 danger: false,
             },
             Action {
+                id: "assemble".into(),
+                label: "Assemble".into(),
+                method: "POST".into(),
+                path: format!("/api/v1/volumes/{}/assemble", v.name),
+                enabled: v.assembly == AssemblyState::PendingEngineSupport && v.legs.len() >= 2,
+                danger: false,
+            },
+            Action {
             id: "delete".into(),
             label: "Delete".into(),
             method: "DELETE".into(),
@@ -558,6 +566,7 @@ mod tests {
             created_at: SystemTime::now(),
             replacing: None,
             next_releg_after: None,
+            next_assemble_after: None,
             export: Default::default(),
         };
         let c = volume_component(&v);

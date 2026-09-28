@@ -36,8 +36,23 @@ async fn event(state: &Arc<AppState>, subject: &str, sev: Severity, msg: String)
 
 /// Attach every leg and assemble the RAID1 on the head (legs[0]'s node).
 /// Mutates the stored volume as it goes; on error the partial progress is
-/// persisted and assembly stays pending for a retry.
+/// persisted, assembly stays pending, and `next_assemble_after` holds off
+/// the automatic retry for `recovery.cooldown_secs` (#7). Retrying resumes:
+/// exports already made are kept, drive opens are idempotent, and an array
+/// the head already holds over exactly these legs is adopted.
+///
+/// Takes the volume's claim, so it never runs beside a re-leg or another
+/// assembly of the same volume; a busy volume is an error.
 pub async fn assemble(state: &Arc<AppState>, name: &str) -> anyhow::Result<()> {
+    if !claim(state, name) {
+        anyhow::bail!("{name}: busy — an assembly or leg move is in flight");
+    }
+    let r = assemble_claimed(state, name).await;
+    release(state, name);
+    r
+}
+
+async fn assemble_claimed(state: &Arc<AppState>, name: &str) -> anyhow::Result<()> {
     let (mut vol, engines) = {
         let fed = state.fed.read().await;
         let vol = fed
@@ -62,6 +77,11 @@ pub async fn assemble(state: &Arc<AppState>, name: &str) -> anyhow::Result<()> {
 
     let result = assemble_inner(state, &mut vol, &engines, &head, &head_engine).await;
     let ok = result.is_ok();
+    vol.next_assemble_after = if ok {
+        None
+    } else {
+        Some(SystemTime::now() + Duration::from_secs(state.config.recovery.cooldown_secs))
+    };
     {
         let mut fed = state.fed.write().await;
         fed.volumes.insert(name.to_string(), vol);
@@ -109,22 +129,60 @@ async fn assemble_inner(
         leg.drive_uuid = Some(uuid.clone());
         drive_uuids.push(uuid);
     }
-    // 3. RAID1 across the legs.
-    let arr = head_engine
-        .create_raid1(&drive_uuids)
+    // 3. RAID1 across the legs — unless the head already holds it: a
+    //    create whose response never came back (a timeout) did happen, and
+    //    the engine would format a second array over the same members
+    //    (stormblock#215).
+    let uris: Vec<String> = vol
+        .legs
+        .iter()
+        .map(|l| l.export.as_ref().expect("exported").drive_uri())
+        .collect();
+    let existing = head_engine
+        .list_arrays()
         .await
-        .map_err(|e| anyhow::anyhow!("{head}: create raid1: {e:#}"))?;
+        .map_err(|e| anyhow::anyhow!("{head}: list arrays: {e:#}"))?;
+    let arr = match match_array(&existing, &uris) {
+        ArrayMatch::Exact(arr) => {
+            event(
+                state,
+                &vol.name,
+                Severity::Info,
+                format!(
+                    "{}: adopted array {} on {head}, already built over these legs",
+                    vol.name,
+                    arr.get("id").and_then(|x| x.as_str()).unwrap_or("?")
+                ),
+            )
+            .await;
+            arr
+        }
+        ArrayMatch::Conflict { array, uri } => anyhow::bail!(
+            "{head}: {uri} is already a member of array {array}, which is not this volume's; \
+             not building a second array over it"
+        ),
+        ArrayMatch::None => head_engine
+            .create_raid1(&drive_uuids)
+            .await
+            .map_err(|e| anyhow::anyhow!("{head}: create raid1: {e:#}"))?,
+    };
     let array_id = arr
         .get("id")
         .and_then(|x| x.as_str())
         .ok_or_else(|| anyhow::anyhow!("{head}: array response without id: {arr}"))?
         .to_string();
-    // Member order == drive_uuids order == leg order.
+    // Match members to legs by drive path; on a create, member order ==
+    // drive_uuids order == leg order is the fallback.
     if let Some(members) = arr.get("members").and_then(|m| m.as_array()) {
         for (i, m) in members.iter().enumerate() {
-            if let (Some(leg), Some(uuid)) =
-                (vol.legs.get_mut(i), m.get("uuid").and_then(|u| u.as_str()))
-            {
+            let Some(uuid) = m.get("uuid").and_then(|u| u.as_str()) else {
+                continue;
+            };
+            let by_path = m
+                .get("device_path")
+                .and_then(|p| p.as_str())
+                .and_then(|p| uris.iter().position(|u| u == p));
+            if let Some(leg) = vol.legs.get_mut(by_path.unwrap_or(i)) {
                 leg.member_uuid = Some(uuid.to_string());
             }
         }
@@ -149,6 +207,40 @@ async fn assemble_inner(
     )
     .await;
     Ok(())
+}
+
+/// What the head already holds over a volume's leg drives.
+#[derive(Debug, PartialEq)]
+pub enum ArrayMatch {
+    /// No array uses any of them: create one.
+    None,
+    /// An array whose members are exactly these drives: adopt it.
+    Exact(serde_json::Value),
+    /// An array holds one of them among other members: refuse.
+    Conflict { array: String, uri: String },
+}
+
+/// Compare the head's arrays (`GET /api/v1/arrays` items) with the drive
+/// URIs of a volume's legs, by each member's `device_path`.
+pub fn match_array(arrays: &[serde_json::Value], uris: &[String]) -> ArrayMatch {
+    let want: std::collections::BTreeSet<&str> = uris.iter().map(|s| s.as_str()).collect();
+    for a in arrays {
+        let paths: std::collections::BTreeSet<&str> = a
+            .get("members")
+            .and_then(|m| m.as_array())
+            .map(|ms| ms.iter().filter_map(|m| m.get("device_path")?.as_str()).collect())
+            .unwrap_or_default();
+        if paths == want {
+            return ArrayMatch::Exact(a.clone());
+        }
+        if let Some(uri) = paths.intersection(&want).next() {
+            return ArrayMatch::Conflict {
+                array: a.get("id").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
+                uri: uri.to_string(),
+            };
+        }
+    }
+    ArrayMatch::None
 }
 
 /// Tear down the head-side assembly (array + attached drives) and detach
@@ -605,6 +697,9 @@ pub struct Plan {
     pub start: Vec<(String, String)>,
     /// Volumes with a recorded replacement to resume waiting on.
     pub resume: Vec<String>,
+    /// Pending volumes to retry assembling: every leg created, every leg
+    /// node healthy, past `next_assemble_after` (#7).
+    pub assemble: Vec<String>,
 }
 
 /// Mark legs on unhealthy nodes lost, degrade their volumes, and decide
@@ -623,6 +718,22 @@ pub fn plan_recovery(
         .collect();
     let mut changed = false;
     for vol in fed.volumes.values_mut() {
+        if vol.assembly == AssemblyState::PendingEngineSupport {
+            let ready = vol.legs.len() >= 2
+                && vol.legs.iter().all(|l| {
+                    l.state == LegState::Created
+                        && l.volume_id.is_some()
+                        && healthy.get(&l.node) == Some(&true)
+                });
+            if enabled
+                && ready
+                && !busy(&vol.name)
+                && !vol.next_assemble_after.map(|t| now < t).unwrap_or(false)
+            {
+                plan.assemble.push(vol.name.clone());
+            }
+            continue;
+        }
         if !matches!(vol.assembly, AssemblyState::Assembled | AssemblyState::Degraded) {
             continue;
         }
@@ -739,7 +850,39 @@ pub async fn reconcile(state: &Arc<AppState>) {
             .await;
         }
     }
+    for name in plan.assemble {
+        if claim(state, &name) {
+            let st = state.clone();
+            tokio::spawn(async move {
+                let r = assemble_claimed(&st, &name).await;
+                release(&st, &name);
+                after_assembly_retry(&st, &name, r).await;
+            });
+        }
+    }
     reap_orphans(state).await;
+}
+
+/// Report an assembly retry, and serve the volume once it is assembled.
+pub async fn after_assembly_retry(state: &Arc<AppState>, name: &str, r: anyhow::Result<()>) {
+    match r {
+        Ok(()) => {
+            let _ = publish(state, name).await;
+        }
+        Err(e) => {
+            let cooldown = state.config.recovery.cooldown_secs;
+            event(
+                state,
+                name,
+                Severity::Error,
+                format!(
+                    "{name}: assembly retry failed, next in {cooldown}s \
+                     (or POST /api/v1/volumes/{name}/assemble): {e:#}"
+                ),
+            )
+            .await;
+        }
+    }
 }
 
 /// Delete orphaned leg volumes whose node answers again.
@@ -1116,6 +1259,7 @@ mod tests {
             created_at: SystemTime::now(),
             replacing: None,
             next_releg_after: None,
+            next_assemble_after: None,
             export: Default::default(),
         }
     }
@@ -1235,5 +1379,57 @@ mod tests {
         let p = plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
         assert_eq!(p, Plan::default());
         assert_eq!(fed.volumes["v"].legs[1].state, LegState::Created);
+    }
+
+    #[test]
+    fn pending_volume_is_retried_once_every_leg_node_is_healthy() {
+        let now = SystemTime::now();
+        let pending = |fed: &mut FedState| {
+            let v = fed.volumes.get_mut("v").unwrap();
+            v.assembly = AssemblyState::PendingEngineSupport;
+            v.head = None;
+            v.array_id = None;
+        };
+        let mut fed = fed_with(&["a", "b"], &[]);
+        pending(&mut fed);
+        let p = plan_recovery(&mut fed, true, now, &|_| false);
+        assert_eq!(p.assemble, vec!["v".to_string()]);
+        assert!(p.lost.is_empty() && p.start.is_empty(), "a pending volume is never re-legged");
+
+        assert!(plan_recovery(&mut fed, true, now, &|_| true).assemble.is_empty(), "busy");
+        assert!(plan_recovery(&mut fed, false, now, &|_| false).assemble.is_empty(), "recovery off");
+        fed.volumes.get_mut("v").unwrap().next_assemble_after = Some(now + Duration::from_secs(60));
+        assert!(plan_recovery(&mut fed, true, now, &|_| false).assemble.is_empty(), "cooling down");
+        let p = plan_recovery(&mut fed, true, now + Duration::from_secs(61), &|_| false);
+        assert_eq!(p.assemble.len(), 1, "after the cooldown");
+
+        let mut fed = fed_with(&["a", "b"], &["b"]);
+        pending(&mut fed);
+        assert!(plan_recovery(&mut fed, true, now, &|_| false).assemble.is_empty(), "a leg node is down");
+
+        let mut fed = fed_with(&["a"], &[]);
+        pending(&mut fed);
+        assert!(plan_recovery(&mut fed, true, now, &|_| false).assemble.is_empty(), "single leg");
+    }
+
+    #[test]
+    fn array_match_adopts_exact_and_refuses_overlap() {
+        let arr = |id: &str, paths: &[&str]| {
+            serde_json::json!({"id": id, "members": paths.iter().enumerate()
+                .map(|(i, p)| serde_json::json!({"index": i, "uuid": format!("m{i}"), "device_path": p}))
+                .collect::<Vec<_>>()})
+        };
+        let uris = vec!["nvme-tcp://a/x?nsid=1".to_string(), "nvme-tcp://b/y?nsid=1".to_string()];
+        assert_eq!(match_array(&[], &uris), ArrayMatch::None);
+        let other = arr("o", &["/dev/sdz", "/dev/sdy"]);
+        assert_eq!(match_array(std::slice::from_ref(&other), &uris), ArrayMatch::None);
+        // Same members, other order: the one the lost create made.
+        let mine = arr("m", &["nvme-tcp://b/y?nsid=1", "nvme-tcp://a/x?nsid=1"]);
+        assert_eq!(match_array(&[other.clone(), mine.clone()], &uris), ArrayMatch::Exact(mine));
+        let overlap = arr("x", &["nvme-tcp://a/x?nsid=1", "/dev/sdq"]);
+        assert_eq!(
+            match_array(&[overlap], &uris),
+            ArrayMatch::Conflict { array: "x".into(), uri: "nvme-tcp://a/x?nsid=1".into() }
+        );
     }
 }

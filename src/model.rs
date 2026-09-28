@@ -215,6 +215,10 @@ pub struct DistVolume {
     /// failure is not retried every poll.
     #[serde(default)]
     pub next_releg_after: Option<SystemTime>,
+    /// No automatic assembly retry before this — set after a failed
+    /// assembly (#7).
+    #[serde(default)]
+    pub next_assemble_after: Option<SystemTime>,
     /// How consumers attach this volume (#2).
     #[serde(default)]
     pub export: Export,

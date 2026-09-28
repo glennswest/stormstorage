@@ -211,9 +211,14 @@ optimization.
 - **Served to consumers** (*implemented, #2*): a volume pinned to the
   head's array, attached over NVMe-TCP — see *Consumer serving* below.
 - **Not implemented yet:**
-  - re-head when the head node is lost (#14);
-  - retrying a failed assembly (#7). The volume stays
-    `pending_engine_support`.
+  - re-head when the head node is lost (#14).
+- **Assembly retry** (*implemented, #7*): a failed assembly stays
+  `pending_engine_support` and is retried by the reconciler once every
+  leg's node is healthy, after `recovery.cooldown_secs`, or at once via
+  `POST /api/v1/volumes/{name}/assemble`. The retry resumes from the
+  exports and drives already made, and adopts an array the head already
+  built over exactly these legs rather than creating a second one
+  (stormblock#215).
 
 #### Consumer serving (#2) — *implemented 2026-09-27 (stormblock ≥ v19.1.1)*
 

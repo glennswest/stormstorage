@@ -111,6 +111,7 @@ window.moveLeg=(name,from)=>{
 };
 window.act=(p)=>p.then(refresh).catch(e=>{fail(e);refresh();});
 window.pubVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/export`,{}));
+window.asmVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/assemble`,{}));
 const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=`<button title="publish / republish" onclick="pubVol('${x.name}')">↻</button>`;
   if(e.state==='published'&&c)return `<span class="mono" title="${c.nqn}">${c.traddr}:${c.trsvcid} ns ${c.nsid}</span>${e.coordinates_changed?' '+chip('moved','c-warn'):''} ${b}`;
   if(e.state==='failed')return `${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
@@ -161,7 +162,7 @@ async function refresh(){
       <td>${x.pool||''}</td>
       <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${(x.assembly==='assembled'||x.assembly==='degraded')&&!x.replacing?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
       <td>${x.rung}${x.head?` <span class="dim">head ${x.head}</span>`:''}</td>
-      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn'):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}</td>
+      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn')+(x.legs.length>1?` <button title="retry the assembly" onclick="asmVol('${x.name}')">assemble</button>`:''):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}</td>
       <td>${expo(x)}</td>
       <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="8" class="dim">no volumes</td></tr>';

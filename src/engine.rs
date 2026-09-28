@@ -263,6 +263,11 @@ impl Engine {
         .await
     }
 
+    /// GET /api/v1/arrays — every array on this engine.
+    pub async fn list_arrays(&self) -> anyhow::Result<Vec<Value>> {
+        self.get_items("/api/v1/arrays").await
+    }
+
     pub async fn get_array(&self, id: &str) -> anyhow::Result<Value> {
         Ok(self
             .get(&format!("/api/v1/arrays/{id}"))

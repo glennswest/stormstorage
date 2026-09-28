@@ -70,8 +70,19 @@ stormview components feed on **:9093**.
   - the head builds a RAID1 across those drives with `/api/v1/arrays`.
 
   If assembly fails, the legs are kept and the volume stays
-  `pending_engine_support` with an error event. There is no retry path yet
-  (#7).
+  `pending_engine_support` with an error event (#7). It is retried
+  automatically once every leg's node is healthy and
+  `recovery.cooldown_secs` have passed since the last attempt
+  (`next_assemble_after`), on the instance where `[recovery]` is active,
+  the same rule as re-leg. `POST /api/v1/volumes/{name}/assemble` retries
+  at once. A retry resumes: exports already made are kept and drive opens
+  are idempotent. Before building the RAID it lists the head's arrays, and
+  an array whose members are exactly this volume's leg drives is adopted.
+  That array comes from a create whose answer was lost, and stormblock
+  would otherwise format a second array over the same drives
+  (stormblock#215). If any leg drive is in some other array, the retry
+  refuses. Once assembled, the volume is served (#2). An assembly never
+  runs beside a re-leg or another assembly of the same volume.
 - **Leg move.** `POST /api/v1/volumes/{name}/move` works on an assembled
   volume and runs these steps:
   1. create a new leg on the target node;
@@ -288,6 +299,7 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?}`. Places, creates the legs and assembles. Returns the volume record. |
 | GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids), head, array id, assembly, and `export` (what consumers attach). |
 | POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Returns the `export` record; 409 when it cannot be served (not assembled, node unreachable, engine error). |
+| POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
 | DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
 | GET | `/api/v1/orphans` | Leg volumes left on unreachable nodes: `{orphans: [{node, volume_id, master_node, of_volume, reason, since}]}`. Reaped when the node answers. |
@@ -422,6 +434,5 @@ done. The open work:
 - #14: re-head when the head node is lost;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #7: retrying a failed assembly;
 - #28: each node volume's PV/PVC, waiting on rustkube-node#59;
 - phase 3 onward: rebalance and tier migration, native replication, HA.

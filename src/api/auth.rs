@@ -80,6 +80,7 @@ mod tests {
         assert!(guarded(&Method::DELETE, "/api/v1/volumes/v"));
         assert!(guarded(&Method::POST, "/api/v1/volumes/v/move"));
         assert!(guarded(&Method::POST, "/api/v1/volumes/v/export"));
+        assert!(guarded(&Method::POST, "/api/v1/volumes/v/assemble"));
         assert!(guarded(&Method::POST, "/api/v1/replicate"));
         assert!(!guarded(&Method::GET, "/api/v1/volumes"));
         assert!(!guarded(&Method::GET, "/ws/components"));

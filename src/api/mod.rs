@@ -110,6 +110,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
         .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
         .route("/api/v1/volumes/{name}/export", post(export_volume))
+        .route("/api/v1/volumes/{name}/assemble", post(assemble_volume))
         .route("/api/v1/orphans", get(list_orphans))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
@@ -501,6 +502,7 @@ async fn create_volume(
         created_at: SystemTime::now(),
         replacing: None,
         next_releg_after: None,
+        next_assemble_after: None,
         export: Default::default(),
     };
     {
@@ -534,7 +536,11 @@ async fn create_volume(
                     Some(req.name.clone()),
                     Severity::Error,
                     "assemble",
-                    format!("{}: assembly failed (legs kept, retry by re-creating or moving): {e:#}", req.name),
+                    format!(
+                        "{}: assembly failed, legs kept; retried automatically once every leg's node is healthy \
+                         (after {}s), or POST /api/v1/volumes/{}/assemble: {e:#}",
+                        req.name, s.config.recovery.cooldown_secs, req.name
+                    ),
                 );
                 false
             }
@@ -699,6 +705,48 @@ async fn export_volume(
         .await
         .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
     Ok(Json(serde_json::to_value(ex).unwrap_or_default()))
+}
+
+/// Retry a pending volume's assembly (#7), then serve it. Resumes from
+/// what the failed attempt got done; an array the head already built over
+/// these legs is adopted, not built twice.
+async fn assemble_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    {
+        let fed = s.fed.read().await;
+        let v = fed
+            .volumes
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?;
+        if v.assembly != AssemblyState::PendingEngineSupport {
+            return Err(ApiError::conflict(format!(
+                "{name}: not pending (assembly {:?}) — nothing to assemble",
+                v.assembly
+            )));
+        }
+        if v.legs.len() < 2 {
+            return Err(ApiError::conflict(format!("{name}: single leg — nothing to assemble")));
+        }
+    }
+    let r = crate::orchestrate::assemble(&s, &name).await;
+    if let Err(e) = &r {
+        let msg = format!("{e:#}");
+        if msg.contains("busy") {
+            return Err(ApiError::conflict(msg));
+        }
+        s.events.write().await.push(
+            Some(name.clone()),
+            Severity::Error,
+            "assemble",
+            format!("{name}: assembly retry failed: {msg}"),
+        );
+        return Err(ApiError::upstream(msg));
+    }
+    let _ = crate::orchestrate::publish(&s, &name).await;
+    let fed = s.fed.read().await;
+    Ok(Json(serde_json::to_value(fed.volumes.get(&name)).unwrap_or_default()))
 }
 
 /// stormblock's own registration heartbeat shape (stormblock

@@ -29,6 +29,14 @@ struct Mock {
     /// volume id → nsid
     attached: BTreeMap<String, u32>,
     arrays: Vec<String>,
+    /// drive uuid → path (what `POST /api/v1/drives` opened).
+    drives: BTreeMap<String, String>,
+    /// array id → [(member uuid, device path)].
+    members: BTreeMap<String, Vec<(String, String)>>,
+    /// Array creates to refuse (500, nothing made).
+    fail_creates: u32,
+    /// Array creates to perform but answer 500 — a lost response (#7).
+    lose_creates: u32,
     /// Every mutating call, in order.
     log: Vec<String>,
 }
@@ -103,22 +111,55 @@ async fn add_drive(State(m): State<M>, Json(b): Json<Value>) -> Json<Value> {
     let mut m = m.lock().unwrap();
     m.next += 1;
     m.log.push(format!("drive {}", b["path"]));
-    Json(json!({"uuid": format!("drive-{}", m.next)}))
+    let uuid = format!("drive-{}", m.next);
+    m.drives.insert(uuid.clone(), b["path"].as_str().unwrap_or_default().to_string());
+    Json(json!({"uuid": uuid}))
 }
 
-async fn create_array(State(m): State<M>, Json(b): Json<Value>) -> Json<Value> {
+async fn create_array(State(m): State<M>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
     let mut m = m.lock().unwrap();
+    if m.fail_creates > 0 {
+        m.fail_creates -= 1;
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": "no"})));
+    }
     m.next += 1;
     let id = format!("00000000-0000-0000-0000-{:012}", m.next);
     m.arrays.push(id.clone());
     m.log.push(format!("array {id}"));
-    let members: Vec<Value> = b["drive_uuids"]
+    let rows: Vec<(String, String)> = b["drive_uuids"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|d| json!({"uuid": format!("m-{}", d.as_str().unwrap()), "state": "active"}))
+        .map(|d| {
+            let d = d.as_str().unwrap();
+            (format!("m-{d}"), m.drives.get(d).cloned().unwrap_or_default())
+        })
         .collect();
-    Json(json!({"id": id, "members": members}))
+    m.members.insert(id.clone(), rows.clone());
+    if m.lose_creates > 0 {
+        m.lose_creates -= 1;
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": "timed out"})));
+    }
+    (StatusCode::OK, Json(array_json(&id, &rows)))
+}
+
+fn array_json(id: &str, rows: &[(String, String)]) -> Value {
+    let members: Vec<Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (u, p))| json!({"index": i, "uuid": u, "state": "active", "device_path": p}))
+        .collect();
+    json!({"id": id, "members": members})
+}
+
+async fn list_arrays(State(m): State<M>) -> Json<Value> {
+    let m = m.lock().unwrap();
+    let items: Vec<Value> = m
+        .arrays
+        .iter()
+        .map(|id| array_json(id, m.members.get(id).map(|r| r.as_slice()).unwrap_or_default()))
+        .collect();
+    Json(json!({"items": items, "count": items.len()}))
 }
 
 async fn delete_array(State(m): State<M>, Path(id): Path<String>) -> StatusCode {
@@ -144,7 +185,7 @@ async fn mock_engine(node: &str) -> (String, M) {
         .route("/v1/volumes/{id}/detach", post(v1_detach))
         .route("/api/v1/drives", post(add_drive))
         .route("/api/v1/drives/{p}", delete(|| async { StatusCode::NO_CONTENT }))
-        .route("/api/v1/arrays", post(create_array))
+        .route("/api/v1/arrays", post(create_array).get(list_arrays))
         .route("/api/v1/arrays/{id}", delete(delete_array))
         .with_state(m.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -338,4 +379,103 @@ async fn publish_on_an_unreachable_node_is_recorded_and_retried_on_recovery() {
     assert_eq!(ex.state, ExportState::Published, "{ex:?}");
     assert_eq!(serde_json::to_value(&ex.coordinates).unwrap(), coords);
     assert!(!ex.coordinates_changed);
+}
+
+/// #7: a failed assembly is retried by `POST …/assemble` and by the
+/// reconciler; a create whose response was lost is adopted, not built twice.
+async fn pending(api: &str, mocks: &BTreeMap<String, M>, lose: bool) -> Value {
+    for m in mocks.values() {
+        let mut m = m.lock().unwrap();
+        if lose {
+            m.lose_creates = 1;
+        } else {
+            m.fail_creates = 1;
+        }
+    }
+    let r = http_post(format!("{api}/api/v1/volumes"), json!({"name": "pv", "size_bytes": 1u64 << 30, "replicas": 2}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["assembly"], "pending_engine_support", "{v}");
+    assert!(v["next_assemble_after"].is_object() || v["next_assemble_after"].is_string(), "cooldown set: {v}");
+    v
+}
+
+fn arrays_on(mocks: &BTreeMap<String, M>) -> usize {
+    mocks.values().map(|m| m.lock().unwrap().arrays.len()).sum()
+}
+
+#[tokio::test]
+async fn failed_assembly_is_retried_on_request() {
+    let (api, state, mocks) = setup().await;
+    pending(&api, &mocks, false).await;
+    let ev: Vec<String> = state.events.read().await.since(0).into_iter().map(|e| e.message).collect();
+    assert!(
+        ev.iter().any(|m| m.contains("assembly failed") && m.contains("/api/v1/volumes/pv/assemble")),
+        "the event names the real retry path: {ev:?}"
+    );
+    assert_eq!(arrays_on(&mocks), 0);
+
+    let r = http_post(format!("{api}/api/v1/volumes/pv/assemble"), json!({})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["assembly"], "assembled");
+    assert_eq!(v["export"]["state"], "published", "served once assembled");
+    assert!(v["next_assemble_after"].is_null());
+    assert_eq!(arrays_on(&mocks), 1);
+
+    let r = http_post(format!("{api}/api/v1/volumes/pv/assemble"), json!({})).send().await.unwrap();
+    assert_eq!(r.status(), 409, "already assembled");
+    let r = http_post(format!("{api}/api/v1/volumes/nope/assemble"), json!({})).send().await.unwrap();
+    assert_eq!(r.status(), 404);
+}
+
+#[tokio::test]
+async fn a_lost_create_response_is_adopted_not_built_twice() {
+    let (api, _state, mocks) = setup().await;
+    let v = pending(&api, &mocks, true).await;
+    assert_eq!(arrays_on(&mocks), 1, "the create happened; only its answer was lost");
+    let r = http_post(format!("{api}/api/v1/volumes/pv/assemble"), json!({})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let a: Value = r.json().await.unwrap();
+    assert_eq!(a["assembly"], "assembled");
+    assert_eq!(arrays_on(&mocks), 1, "adopted, not a second array over the same legs");
+    let head = a["head"].as_str().unwrap();
+    let m = mocks[head].lock().unwrap();
+    assert_eq!(a["array_id"].as_str().unwrap(), m.arrays[0]);
+    // Each leg's member uuid is the one whose device path is its drive.
+    let rows = &m.members[&m.arrays[0]];
+    for leg in a["legs"].as_array().unwrap() {
+        let uuid = leg["member_uuid"].as_str().unwrap();
+        let path = &rows.iter().find(|(u, _)| u == uuid).unwrap().1;
+        let e = &leg["export"];
+        assert!(path.contains(e["nqn"].as_str().unwrap()), "{path} vs {e}");
+    }
+    let _ = v;
+}
+
+#[tokio::test]
+async fn the_reconciler_retries_a_pending_volume() {
+    let (api, state, mocks) = setup().await;
+    pending(&api, &mocks, false).await;
+    // Still cooling down: nothing happens.
+    stormstorage::orchestrate::reconcile(&state).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(arrays_on(&mocks), 0);
+    // Past the cooldown.
+    state.fed.write().await.volumes.get_mut("pv").unwrap().next_assemble_after = None;
+    stormstorage::orchestrate::reconcile(&state).await;
+    for _ in 0..50 {
+        if state.fed.read().await.volumes["pv"].export.state == ExportState::Published {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let fed = state.fed.read().await;
+    let v = &fed.volumes["pv"];
+    assert_eq!(v.assembly, stormstorage::model::AssemblyState::Assembled);
+    assert_eq!(v.export.state, ExportState::Published);
+    assert_eq!(arrays_on(&mocks), 1);
 }

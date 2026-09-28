@@ -175,7 +175,7 @@ active → remove_member → drop old drive/volume.
       loaded box. When it passes: close #17, #18, #19, #21 (harness
       build-failures) and #2 with what was verified, then request the
       golden once. #13 and #16 closed.
-- [ ] Retry a failed assembly (#7) — IN PROGRESS 2026-09-28. Plan:
+- [x] Retry a failed assembly (#7) — done 2026-09-28:
       `POST /api/v1/volumes/{name}/assemble` (409 when assembled, single
       leg or busy) → `orchestrate::assemble`, then publish. The reconciler
       retries a pending volume whose leg nodes are all healthy, gated like
