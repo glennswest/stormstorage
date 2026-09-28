@@ -175,7 +175,19 @@ active → remove_member → drop old drive/volume.
       loaded box. When it passes: close #17, #18, #19, #21 (harness
       build-failures) and #2 with what was verified, then request the
       golden once. #13 and #16 closed.
-- [ ] Retry a failed assembly (#7). Today the volume stays pending.
+- [ ] Retry a failed assembly (#7) — IN PROGRESS 2026-09-28. Plan:
+      `POST /api/v1/volumes/{name}/assemble` (409 when assembled, single
+      leg or busy) → `orchestrate::assemble`, then publish. The reconciler
+      retries a pending volume whose leg nodes are all healthy, gated like
+      re-leg by `recovery.active`, with `next_assemble_after` = now +
+      `recovery.cooldown_secs` after a failed attempt. `assemble` takes the
+      per-volume claim (no concurrent re-leg/assemble). Before creating the
+      RAID it lists the head's arrays: one whose members are exactly the
+      legs' drive URIs is adopted (a create whose response was lost); one
+      holding any of them otherwise → refuse. stormblock's array create
+      does not refuse drives already in an array, so a blind retry would
+      format a second array over the legs → stormblock issue. Event text
+      names the retry path. Tests: mock engine in tests/assemble.rs.
 
 ### Docs from code — DONE (#4, 2026-09-24)
 - [x] README rewritten from source: flags, every config key + default,
