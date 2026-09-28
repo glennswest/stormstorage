@@ -19,12 +19,14 @@
 # 6. delete revokes the export first: the served volume, the array and
 #    the legs are gone from every engine.
 #
-# stormblock is built from GitHub main unless STORMBLOCK_BIN points at one.
+# stormblock is never compiled here (#25): a stormstorage job must not spend
+# its build slot on a fat-LTO stormblock build. STORMBLOCK_BIN names a built
+# stormblock (from its golden bin once sc-build jobs can reach one,
+# stormcentral#131); without it the script stops before doing anything.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 W=${WORK:-$ROOT/tmp/e2e-export}
-SB_REF=${STORMBLOCK_REF:-main}
 SS_ADDR=127.0.0.1:9393
 SS="http://$SS_ADDR/api/v1"
 NODES=(a b c)
@@ -53,17 +55,14 @@ trap 'fail "line $LINENO: $BASH_COMMAND"' ERR
 rm -rf "$W"; mkdir -p "$W"
 
 say "build"
-if [ -z "${STORMBLOCK_BIN:-}" ]; then
-    git clone -q --depth 1 --branch "$SB_REF" https://github.com/glennswest/stormblock "$W/stormblock-src"
-    (cd "$W/stormblock-src" && echo "  stormblock $(git rev-parse --short HEAD)" &&
-        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$W/sb-target}" cargo build --release -q)
-    STORMBLOCK_BIN="${CARGO_TARGET_DIR:-$W/sb-target}/release/stormblock"
-fi
+[ -n "${STORMBLOCK_BIN:-}" ] ||
+    fail "STORMBLOCK_BIN is not set: this e2e runs a built stormblock and never compiles one (#25)"
 (cd "$ROOT" && cargo build --release -q)
 SS_BIN="${CARGO_TARGET_DIR:-$ROOT/target}/release/stormstorage"
 [ -x "$STORMBLOCK_BIN" ] || fail "no stormblock at $STORMBLOCK_BIN"
 [ -x "$SS_BIN" ] || fail "no stormstorage at $SS_BIN"
 echo "  stormstorage $(cd "$ROOT" && git rev-parse --short HEAD)"
+echo "  stormblock $("$STORMBLOCK_BIN" --version 2>/dev/null || echo "(no --version)") at $STORMBLOCK_BIN"
 
 start_engine() {
     local n=$1 d="$W/$1"

@@ -156,8 +156,15 @@ active → remove_member → drop old drive/volume.
       Run 9 passed everything up to delete: the head's engine did not answer
       the served-volume DELETE in 300 s (it finished later). Run 10
       instruments that (latency probe head vs other engine, loadavg) to
-      tell an engine stall (→ stormblock issue) from box load. When it
-      passes: close #17, #18, #19, #21 (harness build-failures) and #2 with
+      tell an engine stall (→ stormblock issue) from box load.
+      **2026-09-28: blocked on stormcentral#131.** Run 10 never ran: the
+      e2e compiled stormblock in its own build slot (>1 h), which the owner
+      ruled out (#25: test at runtime, no stormblock compiles here). The
+      scripts now require `STORMBLOCK_BIN` and stop without it; no sc-build
+      job has a stormblock ≥ v19.1.1 to point at until stormblock's golden
+      bin is reachable from a job (#131; GitHub releases stop at v8.2.1).
+      #2 proposed --after stormcentral#131. Expect #26 (a stalled head's
+      leg stays lost) on a loaded box. When it passes: close #17, #18, #19, #21 (harness build-failures) and #2 with
       what was verified, then request the golden once. #13 and #16 closed.
 - [ ] Retry a failed assembly (#7). Today the volume stays pending.
 

@@ -315,14 +315,14 @@ binary until `cargo update -p stormview` is committed here.
 
 ### Live test: re-leg on node loss
 
-`scripts/e2e-releg.sh` runs three real stormblock engines (built from
-GitHub `main`, or `STORMBLOCK_BIN`) on loopback, unprivileged. It creates
+`scripts/e2e-releg.sh` runs three real stormblock engines
+(`STORMBLOCK_BIN`) on loopback, unprivileged. It creates
 a 2-leg volume, kills the non-head engine, checks the re-leg converges
 (both members active, one re-leg, the orphan recorded), then restarts the
 engine and checks the orphan is reaped:
 
 ```
-sc-build scripts/e2e-releg.sh
+sc-build 'STORMBLOCK_BIN=/path/to/stormblock scripts/e2e-releg.sh'
 ```
 
 ### Live test: consumer serving
@@ -337,8 +337,14 @@ header back through the mirror. It also checks republish, a single-leg
 volume, and that delete leaves no served volume, array or leg behind:
 
 ```
-sc-build scripts/e2e-export.sh
+sc-build 'STORMBLOCK_BIN=/path/to/stormblock scripts/e2e-export.sh'
 ```
+
+Both scripts test at runtime against a **built** stormblock (≥ v19.1.1)
+and never compile one (#25): without `STORMBLOCK_BIN` they stop before
+starting anything, and they print the stormblock version they ran
+against. An sc-build job has no stormblock binary to point at until
+stormblock ships as a golden bin a job can reach (stormcentral#131).
 
 ## How it ships
 
