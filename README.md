@@ -423,5 +423,5 @@ done. The open work:
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #7: retrying a failed assembly;
-- #11: each node volume's PV/PVC, waiting on rustkube-node#59;
+- #28: each node volume's PV/PVC, waiting on rustkube-node#59;
 - phase 3 onward: rebalance and tier migration, native replication, HA.

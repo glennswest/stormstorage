@@ -221,7 +221,7 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
       placement (older than v17.1.0). Feed: pool detail names the drive;
       node volume: kind, in use, consumer, drives, partners, rebuild.
       UI Node volumes: kind, consumer, drive, partners. Tests: parse real
-      shapes, placement precedence, feed. PV/PVC stays open on
+      shapes, placement precedence, feed. PV/PVC is #28, after
       rustkube-node#59.
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.

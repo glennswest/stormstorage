@@ -149,7 +149,7 @@ For an engine older than stormblock v17.1.0 it is placed from the slab
 slot tables instead: where it owns slots, else where its parent does (a
 fresh clone), else the only slab of its role, otherwise `unknown`, never
 guessed. This inventory is observed state (memory only, not replicated).
-Still to come: each volume's PV/PVC (rustkube-node#59, #11).
+Still to come: each volume's PV/PVC (rustkube-node#59, #28).
 
 ### DistVolume — RAID across individual volumes
 
