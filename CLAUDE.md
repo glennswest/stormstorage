@@ -209,9 +209,20 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
       with volumes, `nvol:<node>/<id>` with owner; summary + UI.
 - [x] tests/adopt.rs: two mock stormblocks (local + cluster peer) → adopt,
       place, pools, feed. sc-build passes.
-- Waiting on other components (#11): drive identity per
-  slab + RAID partners (stormblock#136), consumer beyond `owner`
-  (stormblock#138), PV/PVC (rustkube-node#59).
+- [ ] #11 follow-ups — IN PROGRESS 2026-09-28. stormblock#136 (v17.1.0)
+      and #138 (v18.1.0) landed; rustkube-node#59 (PV/PVC) is still open.
+      Plan: poll `GET /api/v1/volumes?placement=true` (full read each
+      poll; `?since` is not used because attach/detach and slab state do
+      not bump `generation`). Parse slab `drive` {serial,wwn,model,path};
+      volume `placement` {slabs[{id,drive,node,state,legs,…}], drives,
+      legs{policy,health,expected,missing,…}, rebuild, arrays[{members}]},
+      `kind`, `in_use`, `attachments`, `consumer`. `placed_by: engine` from
+      placement; the slot scan runs only for an engine that sends no
+      placement (older than v17.1.0). Feed: pool detail names the drive;
+      node volume: kind, in use, consumer, drives, partners, rebuild.
+      UI Node volumes: kind, consumer, drive, partners. Tests: parse real
+      shapes, placement precedence, feed. PV/PVC stays open on
+      rustkube-node#59.
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.
 
