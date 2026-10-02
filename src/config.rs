@@ -117,7 +117,6 @@ impl LocalConfig {
         }
     }
 }
-}
 
 /// Peer stormstorage instances (one per site/cluster). Durable-intent
 /// state (volumes, registered nodes) replicates to every peer on change;
