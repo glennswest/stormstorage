@@ -290,6 +290,22 @@ Containerfile goes; build.sh's static binary stays.
       tests/auth.rs: token + no header → 401, right header → 2xx, wrong →
       401, reads open, register open, empty token → open.
 
+### Engine token on every poll, back off on 401 (#38, P0) — in progress 2026-10-02
+server1's console: a stormblock WARN for `GET /api/v1/discovery` and
+`/v1/nodes/capacity` every 15 s. A node with no token of its own (one
+stormblock self-registered, or adopted) was polled bare.
+- [ ] `AppState::engine_token`: the node's own token, else the configured
+      engine token (`STORMBLOCK_API_TOKEN`, `[local] token_file`), read at
+      call time so a re-minted file is picked up. Adopted nodes no longer
+      copy the token into the state file.
+- [ ] A 401/403 is a configuration error: `src/refusal.rs` backs off per
+      engine URL (2×interval doubling to 5 min; a changed token retries at
+      once), one WARN + event at the first refusal, then a summary at most
+      every 5 min; an event when it is accepted again.
+- [ ] Tests: unit (backoff, token change) and tests/token.rs (a mock engine
+      that demands the token; a self-registered node polled with it; a
+      refusing engine called a bounded number of times).
+
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30)
 - [ ] Placement by live IO load, not only free ratio (#31)
