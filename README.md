@@ -223,7 +223,7 @@ worked example.
 | `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
 | `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
-| `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. |
+| `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. It is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
@@ -237,7 +237,7 @@ worked example.
 |---|---|---|
 | `name` | required | Node name, also its registry key. |
 | `engine_url` | required | stormblock management base URL, e.g. `http://192.168.8.150:9090`. |
-| `api_token` | unset | Bearer token for that engine's API. |
+| `api_token` | unset | Bearer token for that engine's API. Unset: the `[local]` engine token. |
 | `labels` | `{}` | Rung → value. `node` and `cluster` default to `name` (SNO). Config labels override the labels the engine reports. |
 | `tier` | unset | Free-form tier role (`high`, `medium`, `backup`, …). |
 

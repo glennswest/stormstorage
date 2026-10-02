@@ -4,13 +4,13 @@
 
 use crate::api::AppState;
 use crate::config::NodeConfig;
-use crate::engine::Engine;
+use crate::engine::{self, Engine};
 use crate::events::Severity;
 use crate::inventory::{self, NodeInventory};
 use crate::model::{Node, NodeSource, NodeStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 pub async fn run(state: Arc<AppState>) {
     loop {
@@ -31,14 +31,14 @@ pub async fn poll_once(state: &Arc<AppState>) {
                 (
                     n.config.name.clone(),
                     n.config.engine_url.clone(),
-                    n.config.api_token.clone(),
+                    state.engine_token(&n.config),
                 )
             })
             .collect()
     };
     for (name, url, token) in snapshot {
-        let engine = Engine::new(&url, token);
-        let result = engine.capacity().await;
+        let engine = Engine::new(&url, token.clone());
+        let result = call_capacity(state, Some(&name), &engine, token.as_deref()).await;
         let reachable = result.is_ok();
         let mut fed = state.fed.write().await;
         let Some(node) = fed.nodes.get_mut(&name) else {
@@ -85,7 +85,7 @@ pub async fn poll_once(state: &Arc<AppState>) {
                         Some(name.clone()),
                         Severity::Error,
                         "node",
-                        format!("{name}: engine unreachable after {failures} polls: {e:#}"),
+                        format!("{name}: engine unusable after {failures} polls: {e:#}"),
                     );
                 }
             }
@@ -105,6 +105,83 @@ pub async fn poll_once(state: &Arc<AppState>) {
             .retain(|n, _| fed.nodes.contains_key(n));
     }
     state.persist().await;
+}
+
+/// GET capacity unless the engine is refusing this token and backing off
+/// (#38): then the poll counts as failed without a call.
+async fn call_capacity(
+    state: &Arc<AppState>,
+    node: Option<&str>,
+    engine: &Engine,
+    token: Option<&str>,
+) -> anyhow::Result<engine::Capacity> {
+    if let Some(wait) = backing_off(state, engine, token) {
+        anyhow::bail!(
+            "engine refuses stormstorage's token; next try in {}s",
+            wait.as_secs()
+        );
+    }
+    let result = engine.capacity().await;
+    note_outcome(state, node, engine, token, result.as_ref().err()).await;
+    result
+}
+
+/// How long until this engine may be called again, if it is refusing.
+fn backing_off(state: &AppState, engine: &Engine, token: Option<&str>) -> Option<Duration> {
+    let now = Instant::now();
+    if state.refusals.may_call(engine.url(), token, now) {
+        None
+    } else {
+        state.refusals.retry_in(engine.url(), now)
+    }
+}
+
+/// Record a call's outcome for the refusal back-off. A refusal is logged
+/// once, then summarised at most every five minutes; acceptance after a
+/// refusal once.
+async fn note_outcome(
+    state: &Arc<AppState>,
+    node: Option<&str>,
+    engine: &Engine,
+    token: Option<&str>,
+    err: Option<&anyhow::Error>,
+) {
+    let url = engine.url();
+    let what = node.unwrap_or(url);
+    let Some(e) = err.filter(|e| engine::is_refused(e)) else {
+        if err.is_none() && state.refusals.accepted(url) {
+            tracing::info!(%url, "engine accepts stormstorage's token again");
+            state.events.write().await.push(
+                node.map(str::to_string),
+                Severity::Info,
+                "auth",
+                format!("{what}: engine accepts stormstorage's token again ({url})"),
+            );
+        }
+        return;
+    };
+    let interval = Duration::from_secs(state.config.poll.interval_secs.max(1));
+    match state.refusals.refused(url, token, interval, Instant::now()) {
+        crate::refusal::Report::First => {
+            let (_, source) = state.config.local.token_source();
+            let sent = if token.is_some() { "a token" } else { "no token" };
+            tracing::warn!(
+                %url,
+                "{e:#}; sent {sent} (configured engine token: {source}); backing off up to {}s",
+                crate::refusal::MAX_BACKOFF.as_secs()
+            );
+            state.events.write().await.push(
+                node.map(str::to_string),
+                Severity::Error,
+                "auth",
+                format!("{what}: {e:#}; sent {sent} (engine token: {source})"),
+            );
+        }
+        crate::refusal::Report::Still(n) => {
+            tracing::warn!(%url, "engine still refuses stormstorage's token ({n} calls since the last report)");
+        }
+        crate::refusal::Report::Quiet => {}
+    }
 }
 
 /// Read one node's slabs and volumes (with their placement; slot owners
@@ -165,8 +242,25 @@ pub async fn adopt_local(state: &Arc<AppState>) {
     let local = &state.config.local;
     let token = local.token();
     let engine = Engine::new(&local.engine_url, token.clone());
-    let discovery = engine.discovery().await.ok().flatten();
-    if discovery.is_none() && engine.capacity().await.is_err() {
+    if backing_off(state, &engine, token.as_deref()).is_some() {
+        return; // It refuses this token (#38); the poll says so.
+    }
+    let discovery = match engine.discovery().await {
+        Ok(d) => {
+            note_outcome(state, None, &engine, token.as_deref(), None).await;
+            d
+        }
+        Err(e) => {
+            note_outcome(state, None, &engine, token.as_deref(), Some(&e)).await;
+            if engine::is_refused(&e) {
+                return;
+            }
+            None
+        }
+    };
+    if discovery.is_none()
+        && call_capacity(state, None, &engine, token.as_deref()).await.is_err()
+    {
         return; // No engine here (yet).
     }
     let local_url = local.engine_url.trim_end_matches('/').to_string();
@@ -185,7 +279,9 @@ pub async fn adopt_local(state: &Arc<AppState>) {
     let mut wanted: Vec<NodeConfig> = vec![NodeConfig {
         name,
         engine_url: local_url,
-        api_token: token.clone(),
+        // The configured token is presented at call time
+        // (`AppState::engine_token`), never copied into the state file.
+        api_token: None,
         labels: Default::default(),
         tier: local.tier.clone(),
     }];
@@ -195,7 +291,7 @@ pub async fn adopt_local(state: &Arc<AppState>) {
                 wanted.push(NodeConfig {
                     name: p.node_name.clone(),
                     engine_url: crate::api::engine_url_from(&p.mgmt_addr),
-                    api_token: token.clone(),
+                    api_token: None,
                     labels: Default::default(),
                     tier: local.tier.clone(),
                 });

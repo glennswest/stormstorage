@@ -38,6 +38,36 @@ pub struct Capacity {
     pub topology: BTreeMap<String, String>,
 }
 
+/// The engine refused the call: 401 or 403. The token is wrong or missing,
+/// so the same call will be refused again (#38, see `crate::refusal`).
+#[derive(Debug)]
+pub struct Refused {
+    pub status: u16,
+    pub path: String,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "engine refused {}: {} (engine token missing or wrong)", self.path, self.status)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Is this error the engine refusing our token?
+pub fn is_refused(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<Refused>().is_some()
+}
+
+/// Turn a 401/403 into [`Refused`].
+fn check_refused(resp: &reqwest::Response, path: &str) -> anyhow::Result<()> {
+    let status = resp.status().as_u16();
+    if status == 401 || status == 403 {
+        return Err(Refused { status, path: path.to_string() }.into());
+    }
+    Ok(())
+}
+
 /// Reads and polls: short, so a dead node is marked unhealthy quickly.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Writes: see [`Engine::req`]. Array create formats a slab through the
@@ -54,6 +84,11 @@ impl Engine {
                 .build()
                 .expect("reqwest client"),
         }
+    }
+
+    /// The management API's base URL.
+    pub fn url(&self) -> &str {
+        &self.url
     }
 
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
@@ -81,10 +116,9 @@ impl Engine {
     /// GET /v1/nodes/capacity. The response is one NodeCapacity for an SNO
     /// node but may be a list or an object wrapper — parse tolerantly.
     pub async fn capacity(&self) -> anyhow::Result<Capacity> {
-        let v: Value = self
-            .get("/v1/nodes/capacity")
-            .send()
-            .await?
+        let resp = self.get("/v1/nodes/capacity").send().await?;
+        check_refused(&resp, "/v1/nodes/capacity")?;
+        let v: Value = resp
             .error_for_status()?
             .json()
             .await?;
@@ -486,8 +520,10 @@ impl Engine {
 
     /// GET /api/v1/discovery — the engine's own name and the peers it
     /// hears. Engines without discovery answer an error; that is `Ok(None)`.
+    /// A 401/403 is Err([`Refused`]).
     pub async fn discovery(&self) -> anyhow::Result<Option<Discovery>> {
         let resp = self.get("/api/v1/discovery").send().await?;
+        check_refused(&resp, "/api/v1/discovery")?;
         if !resp.status().is_success() {
             return Ok(None);
         }

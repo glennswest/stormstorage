@@ -33,6 +33,8 @@ pub struct AppState {
     pub inventory: RwLock<BTreeMap<String, NodeInventory>>,
     /// Volumes with a leg replacement in flight in this process (#1).
     pub replacing: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Engines refusing our token, backed off (#38).
+    pub refusals: crate::refusal::Refusals,
 }
 
 impl AppState {
@@ -44,6 +46,7 @@ impl AppState {
             state_path,
             inventory: RwLock::new(BTreeMap::new()),
             replacing: std::sync::Mutex::new(Default::default()),
+            refusals: Default::default(),
         }
     }
 }
@@ -60,7 +63,18 @@ impl AppState {
     }
 
     pub(crate) fn engine_for(&self, node: &Node) -> Engine {
-        Engine::new(&node.config.engine_url, node.config.api_token.clone())
+        Engine::new(&node.config.engine_url, self.engine_token(&node.config))
+    }
+
+    /// The token to present to a node's engine: its own when the config
+    /// gives one, else the configured engine token (`$STORMBLOCK_API_TOKEN`,
+    /// `[local] token_file`), read now so a re-minted file is picked up.
+    /// Nodes stormblock registered and nodes adopted carry none (#38).
+    pub fn engine_token(&self, node: &NodeConfig) -> Option<String> {
+        node.api_token
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| self.config.local.token())
     }
 }
 

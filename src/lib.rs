@@ -12,6 +12,7 @@ pub mod inventory;
 pub mod model;
 pub mod orchestrate;
 pub mod placement;
+pub mod refusal;
 pub mod registry;
 pub mod replicate;
 

@@ -92,22 +92,31 @@ impl Default for LocalConfig {
 }
 
 impl LocalConfig {
-    /// The engine token, if one is available to this process.
+    /// The engine token, if one is available to this process. Read on
+    /// every call: stormblock mints the file at start (#38).
     pub fn token(&self) -> Option<String> {
+        self.token_source().0
+    }
+
+    /// The engine token and where it came from — or, without one, why
+    /// not. The reason goes into the log when an engine refuses (#38).
+    pub fn token_source(&self) -> (Option<String>, String) {
         if let Ok(t) = std::env::var("STORMBLOCK_API_TOKEN") {
             if !t.trim().is_empty() {
-                return Some(t.trim().to_string());
+                return (Some(t.trim().to_string()), "$STORMBLOCK_API_TOKEN".into());
             }
         }
         let path = self
             .token_file
             .clone()
             .unwrap_or_else(|| "/etc/stormblock/api_token".into());
-        std::fs::read_to_string(path)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+        match std::fs::read_to_string(&path) {
+            Ok(s) if !s.trim().is_empty() => (Some(s.trim().to_string()), path),
+            Ok(_) => (None, format!("no token: {path} is empty")),
+            Err(e) => (None, format!("no token: {path}: {e}")),
+        }
     }
+}
 }
 
 /// Peer stormstorage instances (one per site/cluster). Durable-intent
