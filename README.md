@@ -26,6 +26,20 @@ stormview components feed on **:9093**.
   (volume create, attach, arrays, deletes) after 300 s, since an array
   create formats a slab through the RAID and a loaded engine can take
   far longer than a poll should wait.
+- **Engine token (#38).** Every engine call presents a bearer token: the
+  node's own `api_token` from `[[nodes]]`, else the configured engine token
+  (`$STORMBLOCK_API_TOKEN`, else the file `[local] token_file`). The token
+  is read on every call, so a re-minted file is picked up. Self-registered
+  and adopted nodes have no token of their own and get the configured one.
+  It is never copied into `state.json`. A 401 or 403 is treated as a
+  configuration error, not an outage. That engine URL is backed off: no
+  calls for twice the poll interval, doubling up to 5 min, and each skipped
+  poll counts as a failed one, so the node goes unhealthy at
+  `poll.fail_threshold`. The first refusal is one WARN and one `auth`
+  error event that names where the token came from (or why there is none).
+  After that, a summary is logged at most every 5 min. A changed token is
+  tried at once. When the engine accepts the token again, an `auth` info
+  event is logged.
 - **Node inventory.** Each poll also reads every reachable engine's slabs
   (`GET /api/v1/slabs`, each naming its `drive`: serial, WWN, model, path)
   and all its volumes (`GET /api/v1/volumes?placement=true`). Each volume
@@ -223,7 +237,7 @@ worked example.
 | `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
 | `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
-| `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. It is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). |
+| `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. `$STORMBLOCK_TOKEN_FILE` is **not** read (#42). The token is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). The key belongs under `[local]`: a top-level `token_file` is silently ignored, like every unknown key. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
@@ -300,8 +314,9 @@ Errors return `{"error": "...", "code": "not_found|bad_request|conflict|engine|u
 with HTTP 404/400/409/502/401.
 
 **Auth (#6).** With `[api] api_token` set, these need
-`Authorization: Bearer <token>`, else 401 `unauthorized`: volume create,
-delete, move and export, and `POST /api/v1/replicate`. Open with or
+`Authorization: Bearer <token>`, else 401 `unauthorized`: every request
+that is not a GET, HEAD or OPTIONS, which today is volume create, delete,
+move, export and assemble, and `POST /api/v1/replicate`. Open with or
 without a token:
 - reads (every GET, `/ws/components`) and the `placement/plan` dry run.
   Anyone who can reach the port may look (the family posture).
@@ -333,7 +348,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
 | GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (an `export` metric, Publish/Republish and delete actions) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
-| POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered}`. Applied only if newer. |
+| POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans}`. Applied only if newer. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
 | POST | `/api/v1/storage/register` | stormblock heartbeat, `{node_addr, hostname, volumes[]}`. |
 | POST | `/api/v1/storage/deregister` | `{node_addr}`. |
@@ -454,11 +469,22 @@ stormd supervises it on the node with
 `--config /etc/stormstorage/stormstorage.toml`. The shipped config sets
 `listen_addr = "0.0.0.0:9093"`, `data_dir = "/var/lib/stormstorage"` and
 `[local] token_file = "/run/stormblock/engine/api_token"`, the engine's
-minted token (stormcos `deploy/build-goldens.sh`). A stock node has no
-static nodes or pools. `[local]` is on by default, so it adopts its own
-engine, and that engine's cluster peers, once the engine answers. The health check is `/api/v1/health` on 9093, and
-the node gateway routes `storage.storm1.g8.lo` to `127.0.0.1:9093` (stormcos `deploy/manifests/85-routes.yaml`). The
-component entry lives in stormcentral's `components/stormcos.toml`.
+minted token. stormd's unit mounts the host's `/run/stormblock` read-only.
+A stock node has no static nodes or pools. `[local]` is on by default, so
+it adopts its own engine, and that engine's cluster peers, once the engine
+answers. The health check is `/api/v1/health` on 9093, and the node
+gateway routes `storage.storm1.g8.lo` to `127.0.0.1:9093` (stormcos
+`deploy/manifests/85-routes.yaml`).
+
+The component entry (port, health, argv, the shipped config text, goldens)
+lives in stormcentral's database (stormcentral#185). Read it with
+`stormcentral component export`, and change it with
+`stormcentral component edit stormstorage --set key=value`, never by a
+commit to stormcentral's `components/stormcos.toml`, which is only the
+seed. As of 2026-10-02 the entry's config puts `token_file` at the top
+level, where stormstorage ignores it, so a node polls its engine with no
+token until the entry is fixed (#42). stormcos `deploy/build-goldens.sh`
+has it under `[local]`.
 
 A commit here does not reach a node until a golden is built and a
 release composed. When an issue's work is complete, request the golden
@@ -496,7 +522,9 @@ done. The open work:
 - #8: the test suites are in; a pass on a test machine is pending;
 - #14: re-head when the head node is lost; #15: reassemble after the
   head's engine restarts; #26: a stalled head's leg stays lost;
-- #12: the engine token's default path and peer calls;
+- #12: the engine token's default path and peer calls; #42: the
+  registry entry's config misplaces `token_file`, and
+  `$STORMBLOCK_TOKEN_FILE` is not read;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #28: each node volume's PV/PVC, waiting on rustkube-node#59;

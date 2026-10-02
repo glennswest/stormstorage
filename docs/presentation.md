@@ -208,7 +208,10 @@ write without the token when `api_token` is set.
 - **Start.** stormd supervises it with
   `--config /etc/stormstorage/stormstorage.toml`. The shipped config sets
   `listen_addr`, `data_dir` and `[local] token_file` (the engine's minted
-  token), and the node adopts its own engine once it answers.
+  token), and the node adopts its own engine once it answers. The config
+  text is part of the component entry in stormcentral's database
+  (`stormcentral component edit`). Today the entry has `token_file` at the
+  top level, where it is ignored (#42).
 - **Health** is `GET /api/v1/health` on 9093. The gateway route is
   `storage.storm1.g8.lo`.
 - **Update.**
@@ -227,9 +230,10 @@ write without the token when `api_token` is set.
   - Phase 2 (v0.3.0): RAID1 assembly and leg move, proven on dev.
 - **Since v0.3.0 (unreleased):** local adoption and inventory (#9, #11),
   auth (#6), re-leg (#1), serving (#2), assembly retry (#7), test
-  container (#8).
-- **Tests:** 35 unit, plus integration tests against mock engines
-  (`tests/adopt.rs`, `auth.rs`, `export.rs`), run by `sc-build`. The node
+  container (#8), the engine token on every call with a back-off on 401
+  (#38).
+- **Tests:** 39 unit, plus integration tests against mock engines
+  (`tests/adopt.rs`, `auth.rs`, `export.rs`, `token.rs`), run by `sc-build`. The node
   suites `/test short|medium|long` (`test/`) have not passed on a test
   machine yet.
 - **Biggest risks today:**

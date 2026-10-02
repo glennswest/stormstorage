@@ -28,7 +28,9 @@ sc-build 'cargo clippy --all-targets'
 
 It ships as a stormcos service component in goldens: `stormstorage` and
 `-logs` on system1, `-data` on data1. The authority on goldens is
-stormcos `docs/goldens.md`. When an issue's work is complete, request the
+stormcos `docs/goldens.md`. The component entry (port, health, argv,
+shipped config) is in stormcentral's database: `stormcentral component
+export` / `component edit stormstorage --set key=value` (#37). When an issue's work is complete, request the
 golden once with
 `stormcentral component build stormstorage --url http://stormcentral.g8.lo`.
 `Cargo.lock` pins stormview; bump it with `cargo update -p stormview`.
@@ -324,9 +326,14 @@ stormblock self-registered, or adopted) was polled bare.
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #26 stalled head leg stays
       lost; #27 host_nqn on attach; #28 PV/PVC; #35 forward announcements
-      to stormfs.
-- Docs refreshed from the code 2026-09-28 (README, docs/, example config,
-  this file); the promises without code are #30–#36.
+      to stormfs; #42 the registry entry's config has `token_file` at the
+      top level (ignored; needs `[local]`) and `$STORMBLOCK_TOKEN_FILE` is
+      not read — the entry edit was refused from this session, owner/
+      stormcentral to fix.
+- Docs refreshed from the code 2026-09-28, and again 2026-10-02 (#38's
+  engine token and back-off; the component entry lives in stormcentral's
+  database, #37; auth covers assemble; replicate carries orphans); the
+  promises without code are #30–#36, and #42.
 
 ## Rules recap
 - Conventional commits; changelog every change; docs ship with code.

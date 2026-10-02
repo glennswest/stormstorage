@@ -98,6 +98,15 @@ unhealthy after `poll.fail_threshold` consecutive failures. Marking a
 node unhealthy removes it from placement, and the reconciler marks
 the legs there lost and re-legs their volumes (#1, see below).
 
+Every engine call carries a bearer token (*implemented, #38*): the node's
+own `api_token`, else the configured engine token (`$STORMBLOCK_API_TOKEN`,
+else `[local] token_file`), read on every call and never written to
+`state.json`. A 401/403 is a configuration error, not an outage: that
+engine URL is backed off (2× the poll interval, doubling to 5 min), each
+skipped poll counts as failed, the first refusal is one WARN plus an
+`auth` event, and later ones are summarised at most every 5 min. A changed
+token is tried at once.
+
 ### The federation tree
 
 Physical chain (what fails together) and logical overlay (who groups with
@@ -425,7 +434,8 @@ stormconsole#53).
    assembly retry (#7) are in the code (unreleased, after v0.3.0); the
    live runs of #1 and #2 wait on stormcentral#131.
    Also since v0.3.0: local adoption and node inventory (#9, #11), inbound
-   API auth (#6), and the test container (#8).
+   API auth (#6), the test container (#8), and the engine token on every
+   call with a back-off for an engine that refuses it (#38).
 3. **Rebalance + tier migration** (#30, #32): policy-driven leg moves;
    pool capacity watermarks; IO-load placement (#31).
 4. **Native replication** (#33): orchestrate /v1 prestage/fence/promote
