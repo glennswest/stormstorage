@@ -244,6 +244,22 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
       UI Node volumes: kind, consumer, drive, partners. Tests: parse real
       shapes, placement precedence, feed. PV/PVC is #28, after
       rustkube-node#59.
+- [ ] PV/PVC per node volume (#28) — rustkube-node#59 closed 2026-10-05.
+      The engine does not carry the PV: the kubelet's mirror writes a PV +
+      bound PVC per volume into the apiserver (`storm.io/node`,
+      `storm.io/volume` annotations; `spec.csi.volumeHandle` = volume
+      name, driver `stormblock.storm.io`; labels `storm.io/volume-kind`,
+      `storm.io/component`). Plan: `[kubernetes]` config (enabled, server
+      default `https://127.0.0.1:6443` unverified on loopback like
+      stormconsole, `token_file` else `$KUBE_TOKEN`, else
+      `/data/stormcert/node-admin.token`, else the pod SA token; anonymous
+      without one); `src/kube.rs` reads PVs + PVCs once per poll, joins by
+      (node, volume) onto `PlacedVolume.pv` {name, phase, reclaim, kind,
+      component, claim {namespace, name, uid, phase, bound}}; failures keep
+      the last view, event on transitions only. Feed `nvol:` metrics
+      pv/claim; UI Node volumes column. Tests: unit join + tests/kube.rs
+      (mock apiserver + mock engine). stormcos issue: mount
+      /data/stormcert ro in the stormstorage unit.
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.
 
