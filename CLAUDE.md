@@ -244,7 +244,7 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
       UI Node volumes: kind, consumer, drive, partners. Tests: parse real
       shapes, placement precedence, feed. PV/PVC is #28, after
       rustkube-node#59.
-- [ ] PV/PVC per node volume (#28) — rustkube-node#59 closed 2026-10-05.
+- [x] PV/PVC per node volume (#28) — done 2026-10-05 (356227b).
       The engine does not carry the PV: the kubelet's mirror writes a PV +
       bound PVC per volume into the apiserver (`storm.io/node`,
       `storm.io/volume` annotations; `spec.csi.volumeHandle` = volume
@@ -258,8 +258,10 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
       component, claim {namespace, name, uid, phase, bound}}; failures keep
       the last view, event on transitions only. Feed `nvol:` metrics
       pv/claim; UI Node volumes column. Tests: unit join + tests/kube.rs
-      (mock apiserver + mock engine). stormcos issue: mount
-      /data/stormcert ro in the stormstorage unit.
+      (mock apiserver + mock engine). sc-build passes (47 unit,
+      tests/kube.rs 2/2). Filed stormcos#290: mount /data/stormcert ro in
+      the stormstorage unit (today anonymous works only while sno grants
+      anonymous admin, stormcos#76). Not seen on a node yet.
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.
 
@@ -354,7 +356,7 @@ stormblock self-registered, or adopted) was polled bare.
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #26 stalled head leg stays
-      lost; #27 host_nqn on attach; #28 PV/PVC; #35 forward announcements
+      lost; #27 host_nqn on attach; #35 forward announcements
       to stormfs; #42 the registry entry's config has `token_file` at the
       top level (ignored, now warned; the default paths find the token
       anyway since ef3af98) — entry fix is stormcentral#72.
