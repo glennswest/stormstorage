@@ -268,6 +268,10 @@ looked for only at /etc/stormblock/api_token; the unit mounts it at
 (ignored, stormcentral#72). Fixed in ef3af98 (#42 step 2: family-order
 search incl. that path; warn on unknown top-level keys). A pass needs a
 release carrying the new golden on C2NR0Q2; then rerun short + medium.
+Medium run 61a319ebe8 (2a4c3ac): 4 pass / 7 fail / 3 skip, all failures
+"0 candidates" (same cause). sc-build passes on ef3af98; golden
+golden-stormstorage-6a3478464394, release request stormcos#156; #8
+proposed after stormcos#156. #42 step 2 done (entry fix: stormcentral#72).
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
@@ -336,9 +340,8 @@ stormblock self-registered, or adopted) was polled bare.
       reassemble after head engine restart; #26 stalled head leg stays
       lost; #27 host_nqn on attach; #28 PV/PVC; #35 forward announcements
       to stormfs; #42 the registry entry's config has `token_file` at the
-      top level (ignored; needs `[local]`) and `$STORMBLOCK_TOKEN_FILE` is
-      not read — the entry edit was refused from this session, owner/
-      stormcentral to fix.
+      top level (ignored, now warned; the default paths find the token
+      anyway since ef3af98) — entry fix is stormcentral#72.
 - Docs refreshed from the code 2026-09-28, and again 2026-10-02 (#38's
   engine token and back-off; the component entry lives in stormcentral's
   database, #37; auth covers assemble; replicate carries orphans); the
