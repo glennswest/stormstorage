@@ -353,44 +353,35 @@ stormblock self-registered, or adopted) was polled bare.
 - [ ] Placement by live IO load, not only free ratio (#31)
 - [ ] Cross-cluster tier migration (pool → pool) (#32)
 
-### Phase 4: Native replication on the RAID head (#33) — in progress 2026-10-05
+### Phase 4: Replication on the RAID head (#33) — code done 2026-10-05; live run waits
 Re-scoped by the owner on stormblock#179 (option b, 2026-10-05): cross-node
-RAID1 is the head's job here, not the engine's. stormblock #5 (prestage,
-sync state, resync throttle) and #7 (bounded dual-attach) moved here; the
-engine's `/v1/prestage` stays control-plane only — do not call it.
-stormblock#6 keeps the engine's part: epoch fencing on leg attaches, to the
-contract this issue states (docs/replication.md). Plan:
-- [ ] docs/replication.md: model, /v1 → stormstorage mapping, the leg
-      attach epoch contract for stormblock#6, where stormblock-csi#29 reads
-      sync state (here, `replicas[]` in /v1's exact shape)
-- [ ] Sync state: poll the head's array each poll (in memory, not
-      replicated) → `replicas[] {node, role: master|slave, sync: in_sync |
-      resyncing{progress_pct, lag_bytes} | detached}`; unknown = detached
-      (conservative). API, feed, UI.
-- [ ] `epoch` per volume (starts 1); `POST …/fence {expected_epoch}` CAS
-      (412 `stale_epoch` + `current_epoch`), also fences every reachable
-      leg via the engine's `/v1/volumes/{leg}/fence` (CAS on the leg's own
-      epoch) — refusal of the zombie head is stormblock#6's
-- [ ] `POST …/promote {target_node, fenced_epoch}`: target holds a created
-      leg; on it open the surviving legs as drives, `POST
-      /api/v1/arrays/assemble {drive_uuids}` (same array uuid), find
-      `<name>-mirror`, republish. Old head → `stale_heads`, reaped when it
-      answers (drop leg drives first, then the array with
-      `keep_superblocks=true` — never wipe: the legs are shared). Lost
-      legs then re-leg as usual. 409 while a dual-attach window is open.
-- [ ] `POST …/prestage {node?, bandwidth_class?}` = replace a slave leg
-      (the move machinery); `bandwidth_class` low|normal|high|unthrottled
-      → `PUT /api/v1/arrays/{id}/rebuild` (rates in `[recovery]`)
-- [ ] Dual-attach window: `POST …/dual-attach {target_node, ttl_secs}` →
-      `{epoch, target_node, expires_at_ms}`; `…/dual-attach/close {epoch,
-      outcome}` commit = fence + promote, abort = close; expiry aborts in
-      the reconciler
-- [ ] Self-demote after lease loss: not built here — a fenced head's
-      writes fail at the legs (stormblock#6); documented
-- [ ] Tests: unit (CAS, window, sync mapping) + tests/replication.rs
-      (mock engines: fence, double fence, promote without fence, promote
-      re-heads via assemble, stale head reaped, sync from the array)
-- Live e2e waits like #1/#2 on stormcentral#131.
+RAID1 is the head's job here, not the engine's. stormblock #5/#7 moved
+here; the engine's `/v1` prestage/promote/dual-attach are never called.
+Design and contracts: docs/replication.md. Code: `src/head.rs`.
+- [x] Sync state: head array read each poll (`AppState.heads`, memory
+      only) → `replicas[] {node, role, sync}` in /v1's JSON; no reading =
+      detached. `GET …/replicas`; view `replica_sync`/`health`; feed + UI.
+- [x] `epoch` + `fenced` per volume; `POST …/fence` CAS (412 +
+      current_epoch), fences each leg's /v1 epoch (`legs[].epoch`); leg
+      attaches send it (`Engine::attach_leg`).
+- [x] `POST …/promote`: surviving legs opened on the target,
+      `/api/v1/arrays/assemble` (same array uuid), the adopted
+      `<name>-mirror` served via `/api/v1/volumes/{id}/attach`
+      (`export.adopted`; never an empty replacement). Live old head → 409
+      until stormblock#296 (filed). `stale_heads` reaped only once the old
+      head no longer holds the array.
+- [x] `POST …/prestage` (slave replacement), `bandwidth_class` →
+      `PUT arrays/{id}/rebuild` (`[recovery] rate_*`).
+- [x] Dual-attach open/close (commit = fence + promote), expiry in the
+      reconciler.
+- [x] Self-demotion: not built — a fenced head fails at the legs (doc).
+- [x] Tests: 8 unit in src/head.rs; tests/replication.rs 4/4 (mock engines
+      sharing superblocks/slabs). sc-build passes (e64ad72: 55 unit).
+- [x] Contract for stormblock#6 and the stormblock-csi#29 answer (read
+      from stormstorage) posted on #33 / stormblock#6 / stormblock-csi#29.
+- [ ] Live run on real engines: waits on stormcentral#131 like #1/#2;
+      enforcement needs stormblock#6 + #27 (host_nqn); live handover needs
+      stormblock#296. Async backup legs split to #46.
 
 ### Phase 5: HA
 - [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34)
