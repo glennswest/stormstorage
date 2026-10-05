@@ -62,6 +62,24 @@ stormview components feed on **:9093**.
   do not bump the engine's generation. Inventory is observed state: in
   memory only, never replicated, and dropped when the node goes
   unhealthy.
+- **PV/PVC per node volume (#28).** The engine does not know a volume's
+  Kubernetes objects; rustkube-node's mirror (rustkube-node#59) writes a
+  PV and its bound PVC for every stormblock volume a node holds (its
+  `-data`, `-state` and `-logs` volumes, and the built-in driver's
+  claims). Each poll reads `GET /api/v1/persistentvolumes` and
+  `/api/v1/persistentvolumeclaims` from the apiserver (`[kubernetes]`,
+  default `https://127.0.0.1:6443`) and puts on each node volume its
+  `pv`: the PV's name, `phase`, `reclaim`, `capacity`, `volume_kind`
+  (`storm.io/volume-kind`: `data`, `state`, `logs`) and `component`
+  (`storm.io/component`), and the `claim` its `claimRef` names
+  (namespace, name, uid, the PVC's `phase`, and `bound`: the PVC exists,
+  names the PV and has the uid the PV carries). A PV belongs to a volume by
+  driver `stormblock.storm.io`, `storm.io/volume` (else `volumeHandle`) and
+  `storm.io/node` (else its `nodeAffinity` hostname; `n1` matches
+  `n1.g8.lo`). Where an old unqualified pair sits beside the
+  node-qualified one (rustkube-node#107), the complete pair wins, then the
+  node-qualified name. A failed read keeps the last view; the change
+  between readable and not is one WARN and one `kubernetes` event.
 - **Pools.** Three kinds, all in `GET /api/v1/pools`:
   - `slab`: every slab of every node is a pool, with its tier, role,
     failure domain, total/free/allocated bytes and its volume count;
@@ -180,8 +198,9 @@ stormview components feed on **:9093**.
   `data_dir`, state lives only in memory and a warning is logged.
 - **UI and feeds.** The embedded UI at `/` shows:
   - nodes, and pools (policy, slab with its drive, tier);
-  - node volumes with their slab and drive, RAID partners, consumer, kind
-    and in-use state;
+  - node volumes with their slab and drive, RAID partners, consumer, kind,
+    in-use state, and PV / PVC (a warning chip when the pair is not
+    complete);
   - distributed volumes with leg states, assembly and export, plus
     buttons to move a leg, publish/republish, assemble a pending volume
     and delete;
@@ -244,6 +263,11 @@ worked example.
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
+| `[kubernetes] enabled` | `true` | Read each node volume's PV/PVC from the apiserver (#28). |
+| `[kubernetes] server` | `"https://127.0.0.1:6443"` | The apiserver. |
+| `[kubernetes] token_file` | unset | Bearer token file. `$KUBE_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `/data/stormcert/node-admin.token` (the node-admin token stormcert writes) and `/var/run/secrets/kubernetes.io/serviceaccount/token`. None found: anonymous. Read on every poll. |
+| `[kubernetes] ca_file` | unset | CA to verify the apiserver with (e.g. `/data/stormcert/ca.crt`). |
+| `[kubernetes] insecure_skip_tls_verify` | unset | Unset: TLS is not verified for a loopback `server` (as stormconsole), and verified otherwise. |
 | `[[nodes]]` | none | Static nodes, see below. Names must be unique. |
 | `[[pools]]` | none | Pools, see below. |
 
@@ -530,7 +554,6 @@ done. The open work:
   default paths cover it);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #28: each node volume's PV/PVC, waiting on rustkube-node#59;
 - #30–#36: rebalance, IO-load placement, tier migration, native
   replication, HA state, forwarding announcements to stormfs, and the
   stormblock-csi analysis.

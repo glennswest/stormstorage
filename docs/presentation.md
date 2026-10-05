@@ -138,6 +138,8 @@ The source is `src/registry.rs`, `src/placement.rs`,
 - **Auth (#6).** With `[api] api_token` set, every write needs the token.
 - Kubernetes PVCs on stormcos are the **built-in stormblock driver** on
   the pod's node, not this; CSI is for third-party drivers.
+- **PV/PVC per node volume (#28).** Each node volume shows the PV and
+  bound PVC rustkube-node writes for it, read from the apiserver.
 - **Surfaces.** An embedded UI, a stormd card, a stormview feed (REST and
   WebSocket) and an event ring.
 

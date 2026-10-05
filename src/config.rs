@@ -15,6 +15,7 @@ pub struct Config {
     pub replication: ReplicationConfig,
     pub local: LocalConfig,
     pub recovery: RecoveryConfig,
+    pub kubernetes: KubeConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
 }
@@ -115,6 +116,74 @@ impl LocalConfig {
     }
 }
 
+/// The node's Kubernetes apiserver, read for each node volume's PV and
+/// PVC (#28). The family default, as stormconsole's: the apiserver on
+/// loopback, its TLS not verified there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KubeConfig {
+    pub enabled: bool,
+    pub server: String,
+    /// Bearer token file: `$KUBE_TOKEN` wins; otherwise the first readable
+    /// of this file and [`DEFAULT_KUBE_TOKEN_FILES`]. None: anonymous.
+    pub token_file: Option<String>,
+    /// CA to verify the apiserver with.
+    pub ca_file: Option<String>,
+    /// Unset: skip verification for a loopback server only.
+    pub insecure_skip_tls_verify: Option<bool>,
+}
+
+impl Default for KubeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            server: "https://127.0.0.1:6443".into(),
+            token_file: None,
+            ca_file: None,
+            insecure_skip_tls_verify: None,
+        }
+    }
+}
+
+/// Where an apiserver token is looked for when nothing names one: the
+/// node-admin token stormcert writes (stormcos#60), then a pod's
+/// ServiceAccount token.
+pub const DEFAULT_KUBE_TOKEN_FILES: &[&str] = &[
+    "/data/stormcert/node-admin.token",
+    "/var/run/secrets/kubernetes.io/serviceaccount/token",
+];
+
+impl KubeConfig {
+    pub fn token(&self) -> Option<String> {
+        self.token_source().0
+    }
+
+    /// The token and where it came from, or why there is none.
+    pub fn token_source(&self) -> (Option<String>, String) {
+        if let Some(t) = std::env::var("KUBE_TOKEN").ok().filter(|v| !v.trim().is_empty()) {
+            return (Some(t.trim().to_string()), "$KUBE_TOKEN".into());
+        }
+        let mut files: Vec<String> = self.token_file.iter().map(|p| p.trim().to_string()).collect();
+        files.extend(DEFAULT_KUBE_TOKEN_FILES.iter().map(|p| p.to_string()));
+        files.dedup();
+        token_search(None, &files)
+    }
+
+    pub fn skip_tls_verify(&self) -> bool {
+        self.insecure_skip_tls_verify.unwrap_or_else(|| {
+            let host = self
+                .server
+                .split("://")
+                .nth(1)
+                .unwrap_or(&self.server)
+                .split('/')
+                .next()
+                .unwrap_or("");
+            host.starts_with("127.") || host.starts_with("localhost") || host.starts_with("[::1]")
+        })
+    }
+}
+
 /// Where an engine token file is looked for when nothing names one.
 pub const DEFAULT_TOKEN_FILES: &[&str] = &[
     "/etc/stormblock/api_token",
@@ -167,6 +236,7 @@ impl Default for Config {
             replication: ReplicationConfig::default(),
             local: LocalConfig::default(),
             recovery: RecoveryConfig::default(),
+            kubernetes: KubeConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }
@@ -370,7 +440,7 @@ impl Config {
 fn unknown_top_level_keys(text: &str) -> Vec<String> {
     const KNOWN: &[&str] = &[
         "listen_addr", "data_dir", "federation", "poll", "api", "replication",
-        "local", "recovery", "nodes", "pools",
+        "local", "recovery", "kubernetes", "nodes", "pools",
     ];
     match text.parse::<toml::Table>() {
         Ok(t) => t.keys().filter(|k| !KNOWN.contains(&k.as_str())).cloned().collect(),

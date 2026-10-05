@@ -59,7 +59,7 @@ form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
 
 <h2>Node volumes</h2>
 <div class="wrap"><table>
-<thead><tr><th>Volume</th><th>Node</th><th>Size / Used</th><th>Role</th><th>Slab / Drive</th><th>Partners</th><th>Consumer</th></tr></thead>
+<thead><tr><th>Volume</th><th>Node</th><th>Size / Used</th><th>Role</th><th>Slab / Drive</th><th>Partners</th><th>Consumer</th><th>PV / PVC</th></tr></thead>
 <tbody id="nvols"></tbody>
 </table></div>
 
@@ -135,6 +135,10 @@ async function refresh(){
       <td>${x.status.volumes||0}</td></tr>`).join('')
       ||'<tr><td colspan="7" class="dim">no nodes — no stormblock on this machine answered; add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>';
     const drv=d=>d?(d.serial||d.wwn||d.path||'?'):'';
+    // A node volume's PV and its claim (#28): complete = Bound and naming each other.
+    const pvc=p=>{if(!p)return '';const c=p.claim;const ok=p.phase==='Bound'&&c&&c.bound;
+      const claim=c?`${c.namespace}/${c.name}${c.bound?'':' '+chip(c.phase?'not bound':'claim missing','c-warn')}`:chip('no claim','c-warn');
+      return `${p.pv} ${ok?p.phase:chip(p.phase||'?','c-warn')}<br>${claim}${p.volume_kind?' '+chip(p.volume_kind,'c-mut'):''}`;};
     const what=x=>x.kind==='slab'?`${x.node} · ${x.role} · tier ${x.tier} · ${x.drive?'drive '+drv(x.drive):x.domain}`
       :x.kind==='tier'?`${x.slabs.length} slab(s) on ${x.nodes.join(', ')}`
       :`replicas ${x.replicas} at ${x.rung} · ${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}`;
@@ -152,8 +156,9 @@ async function refresh(){
       <td class="dim mono">${v.placement?(v.placement.slabs||[]).map(s=>`${s.id.slice(0,8)} ${drv(s.drive)}${s.node&&s.node!==node?'@'+s.node:''}${s.state!=='ok'?' '+chip(s.state,'c-err'):''}`).join('<br>')
         :v.slabs.length?v.slabs.map(s=>s.slice(0,8)).join('+'):'unknown'}${v.placement&&v.placement.rebuild&&v.placement.rebuild!=='none'?' '+chip('rebuild '+v.placement.rebuild,'c-warn'):''}</td>
       <td class="dim mono">${v.placement?(v.placement.arrays||[]).flatMap(a=>a.members).map(m=>`${drv(m.drive)}@${m.node} ${m.state==='active'?m.state:chip(m.state,'c-warn')}`).join('<br>'):''}</td>
-      <td class="dim">${(c=>c?`${c.kind} ${c.namespace?c.namespace+'/':''}${c.name}`:'')(v.consumer||v.owner)}</td></tr>`)).join('')
-      ||'<tr><td colspan="7" class="dim">no node volumes</td></tr>';
+      <td class="dim">${(c=>c?`${c.kind} ${c.namespace?c.namespace+'/':''}${c.name}`:'')(v.consumer||v.owner)}</td>
+      <td class="dim mono">${pvc(v.pv)}</td></tr>`)).join('')
+      ||'<tr><td colspan="8" class="dim">no node volumes</td></tr>';
     const sel=$('v-pool'); const cur=sel.value;
     sel.innerHTML='<option value="">no pool</option>'+p.pools.filter(x=>x.kind==='policy').map(x=>`<option>${x.name}</option>`).join('');
     sel.value=cur;

@@ -94,6 +94,7 @@ pub async fn poll_once(state: &Arc<AppState>) {
             refresh_inventory(state, &name, &engine).await;
         }
     }
+    crate::kube::refresh(state).await;
     crate::orchestrate::reconcile(state).await;
     // Forget inventory of nodes no longer known.
     {
@@ -211,7 +212,9 @@ async fn refresh_inventory(state: &Arc<AppState>, name: &str, engine: &Engine) {
     }
     .await;
     match result {
-        Ok(inv) => {
+        Ok(mut inv) => {
+            // The last PV/PVC view, until this poll reads the apiserver (#28).
+            crate::kube::join(name, &mut inv, &state.kube.read().await.claims);
             let count = inv.volumes.len() as u64;
             state.inventory.write().await.insert(name.to_string(), inv);
             if let Some(n) = state.fed.write().await.nodes.get_mut(name) {

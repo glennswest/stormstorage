@@ -257,6 +257,9 @@ pub struct PlacedVolume {
     /// Slab ids, sorted.
     pub slabs: Vec<String>,
     pub placed_by: PlacedBy,
+    /// Its PV and the claim bound to it, from the apiserver (#28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pv: Option<crate::kube::VolumeClaim>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -285,6 +288,7 @@ pub fn place(
             volume: v.clone(),
             slabs: slabs_of,
             placed_by,
+            pv: None,
         });
     }
     placed

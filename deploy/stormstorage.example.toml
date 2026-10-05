@@ -53,6 +53,13 @@ cluster_peers = true
 cooldown_secs        = 300   # after a failed re-leg or assembly attempt
 rebuild_timeout_secs = 3600  # new member must be active by then
 
+# Each node volume's PV/PVC, from the node's apiserver (#28).
+[kubernetes]
+# enabled = true
+# server = "https://127.0.0.1:6443"   # TLS unverified on loopback
+# token_file = "/data/stormcert/node-admin.token"   # default search; $KUBE_TOKEN wins
+# ca_file = "/data/stormcert/ca.crt"
+
 [[pools]]
 name     = "fast"
 selector = { tier = "high" }

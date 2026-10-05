@@ -185,6 +185,24 @@ fn node_volume_component(node: &str, v: &PlacedVolume) -> ComponentSummary {
     if let Some(p) = pl.filter(|p| !p.rebuild.is_empty() && p.rebuild != "none") {
         metrics.push(Metric::new("rebuild", p.rebuild.clone()).tone("warn"));
     }
+    if let Some(pv) = &v.pv {
+        let tone = if pv.complete() { "ok" } else { "warn" };
+        metrics.push(Metric::new("pv", format!("{} {}", pv.pv, pv.phase)).tone(tone));
+        let claim = match &pv.claim {
+            Some(c) if c.bound => pv.describe(),
+            Some(c) if c.phase.is_none() => format!("{} (missing)", pv.describe()),
+            Some(_) => format!("{} (not bound)", pv.describe()),
+            None => pv.describe(),
+        };
+        metrics.push(Metric::new("claim", claim).tone(tone));
+        if let Some(k) = &pv.volume_kind {
+            let what = match &pv.component {
+                Some(c) => format!("{k} of {c}"),
+                None => k.clone(),
+            };
+            metrics.push(Metric::new("holds", what).tone("muted"));
+        }
+    }
     let mut relations = vec![Relation::belongs_to("node", format!("node:{node}"))];
     if !v.slabs.is_empty() {
         relations.push(Relation::has_many(
@@ -607,5 +625,45 @@ mod tests {
         assert!(c.detail.contains("on d1"), "{}", c.detail);
         assert!(matches!(c.health, Health::Warn), "a partner rebuilding is a warning");
         assert!(c.relations.iter().any(|r| r.name == "pools" && r.targets == vec!["pool:n1/d1".to_string()]));
+    }
+    #[test]
+    fn node_volume_shows_its_pv_and_claim() {
+        let ev: crate::inventory::EngineVolume = serde_json::from_value(serde_json::json!({
+            "id": "v1", "name": "fastetcd-data", "health": "healthy"
+        }))
+        .unwrap();
+        let mut p = crate::inventory::place(&[], vec![ev], &Default::default());
+        let m = |c: &ComponentSummary, l: &str| c.metrics.iter().find(|m| m.label == l).map(|m| (m.value.clone(), m.tone.clone()));
+        assert!(m(&node_volume_component("n1", &p[0]), "pv").is_none(), "no PV known: no metric");
+        let mut pv = crate::kube::VolumeClaim {
+            pv: "storm-fastetcd-data-n1".into(),
+            phase: "Bound".into(),
+            reclaim: "Retain".into(),
+            capacity: "1Gi".into(),
+            volume_kind: Some("data".into()),
+            component: Some("fastetcd".into()),
+            claim: Some(crate::kube::ClaimRef {
+                namespace: "kube-system".into(),
+                name: "fastetcd-data-n1".into(),
+                uid: Some("u1".into()),
+                phase: Some("Bound".into()),
+                bound: true,
+            }),
+        };
+        p[0].pv = Some(pv.clone());
+        let c = node_volume_component("n1", &p[0]);
+        let (v, tone) = m(&c, "pv").unwrap();
+        assert_eq!(v, "storm-fastetcd-data-n1 Bound");
+        assert_eq!(tone.as_deref(), Some("ok"));
+        assert_eq!(m(&c, "claim").unwrap().0, "kube-system/fastetcd-data-n1");
+        assert_eq!(m(&c, "holds").unwrap().0, "data of fastetcd");
+        // The claim deleted: the PV is still there, the pair is not complete.
+        pv.claim.as_mut().unwrap().phase = None;
+        pv.claim.as_mut().unwrap().bound = false;
+        p[0].pv = Some(pv);
+        let c = node_volume_component("n1", &p[0]);
+        let (v, tone) = m(&c, "claim").unwrap();
+        assert_eq!(v, "kube-system/fastetcd-data-n1 (missing)");
+        assert_eq!(tone.as_deref(), Some("warn"));
     }
 }

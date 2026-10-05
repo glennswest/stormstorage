@@ -160,7 +160,11 @@ For an engine older than stormblock v17.1.0 it is placed from the slab
 slot tables instead: where it owns slots, else where its parent does (a
 fresh clone), else the only slab of its role, otherwise `unknown`, never
 guessed. This inventory is observed state (memory only, not replicated).
-Still to come: each volume's PV/PVC (rustkube-node#59, #28).
+Each node volume also carries its PV and bound PVC (*implemented, #28*),
+read from the node's apiserver each poll: rustkube-node's mirror
+(rustkube-node#59) writes the pair, annotated `storm.io/node` and
+`storm.io/volume`, and stormstorage joins it by (node, volume name) and
+says whether the pair is complete (Bound, naming each other).
 
 ### DistVolume — RAID across individual volumes
 
@@ -458,5 +462,4 @@ stormconsole#53).
   self-registration heartbeat), stormblock#215 (array create must refuse
   drives already in an array), stormblock#218 (listing generation must
   move on attach/detach and slab state), stormconsole#53 and stormd#10
-  (send the API token on feed actions and through the UI proxy),
-  rustkube-node#59 (PV/PVC per volume, #28).
+  (send the API token on feed actions and through the UI proxy).

@@ -35,6 +35,8 @@ pub struct AppState {
     pub replacing: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// Engines refusing our token, backed off (#38).
     pub refusals: crate::refusal::Refusals,
+    /// Every stormblock PV/PVC the apiserver holds, last read (#28).
+    pub kube: RwLock<crate::kube::KubeView>,
 }
 
 impl AppState {
@@ -47,6 +49,7 @@ impl AppState {
             inventory: RwLock::new(BTreeMap::new()),
             replacing: std::sync::Mutex::new(Default::default()),
             refusals: Default::default(),
+            kube: Default::default(),
         }
     }
 }
