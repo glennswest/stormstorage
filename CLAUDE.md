@@ -360,6 +360,22 @@ stormblock self-registered, or adopted) was polled bare.
 ### Phase 5: HA
 - [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34)
 
+### Live migration of a VM's disks (#44, P3) — waits on stormblock#295
+Owner (rustkube-node#159): RAID to the destination, let it catch up, then
+move the memory. A VM disk is a plain local volume on S, served over ublk
+to a running guest. Only S's engine sees its writes, so the mirror is
+stormblock's job (#295: `POST /api/v1/volumes/{id}/mirror {target
+nvme-tcp URI}`, state copying|synced|failed + bytes_remaining, DELETE =
+release/abort). Legs and RAID heads can't do it: they can't sit under an
+in-use volume, and a head on S isn't local to T. Plan here once #295 lands:
+`POST /api/v1/nodes/{S}/volumes/{id}/migrate {to: T}` (same-size thin
+volume on T, attached for S over nvme_tcp, start the mirror) →
+`GET …/migrations/{mid}` (starting|copying|synced|cut_over|completed|
+aborted|failed, bytes_remaining, T's volume for the kubelet) →
+`POST …/cutover` (stop the mirror, detach; S kept) → `…/complete` (retire
+S) or `…/abort` (delete T). Persisted, events, feed, auth, tests against a
+mock engine. Consumer: rustkube-node#40.
+
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #26 stalled head leg stays
