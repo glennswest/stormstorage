@@ -142,7 +142,8 @@ stormview components feed on **:9093**.
   node answers again. A failed attempt waits `recovery.cooldown_secs`
   before the next. A lost leg stays lost even if its node comes back, so a
   flapping node gives one re-leg. A lost **head** is reported and not
-  recovered, because the array lives there; re-head is #14. A head that
+  re-legged automatically, because the array lives there: fence it and
+  promote a surviving leg's node (#33, below); automatic re-head is #14. A head that
   only stalled past the threshold keeps its leg `lost` and the volume
   `degraded` after it answers again (#26). With
   `[replication] peers` set, only an instance with
@@ -211,10 +212,25 @@ stormview components feed on **:9093**.
   `/api/v1/components` and `/ws/components` serve the stormview feed,
   which stormconsole's `stormstorage` plugin and stormd/stormsh render.
 
-**Not done yet** (tracked in issues, see [Status](#status)): re-head when
-the head node is lost (#14), reassembly after the head's engine restarts
-(#15), rebalancing (#30), IO-load placement (#31), tier migration (#32),
-native `/v1` replication (#33) and HA state (#34).
+- **Replication on the RAID head (#33).** What stormblock-csi's `/v1`
+  replica surface asks of an engine is done here, over distributed
+  volumes (owner, stormblock#179 option b). Each poll reads the head's
+  array: every leg is a replica `{node, role, sync}` in `/v1`'s exact
+  JSON (`in_sync`, `resyncing {progress_pct, lag_bytes}`, `detached`; no
+  reading = `detached`). A per-volume `epoch` with a CAS `fence` that also
+  fences every leg's `/v1` epoch. `promote` moves the head onto a
+  surviving leg's node and re-imports the same array from the legs'
+  superblocks. `prestage` replaces a slave at the volume's
+  `bandwidth_class`. Dual-attach windows commit by fence + promote.
+  A handover from a head that is still alive waits on stormblock#296.
+  Enforcement at the legs is stormblock#6, to the contract in
+  [docs/replication.md](docs/replication.md).
+
+**Not done yet** (tracked in issues, see [Status](#status)): automatic
+re-head when the head node is lost (#14; promote is the mechanism),
+reassembly after the head's engine restarts (#15), rebalancing (#30),
+IO-load placement (#31), tier migration (#32), async backup legs (#33)
+and HA state (#34).
 
 ## Running
 
@@ -263,6 +279,8 @@ worked example.
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
+| `[recovery] rate_low` / `rate_normal` / `rate_high` | `52428800` / `209715200` / `1073741824` | Rebuild cap, bytes a second, for a volume's `bandwidth_class` (#33); applied to the head's array. `unthrottled` is 0 (no cap). |
+| `[recovery] max_dual_attach_secs` | `3600` | Longest dual-attach window (#33). |
 | `[kubernetes] enabled` | `true` | Read each node volume's PV/PVC from the apiserver (#28). |
 | `[kubernetes] server` | `"https://127.0.0.1:6443"` | The apiserver. |
 | `[kubernetes] token_file` | unset | Bearer token file. `$KUBE_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `/data/stormcert/node-admin.token` (the node-admin token stormcert writes) and `/var/run/secrets/kubernetes.io/serviceaccount/token`. None found: anonymous. Read on every poll. |
@@ -363,8 +381,15 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?}`. Places, creates the legs and assembles. Returns the volume record. |
-| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids), head, array id, assembly, and `export` (what consumers attach). |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?}`. Places, creates the legs and assembles. Returns the volume record. |
+| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`. `GET /api/v1/volumes` lists the same. |
+| GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, replicas[{node, role, sync}], bandwidth_class, head, dual_attach, sync_read_at, rebuild_bytes_per_sec}`. |
+| POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
+| POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |
+| POST | `/api/v1/volumes/{name}/prestage` | `{node?, from?, bandwidth_class?}` → `{replacing, to, bandwidth_class}`. Replaces a slave leg; 409 for the head as `node` or `from`. |
+| POST | `/api/v1/volumes/{name}/dual-attach` | `{target_node, ttl_secs}` → `{volume_id, epoch, target_node, expires_at_ms}`. Target must hold a slave; 409 for another target while one is open. |
+| POST | `/api/v1/volumes/{name}/dual-attach/close` | `{epoch, outcome: commit\|abort}`. Commit = fence + promote the target; 412 on the wrong epoch, 409 with none open. |
+| GET | `/api/v1/stale-heads` | Former heads to clean up when they answer: `{stale_heads: [{node, array_id, drive_uris, of_volume, epoch, since}]}`. |
 | POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Returns the `export` record; 409 when it cannot be served (not assembled, node unreachable, engine error). |
 | POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
 | DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
@@ -374,7 +399,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
 | GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (an `export` metric, Publish/Republish and delete actions) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
-| POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans}`. Applied only if newer. |
+| POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans, stale_heads}`. Applied only if newer. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
 | POST | `/api/v1/storage/register` | stormblock heartbeat, `{node_addr, hostname, volumes[]}`. |
 | POST | `/api/v1/storage/deregister` | `{node_addr}`. |
@@ -383,13 +408,19 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
 
 ### Engine calls it makes (stormblock :9090)
 
-- `/v1`: `GET nodes/capacity`, `GET|POST volumes`, `DELETE volumes/{id}`,
-  `POST volumes/{id}/attach|detach`. Legs are created with `replica_tier`
-  `slaves = 0`. A served mirror is also created with
-  `placement: {array_id}`. Every attach sends `transport: nvme_tcp`.
+- `/v1`: `GET nodes/capacity`, `GET|POST volumes`, `GET|DELETE volumes/{id}`,
+  `POST volumes/{id}/attach|detach`, `POST volumes/{id}/fence` (legs, #33).
+  Legs are created with `replica_tier` `slaves = 0`. A served mirror is
+  also created with `placement: {array_id}`. Every attach sends
+  `transport: nvme_tcp`; a leg attach also sends the leg's `epoch` once it
+  has been fenced (stormblock#6). `/v1` prestage, promote and dual-attach
+  are never called.
 - `/api/v1`: `GET slabs`, `GET slabs/{id}/slots`, `GET volumes`,
-  `GET discovery` (local adoption), `GET|POST drives`, `DELETE drives/{id}`,
-  `POST arrays`, `GET|DELETE arrays/{id}`,
+  `POST|DELETE volumes/{id}/attach` and `DELETE volumes/{id}` (a served
+  volume adopted on a promote), `GET discovery` (local adoption),
+  `GET|POST drives`, `DELETE drives/{id}`, `POST arrays`,
+  `POST arrays/assemble` (promote), `GET|DELETE arrays/{id}`,
+  `PUT arrays/{id}/rebuild` (bandwidth class),
   `POST arrays/{id}/members`, `DELETE arrays/{id}/members/{member}`.
 
 Assembly needs a stormblock with stormblock#73 (nvme-tcp drives as RAID
@@ -547,13 +578,17 @@ done. The open work:
   wait on stormcentral#131, and current engines need #27 (`host_nqn`);
 - #8: the test suites are in and run on C2NR0Q2; see the issue for the
   latest run;
-- #14: re-head when the head node is lost; #15: reassemble after the
+- #33: replication on the RAID head is in the code (sync state, fence,
+  promote, prestage, dual-attach; mock-engine tested). Its live run waits
+  on stormcentral#131; enforcement at the legs is stormblock#6, a handover
+  from a live head stormblock#296;
+- #14: automatic re-head when the head node is lost; #15: reassemble after the
   head's engine restarts; #26: a stalled head's leg stays lost;
 - #12: the engine token's default path and peer calls; #42: the
   registry entry's config misplaces `token_file` (stormcentral#72; the
   default paths cover it);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #30–#36: rebalance, IO-load placement, tier migration, native
-  replication, HA state, forwarding announcements to stormfs, and the
-  stormblock-csi analysis.
+- #30–#32, #34–#36: rebalance, IO-load placement, tier migration, HA
+  state, forwarding announcements to stormfs, and the stormblock-csi
+  analysis.

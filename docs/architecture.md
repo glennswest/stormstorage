@@ -207,7 +207,8 @@ optimization.
   cannot be deleted becomes an **orphan**, reaped when its node answers
   again. A failed attempt waits `recovery.cooldown_secs`. Once lost, a leg
   stays lost, so a flapping node is one re-leg. A lost **head** is
-  reported, not recovered (re-head, #14); a head that only stalled keeps
+  reported and not re-legged; it is moved by fence + promote (#33),
+  automatic re-head is #14; a head that only stalled keeps
   its leg lost after it answers again (#26). With replication peers,
   exactly one instance acts (`[recovery] enabled = true`). Unit-tested;
   the live run (`scripts/e2e-releg.sh`) waits on stormcentral#131.
@@ -217,9 +218,12 @@ optimization.
   DistVolume    … replacing: {from, leg, reason, started_at}?, next_releg_after?
   FedState      … orphans: [{node, volume_id, master_node, of_volume, reason, since}]
   ```
-- **Head failover** (*design, not implemented — #14*): the legs are plain volumes — a new head can attach
-  the surviving legs and reassemble (RAID superblocks identify members).
-  Orchestrated re-head is a later phase; the data is never trapped.
+- **Head failover** (*implemented as promote, #33; automatic re-head
+  #14*): the legs are plain volumes. `promote` opens the surviving legs on
+  a leg's node and re-imports the same array from their superblocks
+  (`POST /api/v1/arrays/assemble`), with the served volume on its slab.
+  From a head that is still alive it waits on stormblock#296. See
+  [replication.md](replication.md).
 - **Implemented (v0.3.0)**: stormblock#73 landed (2026-08-28) — the
   engine attaches `nvme-tcp://` URIs as drives and RAID members. Assembly
   runs inline at create; teardown at delete; leg moves via
@@ -229,7 +233,8 @@ optimization.
 - **Served to consumers** (*implemented, #2*): a volume pinned to the
   head's array, attached over NVMe-TCP — see *Consumer serving* below.
 - **Not implemented yet:**
-  - re-head when the head node is lost (#14);
+  - automatic re-head when the head node is lost (#14; promote is the
+    manual path);
   - reassembly when the head's engine restarts (#15);
   - attaching with the head's `host_nqn`, which engines with stormblock
     #210 require on a closed node (#27). Until then assembly, export and
@@ -309,10 +314,15 @@ DistVolume.export  { state: none | published | failed,
   API-created arrays itself, so until re-head exists, a republish on a
   restarted head fails and says so.
 
-*Design, not implemented (#33):* native `/v1` replication (prestage, fence/promote, epoch-carrying writes
-— stormblock #5/#6/#7) is the *second* redundancy mechanism when its data
-path lands; stormstorage orchestrates either through one DistVolume
-model.
+**Replication on the RAID head** (*implemented, #33*): the owner chose
+on stormblock#179 (option b) that cross-node RAID1 lives on these heads,
+not in the engine. stormstorage provides `/v1`'s replica surface over
+DistVolumes: sync state read from the head's array, a per-volume epoch
+with a CAS fence carried down to every leg's `/v1` epoch, promote,
+prestage with a bandwidth class, and dual-attach windows. The engine
+refuses a fenced head's leg attaches under stormblock#6, to the contract
+in [replication.md](replication.md). Async catch-up legs for the backup
+tier are not started.
 
 ### Placement
 
@@ -398,11 +408,18 @@ GET|DELETE /api/v1/volumes/{name}      delete revokes the export first
 POST /api/v1/volumes/{name}/move      {from: node, to?: node} — leg move
 POST /api/v1/volumes/{name}/export    publish / republish what consumers attach
 POST /api/v1/volumes/{name}/assemble  retry a pending assembly now
+GET  /api/v1/volumes/{name}/replicas  /v1 replica shape: epoch, health, replicas[{node, role, sync}]
+POST /api/v1/volumes/{name}/fence     {expected_epoch} CAS → {epoch}; fences every leg
+POST /api/v1/volumes/{name}/promote   {target_node, fenced_epoch} — move the head
+POST /api/v1/volumes/{name}/prestage  {node?, from?, bandwidth_class?} — replace a slave
+POST /api/v1/volumes/{name}/dual-attach        {target_node, ttl_secs}
+POST /api/v1/volumes/{name}/dual-attach/close  {epoch, outcome: commit|abort}
+GET  /api/v1/stale-heads              former heads to clean up
 GET  /api/v1/orphans                  leg volumes to reap when their node answers
 GET  /api/v1/events?since=
 GET  /api/v1/summary                  stormd RemoteSummary card
 GET  /api/v1/components               stormview feed (also WS /ws/components)
-POST /api/v1/replicate                peer push {revision, volumes, registered, orphans}
+POST /api/v1/replicate                peer push {revision, volumes, registered, orphans, stale_heads}
 GET  /api/v1/replication/status       {revision, peers}
 POST /api/v1/storage/register         stormblock-compatible self-registration
 POST /api/v1/storage/deregister
@@ -443,8 +460,11 @@ stormconsole#53).
    call with a back-off for an engine that refuses it (#38).
 3. **Rebalance + tier migration** (#30, #32): policy-driven leg moves;
    pool capacity watermarks; IO-load placement (#31).
-4. **Native replication** (#33): orchestrate /v1 prestage/fence/promote
-   when the engine data path (#5/#6/#7) lands; async backup legs.
+4. **Replication on the RAID head** (#33, in the code): sync state,
+   fence, promote, prestage, dual-attach over DistVolumes (owner,
+   stormblock#179 option b); enforcement at the legs is stormblock#6,
+   handover from a live head stormblock#296. Async backup legs: not
+   started.
 5. **HA** (#34): state to StormKV/fastetcd; multiple instances.
 
 ## What this asked of the neighbours
