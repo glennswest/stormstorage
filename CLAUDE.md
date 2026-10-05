@@ -259,6 +259,15 @@ run there passes short (and medium), close #8 with it.
 stormcentral#63), and on 11.50 stormstorage did not answer on the node at
 all (stormcos#139: neither :9093 nor its stormd :9193). #8 proposed after
 stormcos#139. No code change pending.
+2026-10-05: stormcos#139 fixed (11.80); C2NR0Q2 up. Run ed43948592
+(short, 2a4c3ac on C2NR0Q2): harness end to end OK (image built, pushed,
+Job ran, cleaned up) — api-up pass, engine-adopted/pools fail, lifecycle
+skip. Real bug: the node's stormstorage got 401 from its stormblock, token
+looked for only at /etc/stormblock/api_token; the unit mounts it at
+/run/stormblock/engine/api_token and the entry's `token_file` is top-level
+(ignored, stormcentral#72). Fixed in ef3af98 (#42 step 2: family-order
+search incl. that path; warn on unknown top-level keys). A pass needs a
+release carrying the new golden on C2NR0Q2; then rerun short + medium.
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
