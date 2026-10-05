@@ -112,6 +112,14 @@ window.moveLeg=(name,from)=>{
 window.act=(p)=>p.then(refresh).catch(e=>{fail(e);refresh();});
 window.pubVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/export`,{}));
 window.asmVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/assemble`,{}));
+// Copies in sync as read from the head's array (#33).
+const syncChips=(x)=>{if(!x.replica_sync||x.legs.length<2)return '';
+  const r=x.replica_sync,n=r.filter(y=>y.sync&&y.sync.state==='in_sync').length;
+  let h=' '+chip(`in sync ${n}/${r.length}`,n>=x.replicas?'c-ok':'c-warn');
+  for(const y of r){if(y.sync&&y.sync.state==='resyncing')h+=' '+chip(`${y.node} ${y.sync.progress_pct.toFixed(1)}%`,'c-warn');}
+  if(x.fenced)h+=' '+chip(`fenced @${x.epoch}`,'c-warn');
+  if(x.dual_attach)h+=' '+chip(`dual-attach ${x.dual_attach.target_node}`,'c-warn');
+  return h;};
 const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=`<button title="publish / republish" onclick="pubVol('${x.name}')">↻</button>`;
   if(e.state==='published'&&c)return `<span class="mono" title="${c.nqn}">${c.traddr}:${c.trsvcid} ns ${c.nsid}</span>${e.coordinates_changed?' '+chip('moved','c-warn'):''} ${b}`;
   if(e.state==='failed')return `${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
@@ -167,7 +175,7 @@ async function refresh(){
       <td>${x.pool||''}</td>
       <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${(x.assembly==='assembled'||x.assembly==='degraded')&&!x.replacing?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
       <td>${x.rung}${x.head?` <span class="dim">head ${x.head}</span>`:''}</td>
-      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn')+(x.legs.length>1?` <button title="retry the assembly" onclick="asmVol('${x.name}')">assemble</button>`:''):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}</td>
+      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn')+(x.legs.length>1?` <button title="retry the assembly" onclick="asmVol('${x.name}')">assemble</button>`:''):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}${syncChips(x)}</td>
       <td>${expo(x)}</td>
       <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
       ||'<tr><td colspan="8" class="dim">no volumes</td></tr>';

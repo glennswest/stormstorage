@@ -202,7 +202,8 @@ stormview components feed on **:9093**.
   - node volumes with their slab and drive, RAID partners, consumer, kind,
     in-use state, and PV / PVC (a warning chip when the pair is not
     complete);
-  - distributed volumes with leg states, assembly and export, plus
+  - distributed volumes with leg states, assembly, copies in sync and
+    resync progress, fence and dual-attach state (#33), and export, plus
     buttons to move a leg, publish/republish, assemble a pending volume
     and delete;
   - a create form and the event feed.
@@ -563,6 +564,9 @@ snippet adds a `[process.ui]` block with `proxy` pointing at the UI and
 
 - [docs/architecture.md](docs/architecture.md): the design. Each section
   says whether it is implemented or design only.
+- [docs/replication.md](docs/replication.md): replication on the RAID
+  head (#33): sync state, fence, promote, prestage, dual-attach, and the
+  leg attach contract for stormblock#6.
 - [docs/presentation.md](docs/presentation.md): an 11-slide overview deck.
   It is Marp Markdown: `npx @marp-team/marp-cli docs/presentation.md`.
 - [CLAUDE.md](CLAUDE.md): work plan, status and project rules.
