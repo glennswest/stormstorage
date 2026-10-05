@@ -349,7 +349,7 @@ async fn setup(nodes: &[&str]) -> (String, Arc<AppState>, Mocks) {
     (format!("http://{api}"), state, mocks)
 }
 
-async fn post(url: String, body: Value) -> (u16, Value) {
+async fn call(url: String, body: Value) -> (u16, Value) {
     let r = reqwest::Client::new().post(url).json(&body).send().await.unwrap();
     let st = r.status().as_u16();
     (st, r.json().await.unwrap_or(Value::Null))
@@ -360,7 +360,7 @@ async fn get_json(url: String) -> Value {
 }
 
 async fn create_mirror(api: &str, name: &str) -> (String, String, String) {
-    let (st, v) = post(format!("{api}/api/v1/volumes"), json!({"name": name, "size_bytes": 1u64 << 30, "replicas": 2})).await;
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": name, "size_bytes": 1u64 << 30, "replicas": 2})).await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["assembly"], "assembled", "{v}");
     assert_eq!(v["export"]["state"], "published", "{v}");
@@ -429,16 +429,16 @@ async fn fence_then_promote_after_the_head_is_lost() {
     let served = state.fed.read().await.volumes["p"].export.volume_id.clone().unwrap();
 
     // Promote without a fence: 412 at the current epoch.
-    let (st, e) = post(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 1})).await;
+    let (st, e) = call(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 1})).await;
     assert_eq!((st, e["code"].as_str(), e["current_epoch"].as_u64()), (412, Some("stale_epoch"), Some(1)));
     // Fence is a CAS.
-    let (st, e) = post(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 2})).await;
+    let (st, e) = call(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 2})).await;
     assert_eq!((st, e["current_epoch"].as_u64()), (412, Some(1)));
-    let (st, f) = post(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 1})).await;
+    let (st, f) = call(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 1})).await;
     assert_eq!(st, 200, "{f}");
     assert_eq!(f["epoch"], 2);
     assert_eq!(f["legs_fenced"].as_array().unwrap().len(), 2, "{f}");
-    let (st, e) = post(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 1})).await;
+    let (st, e) = call(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 1})).await;
     assert_eq!((st, e["current_epoch"].as_u64()), (412, Some(2)), "a second tiebreaker loses");
     // Each leg's own /v1 epoch went up on its engine.
     for n in [&head, &target] {
@@ -447,16 +447,16 @@ async fn fence_then_promote_after_the_head_is_lost() {
     }
 
     // The head is alive: a handover needs stormblock#296.
-    let (st, e) = post(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
+    let (st, e) = call(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
     assert_eq!(st, 409);
     assert!(e["error"].as_str().unwrap().contains("stormblock#296"), "{e}");
     // A node with no leg.
-    let (st, _) = post(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": "node-z", "fenced_epoch": 2})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": "node-z", "fenced_epoch": 2})).await;
     assert_eq!(st, 409);
 
     // The head is lost.
     state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = false;
-    let (st, v) = post(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
+    let (st, v) = call(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["head"], target.as_str());
     assert_eq!(v["array_id"], array.as_str(), "same array, put back together");
@@ -481,7 +481,7 @@ async fn fence_then_promote_after_the_head_is_lost() {
         assert_eq!(m.rates[&array], 200 << 20, "normal class rate on the new head");
     }
     // Promote again at the same epoch: no longer fenced.
-    let (st, _) = post(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
     assert_eq!(st, 412);
 
     // The former head is recorded, and left alone while it holds the array.
@@ -510,29 +510,29 @@ async fn dual_attach_windows() {
     let (api, state, _mocks) = setup(&["node-a", "node-b"]).await;
     let (head, target, _) = create_mirror(&api, "w").await;
 
-    let (st, _) = post(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": head, "ttl_secs": 60})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": head, "ttl_secs": 60})).await;
     assert_eq!(st, 409, "the head is not a target");
-    let (st, w) = post(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 60})).await;
+    let (st, w) = call(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 60})).await;
     assert_eq!(st, 200, "{w}");
     assert_eq!(w["epoch"], 1);
     assert_eq!(w["target_node"], target.as_str());
     assert!(w["expires_at_ms"].as_u64().unwrap() > 0);
     // A promote waits for the window to close.
-    let (st, _) = post(format!("{api}/api/v1/volumes/w/fence"), json!({"expected_epoch": 1})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/w/fence"), json!({"expected_epoch": 1})).await;
     assert_eq!(st, 200);
-    let (st, _) = post(format!("{api}/api/v1/volumes/w/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/w/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
     assert_eq!(st, 409);
     // Close needs the window's epoch.
-    let (st, e) = post(format!("{api}/api/v1/volumes/w/dual-attach/close"), json!({"epoch": 2, "outcome": "abort"})).await;
+    let (st, e) = call(format!("{api}/api/v1/volumes/w/dual-attach/close"), json!({"epoch": 2, "outcome": "abort"})).await;
     assert_eq!((st, e["current_epoch"].as_u64()), (412, Some(1)));
-    let (st, _) = post(format!("{api}/api/v1/volumes/w/dual-attach/close"), json!({"epoch": 1, "outcome": "abort"})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/w/dual-attach/close"), json!({"epoch": 1, "outcome": "abort"})).await;
     assert_eq!(st, 200);
     assert!(state.fed.read().await.volumes["w"].dual_attach.is_none());
-    let (st, _) = post(format!("{api}/api/v1/volumes/w/dual-attach/close"), json!({"epoch": 1, "outcome": "abort"})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/w/dual-attach/close"), json!({"epoch": 1, "outcome": "abort"})).await;
     assert_eq!(st, 409, "nothing open");
 
     // Commit = fence + promote; with the head alive that is stormblock#296.
-    let (_, w) = post(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 60})).await;
+    let (_, w) = call(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 60})).await;
     let (st, e) = post(
         format!("{api}/api/v1/volumes/w/dual-attach/close"),
         json!({"epoch": w["epoch"], "outcome": "commit"}),
@@ -543,7 +543,7 @@ async fn dual_attach_windows() {
     assert_eq!(state.fed.read().await.volumes["w"].epoch, 3, "the commit fenced");
 
     // Expiry aborts.
-    let (st, _) = post(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 1})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 1})).await;
     assert_eq!(st, 200);
     tokio::time::sleep(Duration::from_millis(1100)).await;
     stormstorage::orchestrate::reconcile(&state).await;
@@ -560,12 +560,12 @@ async fn prestage_replaces_the_slave_at_its_bandwidth_class() {
         .unwrap()
         .to_string();
 
-    let (st, _) = post(format!("{api}/api/v1/volumes/r/prestage"), json!({"node": head})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/r/prestage"), json!({"node": head})).await;
     assert_eq!(st, 409, "anti-affinity");
-    let (st, _) = post(format!("{api}/api/v1/volumes/r/prestage"), json!({"from": head})).await;
+    let (st, _) = call(format!("{api}/api/v1/volumes/r/prestage"), json!({"from": head})).await;
     assert_eq!(st, 409, "the master moves by promote only");
 
-    let (st, p) = post(format!("{api}/api/v1/volumes/r/prestage"), json!({"bandwidth_class": "low"})).await;
+    let (st, p) = call(format!("{api}/api/v1/volumes/r/prestage"), json!({"bandwidth_class": "low"})).await;
     assert_eq!(st, 200, "{p}");
     assert_eq!(p["replacing"], slave.as_str());
     assert_eq!(p["to"], third.as_str());
