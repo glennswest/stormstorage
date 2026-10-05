@@ -100,7 +100,8 @@ the legs there lost and re-legs their volumes (#1, see below).
 
 Every engine call carries a bearer token (*implemented, #38*): the node's
 own `api_token`, else the configured engine token (`$STORMBLOCK_API_TOKEN`,
-else `[local] token_file`), read on every call and never written to
+else the first readable of `[local] token_file`, `$STORMBLOCK_TOKEN_FILE`
+and the default paths ending in `/run/stormblock/engine/api_token`), read on every call and never written to
 `state.json`. A 401/403 is a configuration error, not an outage: that
 engine URL is backed off (2× the poll interval, doubling to 5 min), each
 skipped poll counts as failed, the first refusal is one WARN plus an

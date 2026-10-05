@@ -71,8 +71,9 @@ pub struct LocalConfig {
     pub name: Option<String>,
     /// Also adopt the live peers in the local engine's stormblock cluster.
     pub cluster_peers: bool,
-    /// Bearer token for the engine(s): `$STORMBLOCK_API_TOKEN` wins, then
-    /// this file when it is readable. Unset = `/etc/stormblock/api_token`.
+    /// Bearer token file for the engine(s): `$STORMBLOCK_API_TOKEN` wins;
+    /// otherwise the first readable of this file, `$STORMBLOCK_TOKEN_FILE`,
+    /// and [`DEFAULT_TOKEN_FILES`].
     pub token_file: Option<String>,
     /// Cluster-level tier role given to adopted nodes.
     pub tier: Option<String>,
@@ -100,22 +101,49 @@ impl LocalConfig {
 
     /// The engine token and where it came from — or, without one, why
     /// not. The reason goes into the log when an engine refuses (#38).
+    ///
+    /// The family order (stormdrive#14, #42): `$STORMBLOCK_API_TOKEN`,
+    /// then the first *readable*, non-empty file of `token_file`,
+    /// `$STORMBLOCK_TOKEN_FILE`, and the default paths — the last one is
+    /// where a stormcos unit mounts the engine's minted token (stormcos#104).
     pub fn token_source(&self) -> (Option<String>, String) {
-        if let Ok(t) = std::env::var("STORMBLOCK_API_TOKEN") {
-            if !t.trim().is_empty() {
-                return (Some(t.trim().to_string()), "$STORMBLOCK_API_TOKEN".into());
-            }
-        }
-        let path = self
-            .token_file
-            .clone()
-            .unwrap_or_else(|| "/etc/stormblock/api_token".into());
-        match std::fs::read_to_string(&path) {
-            Ok(s) if !s.trim().is_empty() => (Some(s.trim().to_string()), path),
-            Ok(_) => (None, format!("no token: {path} is empty")),
-            Err(e) => (None, format!("no token: {path}: {e}")),
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        token_search(
+            env("STORMBLOCK_API_TOKEN"),
+            &token_files(self.token_file.as_deref(), env("STORMBLOCK_TOKEN_FILE").as_deref()),
+        )
+    }
+}
+
+/// Where an engine token file is looked for when nothing names one.
+pub const DEFAULT_TOKEN_FILES: &[&str] = &[
+    "/etc/stormblock/api_token",
+    "/var/lib/stormblock/api_token",
+    "/run/stormblock/engine/api_token",
+];
+
+/// The token files to try, in order: config, `$STORMBLOCK_TOKEN_FILE`,
+/// then the defaults.
+fn token_files(config: Option<&str>, env: Option<&str>) -> Vec<String> {
+    let mut v: Vec<String> = config.into_iter().chain(env).map(|p| p.trim().to_string()).collect();
+    v.extend(DEFAULT_TOKEN_FILES.iter().map(|p| p.to_string()));
+    v.dedup();
+    v
+}
+
+fn token_search(env_token: Option<String>, files: &[String]) -> (Option<String>, String) {
+    if let Some(t) = env_token {
+        return (Some(t.trim().to_string()), "$STORMBLOCK_API_TOKEN".into());
+    }
+    let mut why = Vec::new();
+    for path in files {
+        match std::fs::read_to_string(path) {
+            Ok(s) if !s.trim().is_empty() => return (Some(s.trim().to_string()), path.clone()),
+            Ok(_) => why.push(format!("{path} is empty")),
+            Err(e) => why.push(format!("{path}: {e}")),
         }
     }
+    (None, format!("no token: {}", why.join("; ")))
 }
 
 /// Peer stormstorage instances (one per site/cluster). Durable-intent
@@ -284,13 +312,28 @@ impl Selector {
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(s) => Ok(toml::from_str(&s)?),
+            Ok(s) => {
+                for key in unknown_top_level_keys(&s) {
+                    tracing::warn!(
+                        ?path,
+                        key,
+                        "unknown top-level config key, ignored (engine token: [local] token_file)"
+                    );
+                }
+                Ok(toml::from_str(&s)?)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!(?path, "no config file, using defaults");
                 Ok(Self::default())
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Top-level keys serde would silently drop: a `token_file` there
+    /// (instead of under `[local]`) left a node's engine polled bare (#42).
+    pub fn unknown_top_level_keys(text: &str) -> Vec<String> {
+        unknown_top_level_keys(text)
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -321,6 +364,17 @@ impl Config {
 
     pub fn pool(&self, name: &str) -> Option<&PoolConfig> {
         self.pools.iter().find(|p| p.name == name)
+    }
+}
+
+fn unknown_top_level_keys(text: &str) -> Vec<String> {
+    const KNOWN: &[&str] = &[
+        "listen_addr", "data_dir", "federation", "poll", "api", "replication",
+        "local", "recovery", "nodes", "pools",
+    ];
+    match text.parse::<toml::Table>() {
+        Ok(t) => t.keys().filter(|k| !KNOWN.contains(&k.as_str())).cloned().collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -399,5 +453,46 @@ mod tests {
             ..Default::default()
         };
         assert!(!s.matches(&node));
+    }
+
+    #[test]
+    fn token_files_family_order() {
+        let f = token_files(Some("/cfg/t"), Some("/env/t"));
+        assert_eq!(f[0], "/cfg/t");
+        assert_eq!(f[1], "/env/t");
+        assert_eq!(&f[2..], DEFAULT_TOKEN_FILES);
+        assert_eq!(token_files(None, None), DEFAULT_TOKEN_FILES);
+        assert!(DEFAULT_TOKEN_FILES.contains(&"/run/stormblock/engine/api_token"));
+    }
+
+    #[test]
+    fn token_search_takes_first_readable() {
+        let dir = std::env::temp_dir().join(format!("ss-tok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let empty = dir.join("empty");
+        let good = dir.join("good");
+        std::fs::write(&empty, "  \n").unwrap();
+        std::fs::write(&good, "tok\n").unwrap();
+        let files: Vec<String> = [dir.join("missing"), empty.clone(), good.clone()]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let (t, src) = token_search(None, &files);
+        assert_eq!(t.as_deref(), Some("tok"));
+        assert_eq!(src, good.display().to_string());
+        let (t, src) = token_search(Some(" envtok ".into()), &files);
+        assert_eq!(t.as_deref(), Some("envtok"));
+        assert_eq!(src, "$STORMBLOCK_API_TOKEN");
+        let (t, why) = token_search(None, &files[..2]);
+        assert!(t.is_none());
+        assert!(why.contains("missing") && why.contains("is empty"), "{why}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flags_top_level_token_file() {
+        let text = "listen_addr = \"0.0.0.0:9093\"\ntoken_file = \"/x\"\n[local]\nenabled = true\n";
+        assert_eq!(Config::unknown_top_level_keys(text), vec!["token_file".to_string()]);
+        assert!(Config::unknown_top_level_keys("[local]\ntoken_file = \"/x\"\n").is_empty());
     }
 }

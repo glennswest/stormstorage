@@ -28,7 +28,9 @@ stormview components feed on **:9093**.
   far longer than a poll should wait.
 - **Engine token (#38).** Every engine call presents a bearer token: the
   node's own `api_token` from `[[nodes]]`, else the configured engine token
-  (`$STORMBLOCK_API_TOKEN`, else the file `[local] token_file`). The token
+  (`$STORMBLOCK_API_TOKEN`, else the first readable of `[local] token_file`,
+  `$STORMBLOCK_TOKEN_FILE`, `/etc/stormblock/api_token`,
+  `/var/lib/stormblock/api_token`, `/run/stormblock/engine/api_token`). The token
   is read on every call, so a re-minted file is picked up. Self-registered
   and adopted nodes have no token of their own and get the configured one.
   It is never copied into `state.json`. A 401 or 403 is treated as a
@@ -237,7 +239,7 @@ worked example.
 | `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
 | `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
-| `[local] token_file` | unset (`/etc/stormblock/api_token`) | Engine bearer token, read when the file is readable. `$STORMBLOCK_API_TOKEN` wins over it. `$STORMBLOCK_TOKEN_FILE` is **not** read (#42). The token is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). The key belongs under `[local]`: a top-level `token_file` is silently ignored, like every unknown key. |
+| `[local] token_file` | unset | Engine bearer token file. `$STORMBLOCK_API_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `$STORMBLOCK_TOKEN_FILE`, `/etc/stormblock/api_token`, `/var/lib/stormblock/api_token` and `/run/stormblock/engine/api_token` (the family order, stormdrive#14; the last is where a stormcos unit mounts the minted token) (#42). The token is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). The key belongs under `[local]`: a top-level `token_file` is ignored, and every unknown top-level key is logged as a WARN at start. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
@@ -481,10 +483,10 @@ lives in stormcentral's database (stormcentral#185). Read it with
 `stormcentral component export`, and change it with
 `stormcentral component edit stormstorage --set key=value`, never by a
 commit to stormcentral's `components/stormcos.toml`, which is only the
-seed. As of 2026-10-02 the entry's config puts `token_file` at the top
-level, where stormstorage ignores it, so a node polls its engine with no
-token until the entry is fixed (#42). stormcos `deploy/build-goldens.sh`
-has it under `[local]`.
+seed. As of 2026-10-05 the entry's config puts `token_file` at the top
+level, where stormstorage ignores it (and warns); the token is still found
+because `/run/stormblock/engine/api_token` is one of the default paths
+(#42). The entry fix is stormcentral#72.
 
 A commit here does not reach a node until a golden is built and a
 release composed. When an issue's work is complete, request the golden
@@ -519,12 +521,13 @@ done. The open work:
 
 - #1, #2: re-leg and consumer serving are in the code; their live runs
   wait on stormcentral#131, and current engines need #27 (`host_nqn`);
-- #8: the test suites are in; a pass on a test machine is pending;
+- #8: the test suites are in and run on C2NR0Q2; see the issue for the
+  latest run;
 - #14: re-head when the head node is lost; #15: reassemble after the
   head's engine restarts; #26: a stalled head's leg stays lost;
 - #12: the engine token's default path and peer calls; #42: the
-  registry entry's config misplaces `token_file`, and
-  `$STORMBLOCK_TOKEN_FILE` is not read;
+  registry entry's config misplaces `token_file` (stormcentral#72; the
+  default paths cover it);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #28: each node volume's PV/PVC, waiting on rustkube-node#59;
