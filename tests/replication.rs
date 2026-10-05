@@ -533,7 +533,7 @@ async fn dual_attach_windows() {
 
     // Commit = fence + promote; with the head alive that is stormblock#296.
     let (_, w) = call(format!("{api}/api/v1/volumes/w/dual-attach"), json!({"target_node": target, "ttl_secs": 60})).await;
-    let (st, e) = post(
+    let (st, e) = call(
         format!("{api}/api/v1/volumes/w/dual-attach/close"),
         json!({"epoch": w["epoch"], "outcome": "commit"}),
     )
