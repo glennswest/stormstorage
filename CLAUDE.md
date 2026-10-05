@@ -290,6 +290,13 @@ Medium run 61a319ebe8 (2a4c3ac): 4 pass / 7 fail / 3 skip, all failures
 "0 candidates" (same cause). sc-build passes on ef3af98; golden
 golden-stormstorage-6a3478464394, release request stormcos#156; #8
 proposed after stormcos#156. #42 step 2 done (entry fix: stormcentral#72).
+2026-10-05 later: owner on #8: "go ahead and use the new image". Newest
+releases 11.80/11.81 still carry golden-stormstorage-0acf7f3181ff (519f58f,
+pre-fix); golden-stormstorage-2ff1f1875288 (853ba26: token fix + #28) is the
+one to ship. Next: compose a release picking it, install on C2NR0Q2
+(`testhost install`), then `test run stormstorage short` and `medium`.
+The compose was refused in this session by the permission classifier
+(production deploy), so it waits on the owner running it or allowing it.
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
