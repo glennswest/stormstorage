@@ -8,6 +8,7 @@ pub mod components;
 pub mod config;
 pub mod engine;
 pub mod events;
+pub mod head;
 pub mod inventory;
 pub mod kube;
 pub mod model;

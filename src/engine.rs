@@ -38,6 +38,15 @@ pub struct Capacity {
     pub topology: BTreeMap<String, String>,
 }
 
+/// What a /v1 fence answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceOutcome {
+    /// Fenced; the volume's new epoch.
+    Fenced(u64),
+    /// 412: the epoch was not the expected one; the current one.
+    Stale(u64),
+}
+
 /// The engine refused the call: 401 or 403. The token is wrong or missing,
 /// so the same call will be refused again (#38, see `crate::refusal`).
 #[derive(Debug)]
@@ -220,15 +229,28 @@ impl Engine {
     /// namespace and return the attach coordinates. `node` must be the
     /// volume's master node (the engine's own name, captured at create).
     pub async fn attach_volume(&self, id: &str, node: &str) -> anyhow::Result<AttachedLeg> {
-        let v = self
-            .v1_post(
-                &format!("/v1/volumes/{id}/attach"),
-                // Network coordinates even though `node` is the engine
-                // itself — the head or client is elsewhere (stormblock#149,
-                // v19.1.1; older engines ignore the field).
-                serde_json::json!({ "node": node, "mode": "read_write", "transport": "nvme_tcp" }),
-            )
-            .await?;
+        self.attach_leg(id, node, None).await
+    }
+
+    /// [`Self::attach_volume`] presenting the leg's fencing epoch (#33): the
+    /// attach contract of stormblock#6, under which an engine refuses an
+    /// attach at an epoch other than the volume's (412 `stale_epoch`).
+    /// Engines before #6 ignore the field.
+    pub async fn attach_leg(&self, id: &str, node: &str, epoch: Option<u64>) -> anyhow::Result<AttachedLeg> {
+        // Network coordinates even though `node` is the engine itself — the
+        // head or client is elsewhere (stormblock#149, v19.1.1; older
+        // engines ignore the field).
+        let mut body = serde_json::json!({ "node": node, "mode": "read_write", "transport": "nvme_tcp" });
+        if let Some(e) = epoch {
+            body["epoch"] = serde_json::json!(e);
+        }
+        let v = self.v1_post(&format!("/v1/volumes/{id}/attach"), body).await?;
+        self.parse_attach(id, &v)
+    }
+
+    /// The coordinates in an attach answer (`/v1` and `/api/v1` return the
+    /// same `AttachInfo`).
+    fn parse_attach(&self, id: &str, v: &Value) -> anyhow::Result<AttachedLeg> {
         match v.get("transport").and_then(|t| t.as_str()) {
             Some("nvme_tcp") => {}
             // Since stormblock 2337c8a an attach by the master node gets the
@@ -276,6 +298,140 @@ impl Engine {
             trsvcid,
             nsid,
         })
+    }
+
+    /// POST /api/v1/volumes/{id}/attach — NVMe-TCP for any engine volume,
+    /// /v1 or not (stormblock#78). For a served volume that came across with
+    /// its array on a promote (#33), which the new head's /v1 never made.
+    pub async fn attach_any(&self, id: &str) -> anyhow::Result<AttachedLeg> {
+        let v = self
+            .v1_post(
+                &format!("/api/v1/volumes/{id}/attach"),
+                serde_json::json!({ "transport": "nvme_tcp" }),
+            )
+            .await?;
+        self.parse_attach(id, &v)
+    }
+
+    /// DELETE /api/v1/volumes/{id}/attach — stop serving it. Idempotent.
+    pub async fn detach_any(&self, id: &str) -> anyhow::Result<()> {
+        let resp = self
+            .req(reqwest::Method::DELETE, &format!("/api/v1/volumes/{id}/attach"))
+            .send()
+            .await?;
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("detach {id}: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// DELETE /api/v1/volumes/{id} — any engine volume.
+    pub async fn delete_any_volume(&self, id: &str) -> anyhow::Result<()> {
+        let resp = self
+            .req(reqwest::Method::DELETE, &format!("/api/v1/volumes/{id}"))
+            .send()
+            .await?;
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("delete {id}: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// The /v1 epoch of a volume (GET /v1/volumes/{id}).
+    pub async fn v1_epoch(&self, id: &str) -> anyhow::Result<u64> {
+        let v: Value = self
+            .get(&format!("/v1/volumes/{id}"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        v.get("epoch")
+            .and_then(|e| e.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("volume {id}: no epoch in {v}"))
+    }
+
+    /// POST /v1/volumes/{id}/fence {expected_epoch} — the engine's CAS.
+    pub async fn v1_fence(&self, id: &str, expected_epoch: u64) -> anyhow::Result<FenceOutcome> {
+        let path = format!("/v1/volumes/{id}/fence");
+        let resp = self
+            .req(reqwest::Method::POST, &path)
+            .json(&serde_json::json!({ "expected_epoch": expected_epoch }))
+            .send()
+            .await?;
+        check_refused(&resp, &path)?;
+        let status = resp.status();
+        let out: Value = resp.json().await.unwrap_or(Value::Null);
+        if status == reqwest::StatusCode::PRECONDITION_FAILED {
+            if let Some(c) = out.get("current_epoch").and_then(|c| c.as_u64()) {
+                return Ok(FenceOutcome::Stale(c));
+            }
+        }
+        if !status.is_success() {
+            anyhow::bail!("{path}: {status}: {out}");
+        }
+        out.get("epoch")
+            .and_then(|e| e.as_u64())
+            .map(FenceOutcome::Fenced)
+            .ok_or_else(|| anyhow::anyhow!("{path}: no epoch in {out}"))
+    }
+
+    /// Fence a leg volume on its engine: read its epoch, CAS it one up, and
+    /// once more from the current epoch if another fence won the race. A
+    /// leg has one fencer (this volume's stormstorage), so a race is a
+    /// retried call of our own. Returns the leg's new epoch.
+    pub async fn fence_leg(&self, id: &str) -> anyhow::Result<u64> {
+        let mut expected = self.v1_epoch(id).await?;
+        for _ in 0..2 {
+            match self.v1_fence(id, expected).await? {
+                FenceOutcome::Fenced(e) => return Ok(e),
+                FenceOutcome::Stale(c) => expected = c,
+            }
+        }
+        anyhow::bail!("fence {id}: epoch kept moving")
+    }
+
+    /// POST /api/v1/arrays/assemble {drive_uuids} — put an array back
+    /// together from its members' superblocks (stormblock#252). Returns the
+    /// report: `arrays[] {id, state, already}`, `refused[]`.
+    pub async fn assemble_arrays(&self, drive_uuids: &[String]) -> anyhow::Result<Value> {
+        self.v1_post(
+            "/api/v1/arrays/assemble",
+            serde_json::json!({ "drive_uuids": drive_uuids }),
+        )
+        .await
+    }
+
+    /// PUT /api/v1/arrays/{id}/rebuild — cap its rebuilds (0 = unlimited).
+    pub async fn set_rebuild_rate(&self, array_id: &str, bytes_per_sec: u64) -> anyhow::Result<()> {
+        let path = format!("/api/v1/arrays/{array_id}/rebuild");
+        let resp = self
+            .req(reqwest::Method::PUT, &path)
+            .json(&serde_json::json!({ "max_bytes_per_sec": bytes_per_sec }))
+            .send()
+            .await?;
+        check_refused(&resp, &path)?;
+        if !resp.status().is_success() {
+            anyhow::bail!("{path}: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// DELETE /api/v1/arrays/{id}?keep_superblocks=true — forget an array
+    /// without writing to its members: for a former head, whose members
+    /// are now another head's (#33).
+    pub async fn forget_array(&self, id: &str) -> anyhow::Result<()> {
+        let resp = self
+            .req(
+                reqwest::Method::DELETE,
+                &format!("/api/v1/arrays/{id}?keep_superblocks=true"),
+            )
+            .send()
+            .await?;
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("forget array {id}: {}", resp.status());
+        }
+        Ok(())
     }
 
     /// POST /v1/volumes/{id}/detach.

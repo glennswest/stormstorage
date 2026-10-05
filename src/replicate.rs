@@ -32,6 +32,9 @@ pub struct Payload {
     /// Leg volumes waiting to be reaped (#1).
     #[serde(default)]
     pub orphans: Vec<crate::model::Orphan>,
+    /// Former heads waiting to be cleaned up (#33).
+    #[serde(default)]
+    pub stale_heads: Vec<crate::model::StaleHead>,
 }
 
 pub async fn build_payload(state: &Arc<AppState>) -> Payload {
@@ -46,6 +49,7 @@ pub async fn build_payload(state: &Arc<AppState>) -> Payload {
             .map(|n| n.config.clone())
             .collect(),
         orphans: fed.orphans.clone(),
+        stale_heads: fed.stale_heads.clone(),
     }
 }
 
@@ -57,6 +61,7 @@ pub async fn apply(state: &Arc<AppState>, payload: Payload) -> bool {
     }
     fed.volumes = payload.volumes;
     fed.orphans = payload.orphans;
+    fed.stale_heads = payload.stale_heads;
     for nc in payload.registered {
         match fed.nodes.get_mut(&nc.name) {
             Some(n) => {

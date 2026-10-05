@@ -95,6 +95,7 @@ pub async fn poll_once(state: &Arc<AppState>) {
         }
     }
     crate::kube::refresh(state).await;
+    crate::head::refresh(state).await;
     crate::orchestrate::reconcile(state).await;
     // Forget inventory of nodes no longer known.
     {

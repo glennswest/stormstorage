@@ -103,6 +103,11 @@ pub struct Leg {
     /// The head array's member uuid for this leg.
     #[serde(default)]
     pub member_uuid: Option<String>,
+    /// The leg volume's own /v1 epoch on its engine after the last fence
+    /// (#33). The head presents it on the leg attach once stormblock#6
+    /// enforces it.
+    #[serde(default)]
+    pub epoch: Option<u64>,
 }
 
 /// Whether a volume's legs are a mirrored whole.
@@ -190,6 +195,55 @@ pub struct Export {
     pub coordinates_changed: bool,
     #[serde(default)]
     pub message: Option<String>,
+    /// The served volume came across with the array when the head moved
+    /// (promote, #33): the engine has no /v1 record of it, so it is
+    /// attached, detached and deleted through `/api/v1/volumes/{id}`.
+    #[serde(default)]
+    pub adopted: bool,
+}
+
+/// How fast a resync onto a new leg may run (#33, stormblock-csi's
+/// `bandwidth_class`). Applied as the head array's rebuild rate cap
+/// (`PUT /api/v1/arrays/{id}/rebuild`); the rates are `[recovery]` keys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BandwidthClass {
+    Low,
+    #[default]
+    Normal,
+    High,
+    Unthrottled,
+}
+
+/// A bounded window in which a second consumer (a live migration's
+/// target) may attach the served volume (#33, was stormblock#7). Closed by
+/// commit (fence + promote the target), abort, or expiry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DualAttach {
+    pub target_node: String,
+    /// The volume's epoch when the window opened; close must present it.
+    pub epoch: u64,
+    pub opened_at: SystemTime,
+    pub expires_at: SystemTime,
+}
+
+/// A head that lost its role (promote, #33) and still holds the array and
+/// drives of the legs, as far as we know. Reaped when its engine answers:
+/// the leg drives go first, then the array with its superblocks kept —
+/// never wiped, the legs belong to the new head.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaleHead {
+    pub node: String,
+    pub array_id: String,
+    pub drive_uris: Vec<String>,
+    pub of_volume: String,
+    /// The epoch the volume was fenced at.
+    pub epoch: u64,
+    pub since: SystemTime,
+}
+
+pub fn first_epoch() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +276,18 @@ pub struct DistVolume {
     /// How consumers attach this volume (#2).
     #[serde(default)]
     pub export: Export,
+    /// Fencing epoch (#33): bumped by every fence; a promote must present
+    /// the epoch the fence returned. Starts at 1, like /v1.
+    #[serde(default = "first_epoch")]
+    pub epoch: u64,
+    /// Set by a fence and cleared by the promote that follows it: the head
+    /// at this epoch has lost its writer role and none has taken it yet.
+    #[serde(default)]
+    pub fenced: bool,
+    #[serde(default)]
+    pub bandwidth_class: BandwidthClass,
+    #[serde(default)]
+    pub dual_attach: Option<DualAttach>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -236,6 +302,9 @@ pub struct FedState {
     /// Leg volumes to delete once their node answers (#1).
     #[serde(default)]
     pub orphans: Vec<Orphan>,
+    /// Former heads to clean up once they answer (#33).
+    #[serde(default)]
+    pub stale_heads: Vec<StaleHead>,
 }
 
 impl FedState {

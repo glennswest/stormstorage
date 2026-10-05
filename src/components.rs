@@ -268,7 +268,7 @@ fn node_component(n: &Node, inv: Option<&NodeInventory>) -> ComponentSummary {
     }
 }
 
-fn volume_component(v: &DistVolume) -> ComponentSummary {
+fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>) -> ComponentSummary {
     let failed_legs = v.legs.iter().filter(|l| l.state == LegState::Failed).count();
     let lost_legs: Vec<&str> = v
         .legs
@@ -311,6 +311,26 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
     if let Some(r) = &v.replacing {
         metrics.push(Metric::new("rebuilding", format!("{} → {}", r.from, r.leg.node)).tone("warn"));
     }
+    // Copies in sync, as read from the head's array (#33).
+    if v.legs.len() > 1 {
+        let reps = crate::head::replicas(v, reading);
+        let in_sync = reps.iter().filter(|r| r.sync == crate::head::SyncState::InSync).count();
+        let resync = reps.iter().find_map(|r| match r.sync {
+            crate::head::SyncState::Resyncing { progress_pct, .. } => Some((r.node.clone(), progress_pct)),
+            _ => None,
+        });
+        let tone = if in_sync >= v.replicas as usize { "ok" } else { "warn" };
+        metrics.push(Metric::new("in sync", format!("{in_sync}/{}", reps.len())).tone(tone));
+        if let Some((node, pct)) = resync {
+            metrics.push(Metric::new("resync", format!("{node} {pct:.1}%")).tone("warn"));
+        }
+    }
+    if v.epoch > 1 || v.fenced {
+        metrics.push(
+            Metric::new("epoch", format!("{}{}", v.epoch, if v.fenced { " fenced" } else { "" }))
+                .tone(if v.fenced { "warn" } else { "accent" }),
+        );
+    }
     let mut relations = vec![Relation::has_many(
         "legs",
         v.legs
@@ -339,7 +359,7 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
             if lost_legs.is_empty() {
                 String::new()
             } else if head_lost {
-                format!(" · head {} lost (re-head not implemented)", lost_legs.join(", "))
+                format!(" · head {} lost (promote a surviving leg's node)", lost_legs.join(", "))
             } else {
                 format!(" · lost: {}", lost_legs.join(", "))
             },
@@ -391,13 +411,15 @@ fn volume_component(v: &DistVolume) -> ComponentSummary {
 pub async fn collect(state: &Arc<AppState>) -> Vec<ComponentSummary> {
     let fed = state.fed.read().await;
     let inventory = state.inventory.read().await;
-    build(state, &fed, &inventory)
+    let heads = state.heads.read().await;
+    build(state, &fed, &inventory, &heads)
 }
 
 fn build(
     state: &AppState,
     fed: &crate::model::FedState,
     inventory: &BTreeMap<String, NodeInventory>,
+    heads: &BTreeMap<String, crate::head::ArrayReading>,
 ) -> Vec<ComponentSummary> {
     let mut out = Vec::new();
     let tiers = crate::inventory::tiers(inventory);
@@ -541,7 +563,7 @@ fn build(
         }
     }
     for v in fed.volumes.values() {
-        out.push(volume_component(v));
+        out.push(volume_component(v, heads.get(&v.name)));
     }
     for (node, inv) in inventory {
         for v in &inv.volumes {
@@ -576,6 +598,7 @@ mod tests {
                     export: None,
                     drive_uuid: None,
                     member_uuid: None,
+                    epoch: None,
                 })
                 .collect(),
             assembly: AssemblyState::PendingEngineSupport,
@@ -586,8 +609,12 @@ mod tests {
             next_releg_after: None,
             next_assemble_after: None,
             export: Default::default(),
+            epoch: 1,
+            fenced: false,
+            bandwidth_class: Default::default(),
+            dual_attach: None,
         };
-        let c = volume_component(&v);
+        let c = volume_component(&v, None);
         assert_eq!(c.health, Health::Ok);
         assert!(c.relations.iter().any(|r| r.name == "pool" && r.targets == vec!["pool:fast".to_string()]));
         let legs = c.relations.iter().find(|r| r.name == "legs").unwrap();

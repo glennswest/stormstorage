@@ -37,6 +37,12 @@ pub struct AppState {
     pub refusals: crate::refusal::Refusals,
     /// Every stormblock PV/PVC the apiserver holds, last read (#28).
     pub kube: RwLock<crate::kube::KubeView>,
+    /// Each assembled volume's array as last read on its head (#33). Not
+    /// persisted, not replicated.
+    pub heads: RwLock<BTreeMap<String, crate::head::ArrayReading>>,
+    /// Conditions already reported once (keys), so a poll does not repeat
+    /// the same error event.
+    pub noted: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl AppState {
@@ -50,6 +56,8 @@ impl AppState {
             replacing: std::sync::Mutex::new(Default::default()),
             refusals: Default::default(),
             kube: Default::default(),
+            heads: Default::default(),
+            noted: Default::default(),
         }
     }
 }
@@ -128,6 +136,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
         .route("/api/v1/volumes/{name}/export", post(export_volume))
         .route("/api/v1/volumes/{name}/assemble", post(assemble_volume))
+        .route("/api/v1/volumes/{name}/replicas", get(volume_replicas))
+        .route("/api/v1/volumes/{name}/fence", post(fence_volume))
+        .route("/api/v1/volumes/{name}/promote", post(promote_volume))
+        .route("/api/v1/volumes/{name}/prestage", post(prestage_volume))
+        .route("/api/v1/volumes/{name}/dual-attach", post(open_dual_attach))
+        .route("/api/v1/volumes/{name}/dual-attach/close", post(close_dual_attach))
+        .route("/api/v1/stale-heads", get(list_stale_heads))
         .route("/api/v1/orphans", get(list_orphans))
         .route("/api/v1/events", get(list_events))
         .route("/api/v1/summary", get(summary))
@@ -414,6 +429,9 @@ struct CreateVolumeRequest {
     rung: Option<String>,
     #[serde(default)]
     tier: Option<String>,
+    /// Resync rate class for later legs (#33).
+    #[serde(default)]
+    bandwidth_class: Option<crate::model::BandwidthClass>,
 }
 
 async fn create_volume(
@@ -476,6 +494,7 @@ async fn create_volume(
                 export: None,
                 drive_uuid: None,
                 member_uuid: None,
+                epoch: None,
             }),
             Err(e) => {
                 failure = Some(format!("{node_name}: {e:#}"));
@@ -521,6 +540,10 @@ async fn create_volume(
         next_releg_after: None,
         next_assemble_after: None,
         export: Default::default(),
+        epoch: 1,
+        fenced: false,
+        bandwidth_class: req.bandwidth_class.unwrap_or_default(),
+        dual_attach: None,
     };
     {
         let mut fed = s.fed.write().await;
@@ -579,7 +602,12 @@ async fn create_volume(
 
 async fn list_volumes(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let fed = s.fed.read().await;
-    let volumes: Vec<&DistVolume> = fed.volumes.values().collect();
+    let heads = s.heads.read().await;
+    let volumes: Vec<serde_json::Value> = fed
+        .volumes
+        .values()
+        .map(|v| crate::head::view(v, heads.get(&v.name)))
+        .collect();
     Json(json!({ "volumes": volumes }))
 }
 
@@ -592,7 +620,152 @@ async fn get_volume(
         .volumes
         .get(&name)
         .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?;
-    Ok(Json(serde_json::to_value(v).unwrap_or_default()))
+    Ok(Json(crate::head::view(v, s.heads.read().await.get(&name))))
+}
+
+/// A refused replication call, in /v1's error envelope (`{code, message,
+/// current_epoch?}`) plus this API's `error`.
+fn refusal(r: crate::head::Refusal) -> Response {
+    use crate::head::Refusal::*;
+    let (status, code, current) = match &r {
+        NotFound(_) => (StatusCode::NOT_FOUND, "not_found", None),
+        StaleEpoch(c) => (StatusCode::PRECONDITION_FAILED, "stale_epoch", Some(*c)),
+        Conflict(_) => (StatusCode::CONFLICT, "conflict", None),
+        Upstream(_) => (StatusCode::BAD_GATEWAY, "engine", None),
+    };
+    let msg = r.to_string();
+    let mut body = json!({ "error": msg, "message": msg, "code": code });
+    if let Some(c) = current {
+        body["current_epoch"] = json!(c);
+    }
+    (status, Json(body)).into_response()
+}
+
+/// The volume in /v1's replica shape (#33): what stormblock-csi reads.
+async fn volume_replicas(State(s): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+    let fed = s.fed.read().await;
+    let Some(v) = fed.volumes.get(&name) else {
+        return refusal(crate::head::Refusal::NotFound(format!("volume {name:?}")));
+    };
+    let heads = s.heads.read().await;
+    let reading = heads.get(&name);
+    let reps = crate::head::replicas(v, reading);
+    Json(json!({
+        "id": v.name,
+        "name": v.name,
+        "size_bytes": v.size_bytes,
+        "epoch": v.epoch,
+        "fenced": v.fenced,
+        "health": crate::head::health(v, &reps),
+        "replicas": reps,
+        "bandwidth_class": v.bandwidth_class,
+        "head": v.head,
+        "dual_attach": v.dual_attach,
+        "sync_read_at": reading.map(|r| r.read_at),
+        "rebuild_bytes_per_sec": reading.and_then(|r| r.rebuild_bytes_per_sec),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct FenceBody {
+    expected_epoch: u64,
+}
+
+async fn fence_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(b): Json<FenceBody>,
+) -> Response {
+    match crate::head::fence(&s, &name, b.expected_epoch).await {
+        Ok(f) => Json(json!({
+            "epoch": f.epoch,
+            "legs_fenced": f.legs.iter().map(|(n, e)| json!({"node": n, "epoch": e})).collect::<Vec<_>>(),
+            "legs_not_fenced": f.not_fenced.iter().map(|(n, e)| json!({"node": n, "error": e})).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+#[derive(Deserialize)]
+struct PromoteBody {
+    target_node: String,
+    fenced_epoch: u64,
+}
+
+async fn promote_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(b): Json<PromoteBody>,
+) -> Response {
+    match crate::head::promote(&s, &name, &b.target_node, b.fenced_epoch).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct PrestageBody {
+    /// Where the new slave goes; placement picks when absent.
+    #[serde(default)]
+    node: Option<String>,
+    /// The slave it replaces; the lost one, or the only one, when absent.
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    bandwidth_class: Option<crate::model::BandwidthClass>,
+}
+
+async fn prestage_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    body: Option<Json<PrestageBody>>,
+) -> Response {
+    let b = body.map(|b| b.0).unwrap_or_default();
+    match crate::head::prestage(&s, &name, b.node, b.from, b.bandwidth_class).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+#[derive(Deserialize)]
+struct DualAttachBody {
+    target_node: String,
+    ttl_secs: u64,
+}
+
+async fn open_dual_attach(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(b): Json<DualAttachBody>,
+) -> Response {
+    match crate::head::open_window(&s, &name, &b.target_node, b.ttl_secs).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+#[derive(Deserialize)]
+struct CloseBody {
+    epoch: u64,
+    outcome: crate::head::Outcome,
+}
+
+async fn close_dual_attach(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(b): Json<CloseBody>,
+) -> Response {
+    match crate::head::close_window(&s, &name, b.epoch, b.outcome).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+async fn list_stale_heads(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let fed = s.fed.read().await;
+    Json(json!({ "stale_heads": fed.stale_heads }))
 }
 
 async fn delete_volume(

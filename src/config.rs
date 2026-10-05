@@ -37,6 +37,14 @@ pub struct RecoveryConfig {
     /// How long a new member may take to rebuild before the replacement
     /// is abandoned and rolled back.
     pub rebuild_timeout_secs: u64,
+    /// Resync rate caps per `bandwidth_class` (#33), bytes a second of
+    /// member data, applied to the head array's rebuilds. 0 = unlimited;
+    /// `unthrottled` is always 0.
+    pub rate_low: u64,
+    pub rate_normal: u64,
+    pub rate_high: u64,
+    /// Longest dual-attach window a caller may open (#33).
+    pub max_dual_attach_secs: u64,
 }
 
 impl Default for RecoveryConfig {
@@ -45,11 +53,26 @@ impl Default for RecoveryConfig {
             enabled: None,
             cooldown_secs: 300,
             rebuild_timeout_secs: 3600,
+            rate_low: 50 << 20,
+            rate_normal: 200 << 20,
+            rate_high: 1 << 30,
+            max_dual_attach_secs: 3600,
         }
     }
 }
 
 impl RecoveryConfig {
+    /// The rebuild cap for a class, bytes a second (0 = unlimited).
+    pub fn rate(&self, class: crate::model::BandwidthClass) -> u64 {
+        use crate::model::BandwidthClass::*;
+        match class {
+            Low => self.rate_low,
+            Normal => self.rate_normal,
+            High => self.rate_high,
+            Unthrottled => 0,
+        }
+    }
+
     /// Whether this instance replaces lost legs itself.
     pub fn active(&self, has_peers: bool) -> bool {
         self.enabled.unwrap_or(!has_peers)

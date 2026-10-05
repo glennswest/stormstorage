@@ -113,7 +113,7 @@ async fn assemble_inner(
         let vid = leg.volume_id.as_deref().expect("checked created");
         let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
         let att = engine
-            .attach_volume(vid, &master)
+            .attach_leg(vid, &master, leg.epoch)
             .await
             .map_err(|e| anyhow::anyhow!("{}: attach: {e:#}", leg.node))?;
         leg.export = Some(att);
@@ -190,6 +190,10 @@ async fn assemble_inner(
     vol.head = Some(head.to_string());
     vol.array_id = Some(array_id.clone());
     vol.assembly = AssemblyState::Assembled;
+    // Resyncs onto later legs run at the volume's bandwidth class (#33).
+    let _ = head_engine
+        .set_rebuild_rate(&array_id, state.config.recovery.rate(vol.bandwidth_class))
+        .await;
     event(
         state,
         &vol.name,
@@ -316,7 +320,7 @@ pub fn move_target_candidates(
 /// Claim the one-replacement-per-volume slot. The API, the reconciler and
 /// a resumed wait all go through it, so a replacement is never started
 /// twice.
-fn claim(state: &AppState, name: &str) -> bool {
+pub(crate) fn claim(state: &AppState, name: &str) -> bool {
     state
         .replacing
         .lock()
@@ -324,7 +328,7 @@ fn claim(state: &AppState, name: &str) -> bool {
         .insert(name.to_string())
 }
 
-fn release(state: &AppState, name: &str) {
+pub(crate) fn release(state: &AppState, name: &str) {
     state.replacing.lock().expect("replacing lock").remove(name);
 }
 
@@ -398,7 +402,7 @@ async fn build_replacement(
         let head_ok = fed.nodes.get(&head).map(|n| n.status.healthy).unwrap_or(false);
         if !head_ok {
             anyhow::bail!(
-                "{name}: head {head} is unreachable — the array lives there; re-head is not implemented"
+                "{name}: head {head} is unreachable — the array lives there; promote a surviving leg's node first (fence, then promote)"
             );
         }
         let rungs = &state.config.federation.rungs;
@@ -455,6 +459,7 @@ async fn build_replacement(
         export: None,
         drive_uuid: None,
         member_uuid: None,
+        epoch: None,
     };
     let wired: anyhow::Result<()> = async {
         let vid = leg.volume_id.clone().expect("set");
@@ -820,7 +825,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
             vol,
             Severity::Error,
             format!(
-                "{vol}: head {head} lost — the array lives there; not re-legged (re-head is not implemented)"
+                "{vol}: head {head} lost — the array lives there; not re-legged — fence it and promote a surviving leg's node (automatic re-head is #14)"
             ),
         )
         .await;
@@ -860,6 +865,24 @@ pub async fn reconcile(state: &Arc<AppState>) {
             });
         }
     }
+    let closed = {
+        let mut fed = state.fed.write().await;
+        crate::head::expire_windows(&mut fed, now)
+    };
+    if !closed.is_empty() {
+        crate::replicate::push_to_peers(state.clone());
+        state.persist().await;
+    }
+    for (vol, target) in closed {
+        event(
+            state,
+            &vol,
+            Severity::Warning,
+            format!("{vol}: dual-attach window for {target} expired — aborted, head unchanged"),
+        )
+        .await;
+    }
+    crate::head::reap_stale_heads(state).await;
     reap_orphans(state).await;
 }
 
@@ -1041,7 +1064,19 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
     };
     let mut volume_id = at.volume_id.clone();
     let mut master_node = at.master_node.clone();
+    // Served volume that came across with the array on a promote (#33): no
+    // /v1 record on this head, and never replaced by a new, empty one.
+    let adopted = vol.export.adopted && vol.export.node.as_deref() == Some(at.node.as_str());
     let result: anyhow::Result<crate::engine::AttachedLeg> = async {
+        if adopted {
+            let vid = volume_id.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{}: the served volume did not come across with the array — not creating an empty one",
+                    at.node
+                )
+            })?;
+            return at.engine.attach_any(&vid).await.map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node));
+        }
         if volume_id.is_none() {
             let array_id = at.array_id.as_deref().expect("assembled");
             let created = at
@@ -1079,6 +1114,7 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
             volume_id: volume_id.clone(),
             node: Some(at.node.clone()),
             master_node: master_node.clone(),
+            adopted,
             ..Default::default()
         };
         match &result {
@@ -1146,6 +1182,13 @@ pub async fn revoke(state: &Arc<AppState>, vol: &DistVolume) -> anyhow::Result<(
             None => return Ok(()),
         }
     };
+    if vol.export.adopted {
+        let _ = engine.detach_any(vid).await;
+        return engine
+            .delete_any_volume(vid)
+            .await
+            .map_err(|e| anyhow::anyhow!("{node}: consumer volume {vid}: {e:#}"));
+    }
     let master = vol.export.master_node.clone().unwrap_or_else(|| "localhost".into());
     if vol.export.coordinates.is_some() {
         // Best-effort: the delete below is what must succeed.
@@ -1251,6 +1294,7 @@ mod tests {
                     export: None,
                     drive_uuid: None,
                     member_uuid: None,
+                    epoch: None,
                 })
                 .collect(),
             assembly: AssemblyState::Assembled,
@@ -1261,6 +1305,10 @@ mod tests {
             next_releg_after: None,
             next_assemble_after: None,
             export: Default::default(),
+            epoch: 1,
+            fenced: false,
+            bandwidth_class: Default::default(),
+            dual_attach: None,
         }
     }
 
