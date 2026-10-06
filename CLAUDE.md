@@ -350,7 +350,7 @@ stormblock self-registered, or adopted) was polled bare.
       the golden carries it; server1's console should go quiet.
 
 ### Phase 3: Rebalance + tier migration
-- [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30) — in progress 2026-10-06 (below)
+- [x] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30) — done 2026-10-06
 - [x] Placement by live IO load, not only free ratio (#31) — done 2026-10-06
 - [ ] Cross-cluster tier migration (pool → pool) (#32)
 
@@ -586,7 +586,7 @@ at all = today's free-ratio order. Ties by name. Tests: placement units
 Done: 2d46f95 (+ e8cedca docs); sc-build passes (72 unit). Not seen on a
 node yet (needs a release; ublk-local I/O is not in the signal).
 
-### Rebalance by pool watermarks (#30, P3) — in progress 2026-10-06
+### Rebalance by pool watermarks (#30, P3) — DONE 2026-10-06
 Opt-in per pool: `[[pools]] high_watermark`, `low_watermark` (used
 fraction), `max_moves` (in flight per pool, 1). No watermarks = no
 rebalance (as today). Pure planner `src/rebalance.rs::plan`: a pool whose
@@ -599,6 +599,8 @@ in-flight + new ≤ max_moves. Reconciler (`recovery.active`) →
 `start_replacement(…, "rebalance")` (redundancy never drops), event per
 move, cooldown on failure. `GET /api/v1/pools/{name}/rebalance` = the
 proposal (dry run). Tests: planner units; tests via mock engines optional.
+Done: 6013bf7 (+ 3ae0d9a docs); sc-build passes (75 unit). Never moves a
+head's own leg. Not run against live engines (stormcentral#131).
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
