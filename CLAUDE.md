@@ -476,7 +476,7 @@ pending withdrawals retried each poll and on recovery. sc-build passes
 (65 unit, hosts 2/2, replication 6/6). Not seen on a live closed engine
 (stormcentral#131).
 
-### A delete whose revoke failed is not republished (#24; #40 open) — in progress 2026-10-06
+### A delete whose revoke failed is not republished (#24; #40 open) — DONE 2026-10-06
 #24's e2e: the served volume's DELETE timed out on a loaded head (the
 engine finished it later), the record kept `published` + that id, and every
 recovery re-attached it → 404 for ever. Plan: `ExportState::Revoking`, set
@@ -486,6 +486,8 @@ treats 404 as gone. Feed/UI show it. Test in tests/export.rs (engine
 deletes but answers 500). #40's general case (a served volume gone without
 a delete from here: recreate an empty `<name>-mirror`, or not?) is a data
 question → asked on #40, `needs-owner`.
+Done: the fix commit + b1d39bc docs; sc-build passes (export 8/8). #40 waits
+on the owner's answer (recreate empty, or refuse).
 
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
