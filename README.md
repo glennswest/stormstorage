@@ -37,7 +37,18 @@ stormview components feed on **:9093**.
   `/var/lib/stormblock/api_token` and `/run/stormblock/engine/api_token`.
   "On this machine" means a loopback host, this machine's hostname, or an
   IP address held here. A minted token means nothing to a peer, which
-  minted its own. So a cluster peer adopted or self-registered from
+  minted its own.
+  **Destructive verbs (#47, stormblock#274)** need more than the node
+  token on an engine with `admin_gate = enforce`. These are array create,
+  delete and forget, member add and remove, and drive close. On those
+  calls only, stormstorage presents an admin credential:
+  `$STORMBLOCK_ADMIN_TOKEN` (any engine); else `[local] admin_token_file`
+  (this machine's engine only); else the `[kubernetes]` bearer, which the
+  engine checks with a SubjectAccessReview for `storage.storm.io` (bind
+  it to `storage-admin`). If the engine refuses that credential, the call
+  is retried once with the node token, so an engine from before #274
+  keeps working. A refused destructive DELETE says what to set.
+  So a cluster peer adopted or self-registered from
   another machine gets the shared token, or none: then it refuses and is
   backed off, and the log says why. The token is read on every call, so a
   re-minted file is picked up.
@@ -358,6 +369,7 @@ worked example.
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
 | `[local] token_file` | unset | Engine bearer token file. `$STORMBLOCK_API_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `$STORMBLOCK_TOKEN_FILE`, `/etc/stormblock/api_token`, `/var/lib/stormblock/api_token` and `/run/stormblock/engine/api_token` (the family order, stormdrive#14; the last is where a stormcos unit mounts the minted token) (#42). The token is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). The key belongs under `[local]`: a top-level `token_file` is ignored, and every unknown top-level key is logged as a WARN at start. |
 | `[local] shared_token_file` | unset | File holding the cluster's **shared** engine token (stormblock's `management.api_token`), presented to every engine, peers included (#12). `$STORMBLOCK_API_TOKEN` wins over it. The `token_file` search above finds a token the engine minted for itself, which goes only to an engine on this machine. |
+| `[local] admin_token_file` | unset | The engine's **admin** token file, presented on its destructive verbs (array create/delete, members, drive close; stormblock#274, #47), and only to an engine on this machine. `$STORMBLOCK_ADMIN_TOKEN` wins over it. There is no default: stormblock keeps its admin token (`/run/stormblock-admin/admin_token`) out of what services mount. Without either, the `[kubernetes]` bearer is presented, and the engine reviews it against `storage-admin`. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
