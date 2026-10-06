@@ -553,7 +553,7 @@ off by default does nothing; on + slave in sync (superblock) → re-headed.
 Done: c4d4a88 (+ dc897ef docs); sc-build passes (68 unit, replication 8/8).
 Turning it on waits on fencing through cluster membership + stormblock#6.
 
-### Admin credential for the engine's destructive verbs (#47, P2) — in progress 2026-10-06
+### Admin credential for the engine's destructive verbs (#47, P2) — DONE 2026-10-06
 stormblock#274: array create/delete, member add/fail/replace/remove, and
 every non-detach DELETE (drive close) need the admin token or a Kubernetes
 bearer allowed `storage.storm.io` (`storage-admin`); the node token gets 401
@@ -565,6 +565,9 @@ array_remove_member, delete_drive. Plan: `Engine.admin`, used only by those
 machine only, like #12's minted token; no default — stormblock keeps it
 out of services), else the `[kubernetes]` bearer. Tests: a mock engine
 records the bearer per call.
+Done: 39e43b2 (+ c6b5858 docs); sc-build passes (token 6/6). A refused admin
+credential is retried with the node token (pre-#274 engines). On a node the
+bearer needs stormcos#290 (mount /data/stormcert) and storage-admin.
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
