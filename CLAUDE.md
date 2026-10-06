@@ -553,6 +553,19 @@ off by default does nothing; on + slave in sync (superblock) → re-headed.
 Done: c4d4a88 (+ dc897ef docs); sc-build passes (68 unit, replication 8/8).
 Turning it on waits on fencing through cluster membership + stormblock#6.
 
+### Admin credential for the engine's destructive verbs (#47, P2) — in progress 2026-10-06
+stormblock#274: array create/delete, member add/fail/replace/remove, and
+every non-detach DELETE (drive close) need the admin token or a Kubernetes
+bearer allowed `storage.storm.io` (`storage-admin`); the node token gets 401
+under `admin_gate = enforce`. Calls of ours that are destructive:
+create_raid1, delete_array, forget_array, array_add_member,
+array_remove_member, delete_drive. Plan: `Engine.admin`, used only by those
+(`admin_req`); ordinary calls keep the node token. Order:
+`$STORMBLOCK_ADMIN_TOKEN` (any engine), `[local] admin_token_file` (this
+machine only, like #12's minted token; no default — stormblock keeps it
+out of services), else the `[kubernetes]` bearer. Tests: a mock engine
+records the bearer per call.
+
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
