@@ -144,8 +144,12 @@ stormview components feed on **:9093**.
   flapping node gives one re-leg. A lost **head** is reported and not
   re-legged automatically, because the array lives there: fence it and
   promote a surviving leg's node (#33, below); automatic re-head is #14. A head that
-  only stalled past the threshold keeps its leg `lost` and the volume
-  `degraded` after it answers again (#26). With
+  only stalled past the threshold comes back (#26): once it answers again,
+  its array is read (`GET /api/v1/arrays/{id}`), and if the head's member
+  is active its leg is `created` again and the volume `assembled` (if no
+  other leg is lost). If the head no longer holds the array (its engine
+  restarted, #15) or its member is not active, the volume stays
+  `degraded`, with one warning event per finding. With
   `[replication] peers` set, only an instance with
   `[recovery] enabled = true` acts, because every peer sees the same loss.
 - **Consumer serving (#2).** A consumer attaches **the mirror**, never a
@@ -587,7 +591,7 @@ done. The open work:
   on stormcentral#131; enforcement at the legs is stormblock#6, a handover
   from a live head stormblock#296;
 - #14: automatic re-head when the head node is lost; #15: reassemble after the
-  head's engine restarts; #26: a stalled head's leg stays lost;
+  head's engine restarts;
 - #12: the engine token's default path and peer calls; #42: the
   registry entry's config misplaces `token_file` (stormcentral#72; the
   default paths cover it);

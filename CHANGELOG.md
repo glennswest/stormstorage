@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-06
+- **fix:** A head leg marked lost comes back when the head answers again (#26). A head that missed `poll.fail_threshold` polls (45 s by default — a loaded box was enough) marked its own leg `lost` and left the volume `degraded` for good, since a head leg is never re-legged. After each poll the reconciler now reads the array of every degraded, unfenced, idle volume whose head leg is lost and whose head is healthy (this poll's reading, else `GET /api/v1/arrays/{id}`). If the head's member is `active`, the leg goes back to `created` and the volume to `assembled` when no other leg is lost, with an info event. If the array is gone (404: engine restart, #15) or the member is not active, the volume stays `degraded`, and a warning event is logged once per finding (the leg's `message` says which). Unit tests in `src/orchestrate.rs`; `tests/rejoin.rs` against mock engines.
+
 ### 2026-10-05
 - **feat:** Replication on the RAID head (#33). The owner chose on stormblock#179 (option b) that cross-node RAID1 is built on these heads, not in the engine. stormblock #5 and #7 moved here, and the engine's `/v1` prestage/promote/dual-attach stay control-plane only and are never called. Added:
   - **Sync state.** Each poll reads every assembled volume's array on its head (in memory, not replicated), and each leg is a replica in `/v1`'s exact JSON: `in_sync`, `resyncing {progress_pct, lag_bytes}` from the member's `rebuilt_bytes`, or `detached`. No reading means `detached`, never `in_sync`. `GET /api/v1/volumes/{name}/replicas`; the volume view gains `replica_sync`, `health` and `sync_read_at`; the feed gains `in sync`, `resync` and `epoch` metrics.

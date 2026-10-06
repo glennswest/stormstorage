@@ -208,8 +208,10 @@ optimization.
   again. A failed attempt waits `recovery.cooldown_secs`. Once lost, a leg
   stays lost, so a flapping node is one re-leg. A lost **head** is
   reported and not re-legged; it is moved by fence + promote (#33),
-  automatic re-head is #14; a head that only stalled keeps
-  its leg lost after it answers again (#26). With replication peers,
+  automatic re-head is #14; a head that only stalled gets
+  its leg back when it answers again and its member of the array is
+  active, and the volume is assembled again (#26); a head that answers
+  without the array (#15) leaves the volume degraded. With replication peers,
   exactly one instance acts (`[recovery] enabled = true`). Unit-tested;
   the live run (`scripts/e2e-releg.sh`) waits on stormcentral#131.
   ```

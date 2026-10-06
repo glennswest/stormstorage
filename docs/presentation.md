@@ -151,7 +151,7 @@ The source is `src/registry.rs`, `src/placement.rs`,
 |---|---|
 | Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
 | Attach with the head's `host_nqn` (engines with stormblock #210) | #27 (P1) |
-| Re-head; reassemble after the head's engine restarts; stalled head | #14, #15, #26 |
+| Re-head; reassemble after the head's engine restarts | #14, #15 |
 | Rebalance on pool watermarks; placement by IO load | #30, #31 (phase 3) |
 | Tier migration between pools | #32 (phase 3) |
 | Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |

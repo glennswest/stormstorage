@@ -148,6 +148,16 @@ fn member_sync(m: &MemberReading, data_bytes: u64) -> SyncState {
     }
 }
 
+/// The head array's member for a leg: by member uuid, else by the leg's
+/// drive URI.
+pub fn member_of<'a>(leg: &crate::model::Leg, r: &'a ArrayReading) -> Option<&'a MemberReading> {
+    let uri = leg.export.as_ref().map(|x| x.drive_uri());
+    r.members.iter().find(|m| {
+        leg.member_uuid.as_deref() == Some(m.uuid.as_str())
+            || uri.as_deref() == Some(m.device_path.as_str())
+    })
+}
+
 /// Every copy of a volume and how in sync it is. Pure. Without a reading
 /// of the head (none yet, head unreachable, or a different array) every
 /// mirrored leg is `detached`: a consumer that waits for `in_sync` before
@@ -170,16 +180,7 @@ pub fn replicas(vol: &DistVolume, reading: Option<&ArrayReading>) -> Vec<Replica
                 AssemblyState::SingleLeg => SyncState::InSync,
                 AssemblyState::PendingEngineSupport => SyncState::Detached,
                 AssemblyState::Assembled | AssemblyState::Degraded => reading
-                    .and_then(|r| {
-                        let uri = leg.export.as_ref().map(|x| x.drive_uri());
-                        r.members
-                            .iter()
-                            .find(|m| {
-                                leg.member_uuid.as_deref() == Some(m.uuid.as_str())
-                                    || uri.as_deref() == Some(m.device_path.as_str())
-                            })
-                            .map(|m| member_sync(m, r.member_data_bytes))
-                    })
+                    .and_then(|r| member_of(leg, r).map(|m| member_sync(m, r.member_data_bytes)))
                     .unwrap_or(SyncState::Detached),
             }
         };

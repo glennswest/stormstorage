@@ -468,6 +468,16 @@ impl Engine {
             .await?)
     }
 
+    /// GET /api/v1/arrays/{id}, with a 404 as `None`: the engine no
+    /// longer holds the array (it restarted, #15).
+    pub async fn find_array(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        let resp = self.get(&format!("/api/v1/arrays/{id}")).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(resp.error_for_status()?.json().await?))
+    }
+
     pub async fn delete_array(&self, id: &str) -> anyhow::Result<()> {
         let resp = self
             .req(reqwest::Method::DELETE, &format!("/api/v1/arrays/{id}"))

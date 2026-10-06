@@ -865,6 +865,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
             });
         }
     }
+    rejoin_heads(state).await;
     let closed = {
         let mut fed = state.fed.write().await;
         crate::head::expire_windows(&mut fed, now)
@@ -884,6 +885,150 @@ pub async fn reconcile(state: &Arc<AppState>) {
     }
     crate::head::reap_stale_heads(state).await;
     reap_orphans(state).await;
+}
+
+/// What reading the head again found for a volume whose head leg is
+/// lost (#26).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeadReturn {
+    /// The head's member is active: its leg is back. `assembled` when no
+    /// other leg is still lost.
+    Restored { assembled: bool },
+    /// The array is there but the head's member is not active (its state,
+    /// or "missing").
+    NotActive(String),
+    /// The head answers but no longer holds the array (#15).
+    ArrayGone,
+}
+
+/// Volumes whose head leg is lost while the head answers again: degraded,
+/// not fenced (a fence hands the head role on, #33), not busy. Returns
+/// (volume, head, array id).
+pub fn head_rejoin_candidates(
+    fed: &crate::model::FedState,
+    busy: &dyn Fn(&str) -> bool,
+) -> Vec<(String, String, String)> {
+    fed.volumes
+        .values()
+        .filter(|v| v.assembly == AssemblyState::Degraded && !v.fenced && !busy(&v.name))
+        .filter_map(|v| {
+            let head = v.head.clone()?;
+            let array = v.array_id.clone()?;
+            fed.nodes.get(&head).filter(|n| n.status.healthy)?;
+            v.legs
+                .iter()
+                .any(|l| l.node == head && l.state == LegState::Lost)
+                .then_some((v.name.clone(), head, array))
+        })
+        .collect()
+}
+
+/// Apply a fresh reading of the head's array (`None`: the head answered
+/// 404) to a volume whose head leg is lost. Returns what was found and
+/// whether the volume's record changed — a finding that repeats the last
+/// one changes nothing, so it is reported once.
+pub fn apply_head_reading(
+    vol: &mut DistVolume,
+    reading: Option<&crate::head::ArrayReading>,
+) -> Option<(HeadReturn, bool)> {
+    let head = vol.head.clone()?;
+    let array_id = vol.array_id.clone()?;
+    let idx = vol
+        .legs
+        .iter()
+        .position(|l| l.node == head && l.state == LegState::Lost)?;
+    let (found, message) = match reading {
+        None => (
+            HeadReturn::ArrayGone,
+            format!("head {head} answers but no longer holds array {array_id} (engine restart, #15)"),
+        ),
+        Some(r) if r.head != head || r.array_id != array_id => return None,
+        Some(r) => match crate::head::member_of(&vol.legs[idx], r) {
+            Some(m) if m.state == "active" => {
+                let leg = &mut vol.legs[idx];
+                leg.state = LegState::Created;
+                leg.message = None;
+                let assembled = !vol.legs.iter().any(|l| l.state == LegState::Lost);
+                if assembled {
+                    vol.assembly = AssemblyState::Assembled;
+                }
+                return Some((HeadReturn::Restored { assembled }, true));
+            }
+            m => {
+                let st = m.map(|m| m.state.clone()).unwrap_or_else(|| "missing".into());
+                (
+                    HeadReturn::NotActive(st.clone()),
+                    format!("head {head} answers; its member of array {array_id} is {st}"),
+                )
+            }
+        },
+    };
+    let leg = &mut vol.legs[idx];
+    let changed = leg.message.as_deref() != Some(message.as_str());
+    leg.message = Some(message);
+    Some((found, changed))
+}
+
+/// Bring a lost head leg back when its head answers again and still holds
+/// the array with the head's member active (#26). A head that stalled past
+/// `poll.fail_threshold` otherwise left its volume degraded for good: the
+/// head leg is never re-legged (re-head is #14).
+async fn rejoin_heads(state: &Arc<AppState>) {
+    let due: Vec<(String, String, String, crate::engine::Engine)> = {
+        let fed = state.fed.read().await;
+        head_rejoin_candidates(&fed, &|n| busy(state, n))
+            .into_iter()
+            .filter_map(|(v, h, a)| {
+                let e = engine_of(state, &fed, &h).ok()?;
+                Some((v, h, a, e))
+            })
+            .collect()
+    };
+    for (name, head, array_id, engine) in due {
+        // This poll's reading of the head, else read it here — a failed
+        // read in the poll could be a 404, which is a finding.
+        let polled = state.heads.read().await.get(&name).cloned();
+        let reading = match polled.filter(|r| r.head == head && r.array_id == array_id) {
+            Some(r) => Some(r),
+            None => match engine.find_array(&array_id).await {
+                Ok(v) => v.map(|v| crate::head::parse_array(&head, &array_id, &v)),
+                Err(_) => continue,
+            },
+        };
+        let outcome = {
+            let mut fed = state.fed.write().await;
+            let out = fed
+                .volumes
+                .get_mut(&name)
+                .and_then(|v| apply_head_reading(v, reading.as_ref()));
+            if matches!(out, Some((_, true))) {
+                fed.revision += 1;
+            }
+            out
+        };
+        let Some((found, true)) = outcome else { continue };
+        crate::replicate::push_to_peers(state.clone());
+        state.persist().await;
+        let (sev, msg) = match found {
+            HeadReturn::Restored { assembled: true } => (
+                Severity::Info,
+                format!("{name}: head {head} answers again and its member of array {array_id} is active — leg back, volume assembled"),
+            ),
+            HeadReturn::Restored { assembled: false } => (
+                Severity::Info,
+                format!("{name}: head {head} answers again and its member of array {array_id} is active — leg back; another leg is still lost"),
+            ),
+            HeadReturn::NotActive(st) => (
+                Severity::Warning,
+                format!("{name}: head {head} answers again but its member of array {array_id} is {st} — still degraded"),
+            ),
+            HeadReturn::ArrayGone => (
+                Severity::Warning,
+                format!("{name}: head {head} answers again but no longer holds array {array_id} (engine restart, #15) — still degraded"),
+            ),
+        };
+        event(state, &name, sev, msg).await;
+    }
 }
 
 /// Report an assembly retry, and serve the volume once it is assembled.
@@ -1401,6 +1546,110 @@ mod tests {
         assert_eq!(p.head_lost, vec![("v".to_string(), "a".to_string())]);
         assert!(p.start.is_empty());
         assert_eq!(fed.volumes["v"].assembly, AssemblyState::Degraded);
+    }
+
+    fn reading(head: &str, members: &[(&str, &str)]) -> crate::head::ArrayReading {
+        crate::head::parse_array(
+            head,
+            "arr",
+            &serde_json::json!({
+                "members": members.iter()
+                    .map(|(u, st)| serde_json::json!({"uuid": u, "state": st}))
+                    .collect::<Vec<_>>(),
+                "status": {"state": "clean"},
+            }),
+        )
+    }
+
+    /// A head stalled past fail_threshold, then answers again (#26).
+    fn fed_head_back() -> FedState {
+        let mut fed = fed_with(&["a", "b"], &["a"]);
+        for (i, l) in fed.volumes.get_mut("v").unwrap().legs.iter_mut().enumerate() {
+            l.member_uuid = Some(format!("m{i}"));
+        }
+        plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
+        assert_eq!(fed.volumes["v"].legs[0].state, LegState::Lost);
+        fed.nodes.get_mut("a").unwrap().status.healthy = true;
+        fed
+    }
+
+    #[test]
+    fn head_back_with_active_member_restores_assembled() {
+        let mut fed = fed_head_back();
+        assert_eq!(
+            head_rejoin_candidates(&fed, &|_| false),
+            vec![("v".to_string(), "a".to_string(), "arr".to_string())]
+        );
+        assert!(head_rejoin_candidates(&fed, &|_| true).is_empty(), "busy");
+        let v = fed.volumes.get_mut("v").unwrap();
+        let r = reading("a", &[("m0", "active"), ("m1", "active")]);
+        assert_eq!(
+            apply_head_reading(v, Some(&r)),
+            Some((HeadReturn::Restored { assembled: true }, true))
+        );
+        assert_eq!(v.legs[0].state, LegState::Created);
+        assert_eq!(v.legs[0].message, None);
+        assert_eq!(v.assembly, AssemblyState::Assembled);
+        assert!(head_rejoin_candidates(&fed, &|_| false).is_empty());
+        // Next poll: nothing lost, nothing to do.
+        let p = plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
+        assert_eq!(p, Plan::default());
+    }
+
+    #[test]
+    fn head_back_with_another_leg_lost_stays_degraded() {
+        let mut fed = fed_head_back();
+        let v = fed.volumes.get_mut("v").unwrap();
+        v.legs[1].state = LegState::Lost;
+        let r = reading("a", &[("m0", "active"), ("m1", "failed")]);
+        assert_eq!(
+            apply_head_reading(v, Some(&r)),
+            Some((HeadReturn::Restored { assembled: false }, true))
+        );
+        assert_eq!(v.assembly, AssemblyState::Degraded);
+        // The head is back, so the other lost leg is now re-legged.
+        let p = plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
+        assert_eq!(p.start, vec![("v".to_string(), "b".to_string())]);
+    }
+
+    #[test]
+    fn head_back_without_its_array_is_reported_once() {
+        let mut fed = fed_head_back();
+        let v = fed.volumes.get_mut("v").unwrap();
+        assert_eq!(apply_head_reading(v, None), Some((HeadReturn::ArrayGone, true)));
+        assert_eq!(apply_head_reading(v, None), Some((HeadReturn::ArrayGone, false)), "once");
+        assert_eq!(v.legs[0].state, LegState::Lost);
+        assert_eq!(v.assembly, AssemblyState::Degraded);
+        assert!(v.legs[0].message.as_deref().unwrap().contains("#15"));
+
+        // Member not active: still lost, reported on the change.
+        let r = reading("a", &[("m0", "failed"), ("m1", "active")]);
+        assert_eq!(
+            apply_head_reading(v, Some(&r)),
+            Some((HeadReturn::NotActive("failed".into()), true))
+        );
+        let r = reading("a", &[("m1", "active")]);
+        assert_eq!(
+            apply_head_reading(v, Some(&r)),
+            Some((HeadReturn::NotActive("missing".into()), true))
+        );
+        assert_eq!(v.legs[0].state, LegState::Lost);
+
+        // A reading of another array is not evidence.
+        let mut other = reading("a", &[("m0", "active")]);
+        other.array_id = "other".into();
+        assert_eq!(apply_head_reading(v, Some(&other)), None);
+        assert_eq!(v.legs[0].state, LegState::Lost);
+    }
+
+    #[test]
+    fn fenced_or_unhealthy_head_is_not_a_rejoin_candidate() {
+        let mut fed = fed_head_back();
+        fed.volumes.get_mut("v").unwrap().fenced = true;
+        assert!(head_rejoin_candidates(&fed, &|_| false).is_empty(), "fenced");
+        let mut fed = fed_head_back();
+        fed.nodes.get_mut("a").unwrap().status.healthy = false;
+        assert!(head_rejoin_candidates(&fed, &|_| false).is_empty(), "still down");
     }
 
     #[test]
