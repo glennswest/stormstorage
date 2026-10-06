@@ -773,6 +773,7 @@ async fn promote_claimed(
         per_host: vol.export.per_host,
         local_id: served.clone(),
         withdrawing: vol.export.withdrawing.clone(),
+        gone: false,
     };
     {
         let mut fed = state.fed.write().await;

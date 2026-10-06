@@ -1533,8 +1533,9 @@ pub async fn recreate_export(state: &Arc<AppState>, name: &str) -> anyhow::Resul
         for h in v.export.hosts.iter_mut() {
             h.coordinates_changed = true;
         }
+        let ex = v.export.clone();
         fed.revision += 1;
-        v.export.clone()
+        ex
     };
     crate::replicate::push_to_peers(state.clone());
     state.persist().await;
