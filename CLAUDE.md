@@ -351,7 +351,7 @@ stormblock self-registered, or adopted) was polled bare.
 
 ### Phase 3: Rebalance + tier migration
 - [ ] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30)
-- [ ] Placement by live IO load, not only free ratio (#31) — in progress 2026-10-06 (below)
+- [x] Placement by live IO load, not only free ratio (#31) — done 2026-10-06
 - [ ] Cross-cluster tier migration (pool → pool) (#32)
 
 ### Phase 4: Replication on the RAID head (#33) — code done 2026-10-05; live run waits
@@ -570,7 +570,7 @@ Done: 39e43b2 (+ c6b5858 docs); sc-build passes (token 6/6). A refused admin
 credential is retried with the node token (pre-#274 engines). On a node the
 bearer needs stormcos#290 (mount /data/stormcert) and storage-admin.
 
-### Placement by live IO load (#31, P3) — in progress 2026-10-06
+### Placement by live IO load (#31, P3) — DONE 2026-10-06
 Signal: stormblock's `/metrics` histogram `stormblock_nvmeof_io_seconds`
 (every NVMe-oF I/O: legs to heads, served mirrors; ublk-local I/O is not
 in it). Each poll reads `_count`/`_sum` summed over labels; the rate
@@ -581,6 +581,8 @@ mean I/Os in flight) on NodeStatus. Missing metric, error or counter reset
 w = `[placement] io_weight` (0.3); unknown busy = mean of known; no data
 at all = today's free-ratio order. Ties by name. Tests: placement units
 (hot node sheds, unknown neutral, w=0 = old), metrics parse, rate.
+Done: 2d46f95 (+ e8cedca docs); sc-build passes (72 unit). Not seen on a
+node yet (needs a release; ublk-local I/O is not in the signal).
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
