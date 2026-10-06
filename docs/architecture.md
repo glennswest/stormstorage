@@ -334,7 +334,8 @@ with a CAS fence carried down to every leg's `/v1` epoch, promote,
 prestage with a bandwidth class, and dual-attach windows. The engine
 refuses a fenced head's leg attaches under stormblock#6, to the contract
 in [replication.md](replication.md). Async catch-up legs for the backup
-tier are not started.
+tier (#46) have a design pass in [async-legs.md](async-legs.md), which
+waits on an owner decision.
 
 ### Placement
 
@@ -480,8 +481,8 @@ stormconsole#53).
 4. **Replication on the RAID head** (#33, in the code): sync state,
    fence, promote, prestage, dual-attach over DistVolumes (owner,
    stormblock#179 option b); enforcement at the legs is stormblock#6,
-   handover from a live head stormblock#296. Async backup legs: not
-   started.
+   handover from a live head stormblock#296. Async backup legs (#46):
+   design pass in async-legs.md, waits on an owner decision.
 5. **HA** (#34): state to StormKV/fastetcd; multiple instances.
 
 ## What this asked of the neighbours
