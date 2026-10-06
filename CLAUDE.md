@@ -415,9 +415,26 @@ tests; tests/rejoin.rs against a mock engine.
 Done: sc-build passes (59 unit incl. 4 new, tests/rejoin.rs 2/2). Not
 seen on a live engine (live runs wait on stormcentral#131).
 
+### Legs served to their head alone (#27, stormblock#210) — in progress 2026-10-06
+A closed engine admits no host on its shared subsystem; an attach must
+name `host_nqn` and the volume is served from that host's own subsystem
+(`<nqn>:host:<hex>`). The engine has no API that says what NQN its
+initiator presents, but a drive URI's `&hostnqn=` sets it. So stormstorage
+names the head: `[legs] host_nqn` template (default
+`nqn.2026-10.lo.storm:stormstorage:{node}`, `{node}` = head). Every leg
+attach (assemble, move/re-leg, promote, re-attach on promote-in-place)
+sends `host_nqn` of the head it is for; `AttachedLeg.host_nqn` is kept and
+`drive_uri()` adds `&hostnqn=` (old records without it keep their URI, so
+existing arrays still match). The NQN in the URI is the reply's (the
+per-host subsystem). Consumer publish (`<name>-mirror`) names no host
+still — the consumer is unknown here; filed separately. Detach needs no
+change (/v1 detach releases every host). DH-HMAC-CHAP waits on
+stormblock#213. Tests: unit (URI, template), mock engines check the
+attach body's `host_nqn` and the opened drive's `hostnqn=`.
+
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
-      reassemble after head engine restart; #27 host_nqn on attach; #35 forward announcements
+      reassemble after head engine restart; #35 forward announcements
       to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
