@@ -358,10 +358,15 @@ capacity ≥ size ∩ tier match), rung, replica count.
 A leg move's automatic target uses the same function over healthy nodes
 that carry no leg and sit in a domain distinct from every staying leg.
 
-**Rebalance** (phase 3, *design, not implemented*, #30) reuses leg moves: when a new node/shelf/cluster
-joins a pool, stormstorage proposes leg moves from the fullest domains to
-the emptiest until spread converges — same operation as failure
-recovery, driven by policy instead of alarm.
+**Rebalance** (phase 3, *implemented, #30; opt-in per pool*) reuses leg
+moves. When a new node, shelf or cluster joins a pool with watermarks, the
+pool's nodes above `high_watermark` shed legs, largest first, onto its
+nodes below `low_watermark`. A target must stay at or under `high` with
+the leg added, so the spread converges without ping-pong. It is the same
+leg-move sequence as failure recovery, driven by policy instead of alarm.
+It runs only when every node of the pool answers, keeps at most
+`max_moves` per pool in flight, never moves a head's own leg, and
+`GET /api/v1/pools/{name}/rebalance` shows it as a dry run.
 
 ### Tiering across clusters
 
@@ -476,8 +481,9 @@ stormconsole#53).
    Also since v0.3.0: local adoption and node inventory (#9, #11), inbound
    API auth (#6), the test container (#8), and the engine token on every
    call with a back-off for an engine that refuses it (#38).
-3. **Rebalance + tier migration** (#30, #32): policy-driven leg moves;
-   pool capacity watermarks (IO-load placement is in, #31).
+3. **Rebalance + tier migration** (#30, #32): rebalance by pool
+   watermarks and IO-load placement (#31) are in; tier migration (#32)
+   is not.
 4. **Replication on the RAID head** (#33, in the code): sync state,
    fence, promote, prestage, dual-attach over DistVolumes (owner,
    stormblock#179 option b); enforcement at the legs is stormblock#6,

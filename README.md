@@ -122,6 +122,29 @@ stormview components feed on **:9093**.
   alone, as before. Ties go to the lower name, so the result is
   deterministic. If there are not enough domains, the request fails with
   an explanation.
+- **Rebalance (#30).** Opt-in per pool: a `[[pools]]` entry with
+  `high_watermark` and `low_watermark` (fractions of a node used) is
+  rebalanced; a pool without them never is. After each poll, on the
+  instance that acts on recovery (`[recovery] enabled`), the following
+  happens for a pool whose nodes all answer (recovery comes first):
+  - A node of the pool used above `high_watermark` is a source, fullest
+    first.
+  - Its legs of idle, assembled, unfenced volumes of that pool are
+    candidates, largest volume first. A head's own leg never moves.
+  - Each goes to a node of the pool used below `low_watermark` that
+    stays at or under `high_watermark` with the leg added, in a domain
+    distinct from the volume's other legs, picked by the placement score.
+    The gap between the watermarks keeps a move from creating a new
+    source.
+  - A move is the ordinary leg-move sequence (reason `rebalance`): new
+    leg, rebuild, old leg retired. A volume never has fewer copies while
+    it moves.
+  - At most `max_moves` (default 1) moves per pool are in flight, and one
+    per volume. A move that cannot start waits `recovery.cooldown_secs`.
+    Each move is an event.
+
+  `GET /api/v1/pools/{name}/rebalance` shows what it would do now, as a
+  dry run.
 - **Distributed volumes.** `POST /api/v1/volumes` creates one ordinary
   thin volume per leg through each engine's `/v1/volumes`. If any leg
   fails, the legs already created are rolled back. With two or more legs,
@@ -331,8 +354,8 @@ stormview components feed on **:9093**.
   Enforcement at the legs is stormblock#6, to the contract in
   [docs/replication.md](docs/replication.md).
 
-**Not done yet** (tracked in issues, see [Status](#status)): rebalancing (#30),
-tier migration (#32), async backup legs (#33)
+**Not done yet** (tracked in issues, see [Status](#status)):
+tier migration (#32), async backup legs (#46)
 and HA state (#34).
 
 ## Running
@@ -417,6 +440,9 @@ worked example.
 | `selector` | `{}` (every node) | `tier`, `labels` (all must match) and `nodes` (explicit names; empty means no restriction). All present conditions must hold. |
 | `replicas` | `2` | Default leg count. |
 | `rung` | `"node"` | Default spread rung. |
+| `high_watermark` | unset | Rebalance (#30): a node of the pool used above this fraction sheds legs. Set with `low_watermark`, or the pool is never rebalanced. |
+| `low_watermark` | unset | Rebalance target: nodes of the pool used below this fraction, staying at or under `high_watermark` with the leg added. Must be below `high_watermark`. |
+| `max_moves` | `1` | Rebalance moves in flight in this pool at a time. |
 
 A create or plan request with no pool uses `replicas = 1` and
 `rung = "node"`, unless the request sets them.
@@ -488,6 +514,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered` or `local`). |
 | GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume as the engine reports it (with `placement`, `kind`, `in_use`, `attachments`, `consumer` when the engine sends them) plus `slabs` and `placed_by` (`engine`, else `slots`, `parent`, `role`, `unknown`); each slab with its `drive`; `fetched_at`, `error`. |
 | GET | `/api/v1/topology` | Rungs, plus each node's label chain, tier and health. |
+| GET | `/api/v1/pools/{name}/rebalance` | Rebalance dry run (#30): `{pool, enabled, high_watermark, low_watermark, max_moves, moves[{volume, from, to, from_used, to_used}], held[]}`. `held` says why nothing moves. 404 for a pool not in the config. |
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
@@ -700,6 +727,6 @@ done. The open work:
   from a live head stormblock#296;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #30–#32, #34–#36: rebalance, IO-load placement, tier migration, HA
+- #32, #34–#36: tier migration, HA
   state, forwarding announcements to stormfs, and the stormblock-csi
   analysis.
