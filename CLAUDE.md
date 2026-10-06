@@ -517,7 +517,7 @@ Done: c944a27; sc-build passes (67 unit, token 4/4).
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
-- [ ] #14 re-head; #15
+- [ ] #14 re-head — waits on the owner (2026-10-06: auto re-head (a) never, (b) opt-in now, (c) once stormblock#6 enforces fencing; promote is the mechanism); #15
       reassemble after head engine restart; #35 forward announcements
       to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
