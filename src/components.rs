@@ -317,6 +317,11 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
         ExportState::Revoking => metrics.push(Metric::new("export", "revoking").tone("warn")),
         ExportState::None => {}
     }
+    // A tier migration in flight (#32).
+    if let Some(m) = &v.migration {
+        let tone = if m.state == crate::model::MigrationState::WaitingHandover || m.message.is_some() { "warn" } else { "accent" };
+        metrics.push(Metric::new("migrating", format!("→ {}", m.to_pool)).tone(tone));
+    }
     // Consumer hosts it is served to (#51).
     if v.export.per_host {
         let failed = v.export.hosts.iter().filter(|h| h.message.is_some()).count();
@@ -636,6 +641,7 @@ mod tests {
             fenced: false,
             bandwidth_class: Default::default(),
             dual_attach: None,
+            migration: None,
         };
         let c = volume_component(&v, None);
         assert_eq!(c.health, Health::Ok);

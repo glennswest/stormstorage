@@ -165,6 +165,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes", get(list_volumes).post(create_volume))
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
         .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
+        .route("/api/v1/volumes/{name}/migrate", post(migrate_volume).delete(cancel_migration))
         .route("/api/v1/volumes/{name}/export", post(export_volume))
         .route("/api/v1/volumes/{name}/export/hosts", post(serve_export_host))
         .route("/api/v1/volumes/{name}/export/hosts/{host_nqn}", delete(withdraw_export_host))
@@ -642,6 +643,7 @@ async fn create_volume(
         fenced: false,
         bandwidth_class: req.bandwidth_class.unwrap_or_default(),
         dual_attach: None,
+        migration: None,
     };
     {
         let mut fed = s.fed.write().await;
@@ -991,6 +993,38 @@ struct ExportBody {
     /// Its served volume is gone (#40): serve a new, EMPTY one.
     #[serde(default)]
     recreate: bool,
+}
+
+#[derive(Deserialize)]
+struct MigrateBody {
+    pool: String,
+}
+
+fn migrate_refusal(r: crate::migrate::Refusal) -> ApiError {
+    match r {
+        crate::migrate::Refusal::NotFound(m) => ApiError::not_found(m),
+        crate::migrate::Refusal::Conflict(m) => ApiError::conflict(m),
+    }
+}
+
+/// Move every leg of the volume into another pool (#32). Recorded here; the
+/// reconciler moves one leg at a time. Returns the migration.
+async fn migrate_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(body): Json<MigrateBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let m = crate::migrate::start(&s, &name, &body.pool).await.map_err(migrate_refusal)?;
+    Ok(Json(serde_json::to_value(m).unwrap_or_default()))
+}
+
+/// Stop a tier migration (#32); legs already moved stay.
+async fn cancel_migration(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let had = crate::migrate::cancel(&s, &name).await.map_err(migrate_refusal)?;
+    Ok(Json(json!({ "cancelled": had })))
 }
 
 /// Publish the volume to consumers, or republish it and report whether the

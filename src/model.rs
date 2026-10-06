@@ -389,6 +389,34 @@ pub struct DistVolume {
     pub bandwidth_class: BandwidthClass,
     #[serde(default)]
     pub dual_attach: Option<DualAttach>,
+    /// A move of every leg to another pool in flight (#32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<Migration>,
+}
+
+/// Where a tier migration stands (#32).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationState {
+    /// Moving legs, one at a time.
+    Moving,
+    /// Every leg but the head's is in the destination. The head's own leg
+    /// moves by promote only, and a live head's handover needs
+    /// stormblock#296.
+    WaitingHandover,
+}
+
+/// A tier migration (#32): every leg moves into `to_pool` through the
+/// leg-move sequence; the volume's `pool` becomes `to_pool` once all are.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Migration {
+    pub to_pool: String,
+    pub from_pool: Option<String>,
+    pub started_at: SystemTime,
+    pub state: MigrationState,
+    /// Why the last step did not start, if it did not.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

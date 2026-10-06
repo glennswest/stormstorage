@@ -114,6 +114,7 @@ async fn setup() -> (Arc<AppState>, M) {
             fenced: false,
             bandwidth_class: Default::default(),
             dual_attach: None,
+            migration: None,
         },
     );
     let state = Arc::new(AppState::new(config, fed, None));

@@ -98,7 +98,7 @@ pub fn plan(
                 .values()
                 .filter(in_pool)
                 .filter(|v| v.assembly == AssemblyState::Assembled)
-                .filter(|v| !v.fenced && v.replacing.is_none() && v.dual_attach.is_none())
+                .filter(|v| !v.fenced && v.replacing.is_none() && v.dual_attach.is_none() && v.migration.is_none())
                 .filter(|v| !busy(&v.name) && v.next_releg_after.map_or(true, |t| t <= now))
                 .filter(|v| v.head.as_deref() != Some(src.config.name.as_str()))
                 .filter(|v| v.legs.iter().any(|l| l.node == src.config.name && l.state == LegState::Created))
@@ -251,6 +251,7 @@ mod tests {
             fenced: false,
             bandwidth_class: Default::default(),
             dual_attach: None,
+            migration: None,
         }
     }
 

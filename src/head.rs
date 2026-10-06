@@ -1308,6 +1308,7 @@ mod tests {
             fenced: false,
             bandwidth_class: BandwidthClass::Normal,
             dual_attach: None,
+            migration: None,
         }
     }
 

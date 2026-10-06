@@ -729,6 +729,73 @@ async fn rehead_is_off_by_default_and_promotes_the_in_sync_leg_when_on() {
     }
 }
 
+/// #32: a tier migration moves the non-head leg into the destination pool
+/// through the leg-move sequence, then waits on the head's handover
+/// (stormblock#296); a cancel stops it; refusals for an unknown pool, a
+/// pool that already holds every leg, and a single leg.
+#[tokio::test]
+async fn tier_migration_moves_legs_into_the_destination_pool() {
+    let (api, state, _mocks) = setup_cfg(&["node-a", "node-b", "node-c", "node-d"], |c| {
+        c.pools = vec![
+            toml::from_str("name = \"src\"\n[selector]\nnodes = [\"node-a\", \"node-b\"]").unwrap(),
+            toml::from_str("name = \"dst\"\n[selector]\nnodes = [\"node-c\", \"node-d\"]").unwrap(),
+        ];
+    })
+    .await;
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": "m", "size_bytes": 1u64 << 30, "pool": "src"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["assembly"], "assembled", "{v}");
+    let head = v["head"].as_str().unwrap().to_string();
+
+    let (st, _) = call(format!("{api}/api/v1/volumes/m/migrate"), json!({"pool": "nope"})).await;
+    assert_eq!(st, 404);
+    let (st, _) = call(format!("{api}/api/v1/volumes/m/migrate"), json!({"pool": "src"})).await;
+    assert_eq!(st, 409, "every leg is already there");
+    let (st, m) = call(format!("{api}/api/v1/volumes/m/migrate"), json!({"pool": "dst"})).await;
+    assert_eq!(st, 200, "{m}");
+    assert_eq!(m["to_pool"], "dst");
+    assert_eq!(m["state"], "moving");
+
+    // The reconciler moves one leg at a time; the mock rebuilds at once.
+    for _ in 0..40 {
+        stormstorage::orchestrate::reconcile(&state).await;
+        let done = {
+            let fed = state.fed.read().await;
+            let v = &fed.volumes["m"];
+            v.replacing.is_none()
+                && v.migration.as_ref().is_some_and(|m| m.state == stormstorage::model::MigrationState::WaitingHandover)
+        };
+        if done {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    {
+        let fed = state.fed.read().await;
+        let v = &fed.volumes["m"];
+        let nodes: Vec<&str> = v.legs.iter().map(|l| l.node.as_str()).collect();
+        assert!(nodes.contains(&head.as_str()), "the head's leg stays: {nodes:?}");
+        assert!(nodes.iter().any(|n| *n == "node-c" || *n == "node-d"), "{nodes:?}");
+        let m = v.migration.as_ref().expect("still recorded");
+        assert_eq!(m.state, stormstorage::model::MigrationState::WaitingHandover, "{m:?}");
+        assert!(m.message.as_deref().unwrap_or("").contains("stormblock#296"));
+        assert_eq!(v.pool.as_deref(), Some("src"), "not moved until every leg is");
+    }
+    let feed = stormstorage::components::collect(&state).await;
+    let c = feed.iter().find(|c| c.id == "volume:m").unwrap();
+    assert!(c.metrics.iter().any(|m| m.label == "migrating" && m.value == "→ dst"));
+
+    let r = reqwest::Client::new().delete(format!("{api}/api/v1/volumes/m/migrate")).send().await.unwrap();
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["cancelled"], true);
+    assert!(state.fed.read().await.volumes["m"].migration.is_none());
+
+    let (st, _) = call(format!("{api}/api/v1/volumes"), json!({"name": "one", "size_bytes": 1u64 << 30, "replicas": 1, "pool": "src"})).await;
+    assert_eq!(st, 200);
+    let (st, e) = call(format!("{api}/api/v1/volumes/one/migrate"), json!({"pool": "dst"})).await;
+    assert_eq!(st, 409, "{e}");
+}
+
 #[tokio::test]
 async fn dual_attach_windows() {
     let (api, state, _mocks) = setup(&["node-a", "node-b"]).await;
