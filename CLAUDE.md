@@ -453,7 +453,7 @@ Done: dcda0a2; sc-build passes (65 unit incl. 4 new, replication 5/5).
 Until stormblock#309 lands the route 404s, so a lost head still reads
 `detached` on real engines (no evidence, never a false `in_sync`).
 
-### Serve a volume to named consumer hosts (#51 + #53, P1) — in progress 2026-10-06
+### Serve a volume to named consumer hosts (#51 + #53, P1) — DONE 2026-10-06
 A closed engine (stormblock#210) refuses the export's shared-subsystem
 attach, and a consumer node had no way in. stormblock already takes
 `host_nqn` + `dhchap` on `POST /api/v1/volumes/{local}/attach` and
@@ -470,6 +470,11 @@ a repeat returns it). `DELETE …/export/hosts/{host_nqn}` withdraws.
 promote, recovery) re-serves every recorded host; a volume with named hosts
 gets no shared attach. Auth: mutations. Tests: mock engine checks body and
 withdraw query.
+Done: 83666b7 (+ 4d tests, 6343709 docs). `export.per_host` keeps a volume
+per host once any host was named (no fallback to shared with zero hosts);
+pending withdrawals retried each poll and on recovery. sc-build passes
+(65 unit, hosts 2/2, replication 6/6). Not seen on a live closed engine
+(stormcentral#131).
 
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
