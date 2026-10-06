@@ -177,8 +177,40 @@ stormview components feed on **:9093**.
   #149). An engine with stormblock #210 refuses an attach that names no
   `host_nqn` unless it sets `[nvmeof] allow_any_host`. Leg attaches name
   their head (#27), so assembly, moves, re-leg and promote work on such
-  an engine. The consumer export does not name a host yet: it needs
-  `allow_any_host` on the head until #53.
+  an engine.
+- **Serving to named consumer hosts (#51, #53).** A consumer names its
+  host: `POST /api/v1/volumes/{name}/export/hosts {host_nqn, dhchap?}`.
+  The serving engine serves the volume to that host from a subsystem of
+  its own, which admits that host alone
+  (`POST /api/v1/volumes/{local id}/attach {transport, host_nqn, dhchap}`).
+  The answer is that host's record: `{host_nqn, dhchap, coordinates: {nqn
+  (`<nqn>:host:<hex>`), traddr, trsvcid, nsid, host_nqn},
+  coordinates_changed, served_at, message}`. It also carries
+  `dhchap_secret` when the engine gave the host one. The host connects
+  with `--hostnqn` (and `--dhchap-secret`). **The secret is only in that
+  answer.** It is not stored, not replicated, not shown in the volume or
+  the feed, and not in events. The engine keeps a host's secret, so
+  asking again returns the same one; `dhchap` once asked for stays on. The
+  call is idempotent.
+  `DELETE /api/v1/volumes/{name}/export/hosts/{host_nqn}` withdraws one
+  host (`DELETE …/attach?host_nqn=` on the engine) and answers
+  `{withdrawn: done | pending | nothing_served}`. The host leaves the
+  record at once. If the engine does not answer, the withdrawal is kept in
+  `export.withdrawing` and done when it answers (on recovery, or at the
+  next poll).
+  Hosts can also be named at create (`hosts: [{host_nqn, dhchap?}]`) and
+  on `POST …/export`. Once any host is named, the volume is served per
+  host for good (`export.per_host`): no shared attach, and `coordinates`
+  stays empty. With every host withdrawn it is served to none, never back
+  on the shared subsystem. Every republish (promote, a node that answers
+  again, `POST …/export`) serves every recorded host again, and on a new
+  head it sets each changed host's `coordinates_changed`. A consumer
+  whose coordinates changed reconnects; with `dhchap` it asks again for
+  its secret. The per-host calls take the engine's own volume id, not the
+  `/v1` id. It is found once by name on that engine (`<name>-mirror`, or
+  the leg's name) and kept as `export.local_id`. A volume with no host
+  named is served on the shared subsystem as before, which a closed
+  engine refuses without `allow_any_host`.
 
   Kubernetes claims on stormcos do not come through here: a PVC is the
   built-in `stormblock` driver, where the kubelet clones a blank on the
@@ -394,7 +426,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?}`. Places, creates the legs and assembles. Returns the volume record. |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, hosts?: [{host_nqn, dhchap?}]}` (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume record. |
 | GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`). `GET /api/v1/volumes` lists the same. |
 | GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, replicas[{node, role, sync}], bandwidth_class, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
@@ -403,7 +435,9 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes/{name}/dual-attach` | `{target_node, ttl_secs}` → `{volume_id, epoch, target_node, expires_at_ms}`. Target must hold a slave; 409 for another target while one is open. |
 | POST | `/api/v1/volumes/{name}/dual-attach/close` | `{epoch, outcome: commit\|abort}`. Commit = fence + promote the target; 412 on the wrong epoch, 409 with none open. |
 | GET | `/api/v1/stale-heads` | Former heads to clean up when they answer: `{stale_heads: [{node, array_id, drive_uris, of_volume, epoch, since}]}`. |
-| POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Returns the `export` record; 409 when it cannot be served (not assembled, node unreachable, engine error). |
+| POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Optional body `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53). Returns the `export` record (`hosts[]`, `per_host`, `local_id`, `withdrawing[]`; never a secret); 409 when it cannot be served (not assembled, node unreachable, engine error, a host refused). |
+| POST | `/api/v1/volumes/{name}/export/hosts` | `{host_nqn, dhchap?}` → that host's record plus `dhchap_secret` when it has one (#51). Served from the host's own subsystem; idempotent. 400 for a value that is not a host NQN (`nqn.…`, ≤ 223 bytes), 404 for no such volume, 409 when it cannot be served. |
+| DELETE | `/api/v1/volumes/{name}/export/hosts/{host_nqn}` | Stop serving it to that host: `{host_nqn, withdrawn: done\|pending\|nothing_served}`. |
 | POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
 | DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
@@ -593,8 +627,6 @@ done. The open work:
 
 - #1, #2: re-leg and consumer serving are in the code; their live runs
   wait on stormcentral#131;
-- #53: the consumer export names no host, so a closed engine
-  (stormblock#210) refuses it without `allow_any_host`;
 - #8: the test suites are in and run on C2NR0Q2; see the issue for the
   latest run;
 - #33: replication on the RAID head is in the code (sync state, fence,

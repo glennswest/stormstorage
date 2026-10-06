@@ -238,10 +238,14 @@ optimization.
   - automatic re-head when the head node is lost (#14; promote is the
     manual path);
   - reassembly when the head's engine restarts (#15);
-  - naming the consumer's `host_nqn` on the export (#53). Legs already
-    name their head (*implemented, #27*: `[legs] host_nqn`, `hostnqn=` on
-    the drive URI), but on a closed engine (stormblock #210) the served
-    mirror still needs `allow_any_host`.
+- **Serving to named consumer hosts** (*implemented, #51/#53*): a
+  consumer names its `host_nqn` (`POST …/export/hosts`, or `hosts` on
+  create and export), and the serving engine serves the volume to that
+  host alone, from its own subsystem (stormblock #210). That works on a
+  closed engine. DH-HMAC-CHAP secrets are handed to the caller only.
+  Withdrawal is per host, and every republish (promote, recovery) serves
+  the recorded hosts again. Legs name their head (*#27*). README has the
+  contract.
 - **Assembly retry** (*implemented, #7*): a failed assembly stays
   `pending_engine_support` and is retried by the reconciler once every
   leg's node is healthy, after `recovery.cooldown_secs`, or at once via
