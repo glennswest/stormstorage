@@ -515,6 +515,23 @@ minted-if-local. The refusal log says which applied. Unit tests of the
 choice; tests/token.rs: a remote peer is not sent the minted token.
 Done: c944a27; sc-build passes (67 unit, token 4/4).
 
+### Reassemble the array after the head's engine restarts (#15 + #43, P2) — in progress 2026-10-06
+stormblock#252: an engine reassembles arrays from v2 superblocks itself
+only for configured drives; runtime `nvme-tcp://` legs need re-opening and
+`POST /api/v1/arrays/assemble`; create 409s on held legs. Plan: factor
+promote's "open legs on X → arrays/assemble → member uuids → rebuild rate →
+find `<name>-mirror`" into `head::assemble_on`; new `head::reassemble`
+(same head): legs created on healthy nodes + the head's own leg if it was
+marked lost (#26's "array gone"); only when `find_array` says 404. After:
+legs created, assembled/degraded, served volume adopted (`export.adopted`,
+`local_id`) and republished; none → `gone` (#40). Reconciler: unfenced,
+idle, no replacement/window, head healthy, no live reading this poll,
+gated by `recovery.active`, cooldown `next_assemble_after` on failure.
+`orchestrate::assemble` (#7): a 409 from create means legs carry a foreign
+superblock → assemble instead of retrying. Test: tests/replication.rs mock
+head drops its arrays + drives (restart) → reassembled, same array id,
+served again. Stale #7 note about stormblock#215 fixed.
+
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [ ] #14 re-head — waits on the owner (2026-10-06: auto re-head (a) never, (b) opt-in now, (c) once stormblock#6 enforces fencing; promote is the mechanism); #15
