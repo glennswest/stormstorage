@@ -212,9 +212,8 @@ write without the token when `api_token` is set.
   `listen_addr`, `data_dir` and `[local] token_file` (the engine's minted
   token), and the node adopts its own engine once it answers. The config
   text is part of the component entry in stormcentral's database
-  (`stormcentral component edit`). Today the entry has `token_file` at the
-  top level, where it is ignored; the default paths still find the
-  minted token (#42).
+  (`stormcentral component edit`). Its `token_file` sits under
+  `[local]` (fixed 2026-10-06, #42).
 - **Health** is `GET /api/v1/health` on 9093. The gateway route is
   `storage.storm1.g8.lo`.
 - **Update.**

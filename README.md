@@ -543,10 +543,10 @@ lives in stormcentral's database (stormcentral#185). Read it with
 `stormcentral component export`, and change it with
 `stormcentral component edit stormstorage --set key=value`, never by a
 commit to stormcentral's `components/stormcos.toml`, which is only the
-seed. As of 2026-10-05 the entry's config puts `token_file` at the top
-level, where stormstorage ignores it (and warns); the token is still found
-because `/run/stormblock/engine/api_token` is one of the default paths
-(#42). The entry fix is stormcentral#72.
+seed. Since 2026-10-06 the entry's config puts `token_file` under
+`[local]`; before that it sat at the top level, where stormstorage ignores
+it (and warns). The token was found anyway, since
+`/run/stormblock/engine/api_token` is one of the default paths (#42).
 
 A commit here does not reach a node until a golden is built and a
 release composed. When an issue's work is complete, request the golden
@@ -592,9 +592,7 @@ done. The open work:
   from a live head stormblock#296;
 - #14: automatic re-head when the head node is lost; #15: reassemble after the
   head's engine restarts;
-- #12: the engine token's default path and peer calls; #42: the
-  registry entry's config misplaces `token_file` (stormcentral#72; the
-  default paths cover it);
+- #12: the engine token's default path and peer calls;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #30–#32, #34–#36: rebalance, IO-load placement, tier migration, HA

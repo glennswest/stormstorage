@@ -418,13 +418,14 @@ seen on a live engine (live runs wait on stormcentral#131).
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #27 host_nqn on attach; #35 forward announcements
-      to stormfs; #42 the registry entry's config has `token_file` at the
-      top level (ignored, now warned; the default paths find the token
-      anyway since ef3af98) — entry fix is stormcentral#72.
+      to stormfs.
+- [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
+      (stormcentral#72) via `component edit stormstorage --set config=…`:
+      `token_file` is now under `[local]` (checked with `component export`).
 - Docs refreshed from the code 2026-09-28, and again 2026-10-02 (#38's
   engine token and back-off; the component entry lives in stormcentral's
   database, #37; auth covers assemble; replicate carries orphans); the
-  promises without code are #30–#36, and #42.
+  promises without code are #30–#36.
 
 ## Rules recap
 - Conventional commits; changelog every change; docs ship with code.
