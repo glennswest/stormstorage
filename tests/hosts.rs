@@ -268,3 +268,27 @@ async fn hosts_named_at_create_are_served_without_the_shared_subsystem() {
     assert_eq!(st, 400);
     assert!(!m.lock().unwrap().volumes.values().any(|(n, _)| n == "d"));
 }
+
+/// #40 for a volume served per host: the engine no longer has the served
+/// volume, so the per-host attach 404s — `gone`, not retried, and a
+/// single leg is never "recreated" (the leg is the data).
+#[tokio::test]
+async fn a_served_volume_gone_under_its_hosts_is_reported_not_retried() {
+    let (api, state, m) = setup().await;
+    let (st, v) = post_json(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "g", "size_bytes": 1u64 << 30, "replicas": 1, "hosts": [{"host_nqn": "nqn.h4"}]}),
+    )
+    .await;
+    assert_eq!(st, 200, "{v}");
+    m.lock().unwrap().volumes.clear();
+    let (st, e) = post_json(format!("{api}/api/v1/volumes/g/export"), json!({})).await;
+    assert_eq!(st, 409, "{e}");
+    assert!(state.fed.read().await.volumes["g"].export.gone);
+    m.lock().unwrap().log.clear();
+    stormstorage::orchestrate::republish_on(&state, "node-a").await;
+    assert!(m.lock().unwrap().log.is_empty());
+    let (st, e) = post_json(format!("{api}/api/v1/volumes/g/export"), json!({"recreate": true})).await;
+    assert_eq!(st, 409);
+    assert!(e.to_string().contains("single leg"), "{e}");
+}

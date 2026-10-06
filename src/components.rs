@@ -305,6 +305,7 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
             let tone = if v.export.coordinates_changed { "warn" } else { "ok" };
             metrics.push(Metric::new("export", "published").tone(tone));
         }
+        ExportState::Failed if v.export.gone => metrics.push(Metric::new("export", "gone").tone("error")),
         ExportState::Failed => metrics.push(Metric::new("export", "failed").tone("error")),
         ExportState::Revoking => metrics.push(Metric::new("export", "revoking").tone("warn")),
         ExportState::None => {}

@@ -1240,6 +1240,11 @@ async fn publish_inner(
                 vol.export.message.as_deref().unwrap_or("no message")
             );
         }
+        // Its served volume is gone (#40): never re-attached, never
+        // silently replaced by an empty one.
+        if vol.export.gone {
+            anyhow::bail!("{}", gone_message(&vol.name, vol.export.volume_id.as_deref(), vol.export.node.as_deref()));
+        }
         // Nothing to serve yet (not assembled): refused, record untouched.
         let at = serve_at(state, &fed, &vol)?;
         if fed.nodes.get(&at.node).map(|n| n.status.healthy).unwrap_or(false) {
@@ -1284,6 +1289,10 @@ async fn publish_inner(
     let adopted = vol.export.adopted && vol.export.node.as_deref() == Some(at.node.as_str());
     let hosts = vol.export.hosts.clone();
     let per_host = vol.export.per_host || !hosts.is_empty();
+    // A served volume this publish did not make: a 404 on it means its data
+    // is gone (#40).
+    let recorded = volume_id.is_some();
+    let mut gone = false;
     // The shared attach, when no host is named; `None` when serving hosts.
     let mut result: anyhow::Result<Option<crate::engine::AttachedLeg>> = async {
         if adopted {
@@ -1296,7 +1305,13 @@ async fn publish_inner(
             if per_host {
                 return Ok(None);
             }
-            return at.engine.attach_any(&vid).await.map(Some).map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node));
+            return match at.engine.attach_any(&vid).await {
+                Ok(c) => Ok(Some(c)),
+                Err(e) => {
+                    gone = crate::engine::is_not_found(&e);
+                    Err(anyhow::anyhow!("{}: {e:#}", at.node))
+                }
+            };
         }
         if volume_id.is_none() {
             let array_id = at.array_id.as_deref().expect("assembled");
@@ -1321,11 +1336,13 @@ async fn publish_inner(
         }
         let vid = volume_id.clone().expect("set");
         let master = master_node.clone().unwrap_or_else(|| "localhost".into());
-        at.engine
-            .attach_volume(&vid, &master)
-            .await
-            .map(Some)
-            .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))
+        match at.engine.attach_volume(&vid, &master).await {
+            Ok(c) => Ok(Some(c)),
+            Err(e) => {
+                gone = recorded && crate::engine::is_not_found(&e);
+                Err(anyhow::anyhow!("{}: {e:#}", at.node))
+            }
+        }
     }
     .await;
 
@@ -1337,7 +1354,10 @@ async fn publish_inner(
     if result.is_ok() && !hosts.is_empty() {
         let vid = volume_id.clone().expect("set");
         match served_local_id(&at, &vol, &vid, adopted).await {
-            Err(e) => result = Err(e),
+            Err(e) => {
+                gone = recorded && crate::engine::is_not_found(&e);
+                result = Err(e)
+            }
             Ok(lid) => {
                 for h in &hosts {
                     let mut rec = h.clone();
@@ -1352,6 +1372,7 @@ async fn publish_inner(
                             }
                         }
                         Err(e) => {
+                            gone |= recorded && crate::engine::is_not_found(&e);
                             let m = format!("{}: {e:#}", at.node);
                             host_failures.push(format!("{}: {m}", h.host_nqn));
                             rec.message = Some(m);
@@ -1365,6 +1386,9 @@ async fn publish_inner(
     }
     if result.is_ok() && !host_failures.is_empty() {
         result = Err(anyhow::anyhow!("serving {}", host_failures.join("; ")));
+    }
+    if gone {
+        result = Err(anyhow::anyhow!("{}", gone_message(name, volume_id.as_deref(), Some(at.node.as_str()))));
     }
 
     let (export, previous) = {
@@ -1419,6 +1443,7 @@ async fn publish_inner(
                 ex.state = crate::model::ExportState::Failed;
                 ex.message = Some(format!("{e:#}"));
                 ex.coordinates = previous.coordinates.clone();
+                ex.gone = gone;
             }
         }
         ex.hosts = hosts_now;
@@ -1454,6 +1479,66 @@ async fn publish_inner(
         }
     }
     result.map(|_| (export, secrets))
+}
+
+fn gone_message(name: &str, volume_id: Option<&str>, node: Option<&str>) -> String {
+    format!(
+        "{name}: served volume {} is gone from {}; its data is not recreated — \
+         POST /api/v1/volumes/{name}/export {{\"recreate\": true}} serves a new, EMPTY one, or delete the volume",
+        volume_id.unwrap_or("?"),
+        node.unwrap_or("its engine")
+    )
+}
+
+/// Serve a new, empty served volume in place of one that is gone (#40),
+/// only when asked to. An assembled volume gets a new `<name>-mirror` on
+/// its array, served to the same hosts; consumers are told the coordinates
+/// changed. A single-leg volume is refused: its leg is the data.
+pub async fn recreate_export(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate::model::Export> {
+    {
+        let mut fed = state.fed.write().await;
+        let v = fed
+            .volumes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        if !v.export.gone {
+            anyhow::bail!("{name}: its served volume is not gone — nothing to recreate");
+        }
+        if !matches!(v.assembly, AssemblyState::Assembled | AssemblyState::Degraded) {
+            anyhow::bail!("{name}: a single leg is the volume's data — there is nothing to recreate; delete the volume");
+        }
+        v.export.gone = false;
+        v.export.volume_id = None;
+        v.export.local_id = None;
+        v.export.adopted = false;
+        fed.revision += 1;
+    }
+    event(
+        state,
+        name,
+        Severity::Warning,
+        format!("{name}: recreating its served volume on request — the new one is EMPTY"),
+    )
+    .await;
+    publish(state, name).await?;
+    // A new, empty volume: every consumer must know, whatever the
+    // coordinates look like.
+    let ex = {
+        let mut fed = state.fed.write().await;
+        let v = fed
+            .volumes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("{name}: deleted while it was being recreated"))?;
+        v.export.coordinates_changed = true;
+        for h in v.export.hosts.iter_mut() {
+            h.coordinates_changed = true;
+        }
+        fed.revision += 1;
+        v.export.clone()
+    };
+    crate::replicate::push_to_peers(state.clone());
+    state.persist().await;
+    Ok(ex)
 }
 
 /// A host NQN as stormblock takes one (`nqn.…`, at most 223 bytes).
@@ -1596,7 +1681,7 @@ async fn withdraw_on_engine(state: &Arc<AppState>, w: &crate::model::PendingWith
         None => match engine.local_volume_id(&w.name).await {
             Ok(id) => id,
             // The served volume is gone from that engine: nothing to withdraw.
-            Err(e) if e.to_string().starts_with("no engine volume") => return Ok(()),
+            Err(e) if crate::engine::is_not_found(&e) => return Ok(()),
             Err(e) => return Err(e),
         },
     };
@@ -1696,7 +1781,8 @@ pub async fn republish_on(state: &Arc<AppState>, node: &str) {
                 matches!(
                     v.export.state,
                     crate::model::ExportState::Published | crate::model::ExportState::Failed
-                ) && v.export.node.as_deref() == Some(node)
+                ) && !v.export.gone
+                    && v.export.node.as_deref() == Some(node)
             })
             .map(|v| v.name.clone())
             .collect()

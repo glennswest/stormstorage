@@ -925,11 +925,16 @@ struct ExportBody {
     /// ones. Secrets are returned by `…/export/hosts`, not here.
     #[serde(default)]
     hosts: Vec<HostRequest>,
+    /// Its served volume is gone (#40): serve a new, EMPTY one.
+    #[serde(default)]
+    recreate: bool,
 }
 
 /// Publish the volume to consumers, or republish it and report whether the
 /// coordinates changed (#2). Returns the export record. An optional body
-/// `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53).
+/// `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53);
+/// `{recreate: true}` replaces a served volume that is gone with a new,
+/// empty one (#40) — never done without being asked.
 async fn export_volume(
     State(s): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -955,9 +960,12 @@ async fn export_volume(
             }
         }
     }
-    let ex = crate::orchestrate::publish(&s, &name)
-        .await
-        .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    let ex = if body.recreate {
+        crate::orchestrate::recreate_export(&s, &name).await
+    } else {
+        crate::orchestrate::publish(&s, &name).await
+    }
+    .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
     Ok(Json(serde_json::to_value(ex).unwrap_or_default()))
 }
 

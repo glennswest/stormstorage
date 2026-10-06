@@ -41,6 +41,29 @@ impl AttachedLeg {
     }
 }
 
+/// An engine answered a call with an error status. Typed so a caller can
+/// tell a 404 (the thing is gone, #40) from any other failure.
+#[derive(Debug)]
+pub struct HttpStatus {
+    pub path: String,
+    pub status: reqwest::StatusCode,
+    pub message: String,
+}
+
+impl std::fmt::Display for HttpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}: {}", self.path, self.status, self.message)
+    }
+}
+
+impl std::error::Error for HttpStatus {}
+
+/// The engine said 404 — check before the error is wrapped in context.
+pub fn is_not_found(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.downcast_ref::<HttpStatus>().is_some_and(|h| h.status == reqwest::StatusCode::NOT_FOUND))
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Capacity {
     pub total_bytes: u64,
@@ -224,13 +247,17 @@ impl Engine {
         let status = resp.status();
         let out: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
-            anyhow::bail!(
-                "{path}: {status}: {}",
-                out.get("message")
+            return Err(HttpStatus {
+                path: path.to_string(),
+                status,
+                message: out
+                    .get("message")
                     .or_else(|| out.get("error"))
                     .and_then(|m| m.as_str())
                     .unwrap_or("no message")
-            );
+                    .to_string(),
+            }
+            .into());
         }
         Ok(out)
     }
@@ -389,7 +416,12 @@ impl Engine {
             .collect();
         match ids.as_slice() {
             [id] => Ok(id.clone()),
-            [] => anyhow::bail!("no engine volume named {name:?}"),
+            [] => Err(HttpStatus {
+                path: "/api/v1/volumes".into(),
+                status: reqwest::StatusCode::NOT_FOUND,
+                message: format!("no engine volume named {name:?}"),
+            }
+            .into()),
             _ => anyhow::bail!("{} engine volumes named {name:?}", ids.len()),
         }
     }

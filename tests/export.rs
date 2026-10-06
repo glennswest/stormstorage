@@ -79,8 +79,9 @@ async fn v1_attach(
     Json(b): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     let mut m = m.lock().unwrap();
+    m.log.push(format!("attach-try {id}"));
     if !m.volumes.contains_key(&id) {
-        return (StatusCode::NOT_FOUND, Json(json!({"message": id})));
+        return (StatusCode::NOT_FOUND, Json(json!({"code": "not_found", "message": id})));
     }
     if b["transport"] != "nvme_tcp" || b["node"] != m.node.as_str() {
         return (StatusCode::OK, Json(json!({"transport": "ublk", "device": "/dev/ublkb0"})));
@@ -550,4 +551,63 @@ async fn a_delete_stopped_while_revoking_is_not_republished() {
     let r = reqwest::Client::new().delete(format!("{api}/api/v1/volumes/ev")).send().await.unwrap();
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
     assert!(!state.fed.read().await.volumes.contains_key("ev"));
+}
+
+/// #40: the served volume is gone from the head without a delete from
+/// here. Its data is not recreated: the export is `failed` + `gone`,
+/// nothing attaches it again, a plain publish says what to do, and only
+/// `{"recreate": true}` serves a new (empty) one — with every consumer told
+/// to reconnect.
+#[tokio::test]
+async fn a_served_volume_gone_from_its_engine_is_not_recreated_unasked() {
+    let (api, state, mocks) = setup().await;
+    let r = http_post(format!("{api}/api/v1/volumes"), json!({"name": "gv", "size_bytes": 1u64 << 30, "replicas": 2}))
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["export"]["state"], "published", "{v}");
+    let head = v["head"].as_str().unwrap().to_string();
+    let served = v["export"]["volume_id"].as_str().unwrap().to_string();
+
+    // It vanishes on the engine.
+    mocks[&head].lock().unwrap().volumes.remove(&served);
+    stormstorage::orchestrate::republish_on(&state, &head).await;
+    {
+        let fed = state.fed.read().await;
+        let ex = &fed.volumes["gv"].export;
+        assert_eq!(ex.state, ExportState::Failed);
+        assert!(ex.gone, "{ex:?}");
+        assert!(ex.message.as_deref().unwrap().contains("not recreated"), "{:?}", ex.message);
+        assert_eq!(ex.volume_id.as_deref(), Some(served.as_str()), "the record still names what was lost");
+    }
+    let events = stormstorage::components::collect(&state).await;
+    let c = events.iter().find(|c| c.id == "volume:gv").unwrap();
+    assert!(c.metrics.iter().any(|m| m.label == "export" && m.value == "gone"));
+    let ev = reqwest::get(format!("{api}/api/v1/events")).await.unwrap().text().await.unwrap();
+    assert!(ev.contains("not recreated"), "an error event says so: {ev}");
+
+    // No retry: neither recovery nor a plain publish touches the engine.
+    mocks[&head].lock().unwrap().log.clear();
+    stormstorage::orchestrate::republish_on(&state, &head).await;
+    let r = http_post(format!("{api}/api/v1/volumes/gv/export"), json!({})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 409);
+    assert!(r.text().await.unwrap().contains("recreate"));
+    let log = mocks[&head].lock().unwrap().log.clone();
+    assert!(log.is_empty(), "nothing created or attached: {log:?}");
+
+    // Asked for: a new, empty mirror on the array, consumers told.
+    let r = http_post(format!("{api}/api/v1/volumes/gv/export"), json!({"recreate": true})).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let ex: Value = r.json().await.unwrap();
+    assert_eq!(ex["state"], "published", "{ex}");
+    assert_ne!(ex["volume_id"], served.as_str());
+    assert_eq!(ex["coordinates_changed"], true);
+    assert!(ex.get("gone").is_none() || ex["gone"] == false, "{ex}");
+    let m = mocks[&head].lock().unwrap();
+    assert!(m.log.iter().any(|l| l.starts_with("create gv-mirror")), "{:?}", m.log);
+    drop(m);
+    // A recreate is refused when nothing is gone.
+    let r = http_post(format!("{api}/api/v1/volumes/gv/export"), json!({"recreate": true})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 409);
 }

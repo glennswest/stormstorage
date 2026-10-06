@@ -222,6 +222,11 @@ pub struct Export {
     /// the workload cannot keep reaching it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub withdrawing: Vec<PendingWithdraw>,
+    /// The recorded served volume is gone from its engine (#40). Its data
+    /// is not recreated: nothing attaches it again until `POST …/export
+    /// {"recreate": true}` carves an empty one, or the volume is deleted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gone: bool,
 }
 
 /// A host withdrawal waiting for its engine (#51).
