@@ -534,10 +534,27 @@ served again. Stale #7 note about stormblock#215 fixed.
 Done: aeb7bef; sc-build passes (replication 7/7). Live: an engine restart
 in the e2e waits on stormcentral#131.
 
+### Automatic re-head, opt-in (#14, P2) — in progress 2026-10-06
+Owner (2026-10-06, master's recommendation): (b) automatic but opt-in,
+off by default; turn it on only once the head is fenced through cluster
+membership/quorum (stormcluster), not merely unreachable from here —
+a partitioned head that keeps writing is split-brain. Until then failover
+stays with the consumer's tiebreaker or an operator (promote).
+Plan: `[recovery] rehead = false`, `rehead_after_secs = 120`. Reconciler
+(only when `recovery.active` and `rehead`): a volume assembled/degraded,
+not fenced (a consumer's failover in flight is left alone), idle, no
+replacement/window, head unhealthy for ≥ rehead_after_secs
+(consecutive_failures × interval), and a surviving leg on a healthy node
+that reads `in_sync` (#48 evidence; none → no re-head, one event) →
+fence at the current epoch, promote onto that leg. Failure: cooldown
+(`next_assemble_after`), error event naming the manual promote. WARN at
+start when on. Pure `rehead_plan` + unit tests; tests/replication.rs:
+off by default does nothing; on + slave in sync (superblock) → re-headed.
+
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
-- [ ] #14 re-head — waits on the owner (2026-10-06: auto re-head (a) never, (b) opt-in now, (c) once stormblock#6 enforces fencing; promote is the mechanism); #35 forward announcements
+- [ ] #14 re-head — owner chose (b) 2026-10-06, in progress (below); #35 forward announcements
       to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
