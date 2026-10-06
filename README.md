@@ -158,9 +158,23 @@ stormview components feed on **:9093**.
   only stalled past the threshold comes back (#26): once it answers again,
   its array is read (`GET /api/v1/arrays/{id}`), and if the head's member
   is active its leg is `created` again and the volume `assembled` (if no
-  other leg is lost). If the head no longer holds the array (its engine
-  restarted, #15) or its member is not active, the volume stays
-  `degraded`, with one warning event per finding. With
+  other leg is lost). If its member is not active, the volume stays
+  `degraded`, with one warning event per finding.
+  **A head whose engine restarted (#15)** answers but no longer holds the
+  array: stormblock reassembles arrays on runtime `nvme-tcp://` legs only
+  when asked (stormblock#252). After each poll, the reconciler finds every
+  assembled volume whose healthy head was not read and no longer has the
+  array (`GET /api/v1/arrays/{id}` 404). It opens the legs again for the
+  head, including the head's own leg if it was marked lost, and puts the
+  **same** array back together from their superblocks
+  (`POST /api/v1/arrays/assemble`). It never creates one, which would
+  format over the legs. The served `<name>-mirror` comes back with the
+  array's slab and is served again (`export.adopted`). If it does not
+  come back, the export is `gone` (#40). A failed attempt waits
+  `recovery.cooldown_secs`. Volumes that are fenced, replacing a leg or in
+  a dual-attach window are left alone. In the assembly path (#7), a create
+  the engine refuses with 409 means the legs already carry an array the
+  head lost, so that array is reassembled instead (#43). With
   `[replication] peers` set, only an instance with
   `[recovery] enabled = true` acts, because every peer sees the same loss.
 - **Consumer serving (#2).** A consumer attaches **the mirror**, never a
@@ -297,7 +311,7 @@ stormview components feed on **:9093**.
 
 **Not done yet** (tracked in issues, see [Status](#status)): automatic
 re-head when the head node is lost (#14; promote is the mechanism),
-reassembly after the head's engine restarts (#15), rebalancing (#30),
+rebalancing (#30),
 IO-load placement (#31), tier migration (#32), async backup legs (#33)
 and HA state (#34).
 
@@ -660,9 +674,8 @@ done. The open work:
   promote, prestage, dual-attach; mock-engine tested). Its live run waits
   on stormcentral#131; enforcement at the legs is stormblock#6, a handover
   from a live head stormblock#296;
-- #14: automatic re-head when the head node is lost; #15: reassemble after the
-  head's engine restarts;
-- #12: the engine token's default path and peer calls;
+- #14: automatic re-head when the head node is lost (waits on an owner
+  decision);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #30–#32, #34–#36: rebalance, IO-load placement, tier migration, HA

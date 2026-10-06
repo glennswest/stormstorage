@@ -150,7 +150,7 @@ The source is `src/registry.rs`, `src/placement.rs`,
 | | Issue |
 |---|---|
 | Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
-| Re-head; reassemble after the head's engine restarts | #14, #15 |
+| Automatic re-head (promote by hand until then) | #14 |
 | Rebalance on pool watermarks; placement by IO load | #30, #31 (phase 3) |
 | Tier migration between pools | #32 (phase 3) |
 | Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |

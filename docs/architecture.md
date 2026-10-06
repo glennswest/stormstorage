@@ -211,7 +211,8 @@ optimization.
   automatic re-head is #14; a head that only stalled gets
   its leg back when it answers again and its member of the array is
   active, and the volume is assembled again (#26); a head that answers
-  without the array (#15) leaves the volume degraded. With replication peers,
+  without the array (its engine restarted) gets the same array put back
+  together from the legs' superblocks (*implemented, #15*). With replication peers,
   exactly one instance acts (`[recovery] enabled = true`). Unit-tested;
   the live run (`scripts/e2e-releg.sh`) waits on stormcentral#131.
   ```
@@ -237,7 +238,6 @@ optimization.
 - **Not implemented yet:**
   - automatic re-head when the head node is lost (#14; promote is the
     manual path);
-  - reassembly when the head's engine restarts (#15);
 - **Serving to named consumer hosts** (*implemented, #51/#53*): a
   consumer names its `host_nqn` (`POST …/export/hosts`, or `hosts` on
   create and export), and the serving engine serves the volume to that
@@ -317,9 +317,13 @@ DistVolume.export  { state: none | published | failed,
   `poll.fail_threshold` polls is not noticed; call the endpoint. The same
   endpoint publishes a volume created before #2, or retries a failed
   publish.
-- *Not done:* a head lost for good (#14). The engine does not reassemble
-  API-created arrays itself, so until re-head exists, a republish on a
-  restarted head fails and says so.
+- **Head engine restart** (*implemented, #15*): the engine reassembles
+  arrays on runtime legs only when asked, so the reconciler re-opens the
+  legs on the head and calls `POST /api/v1/arrays/assemble`. The same
+  array comes back with its slab and the served volume, which is served
+  again (`export.adopted`).
+- *Not done:* a head lost for good (#14; fence + promote by hand or by
+  the consumer's tiebreaker until then).
 
 **Replication on the RAID head** (*implemented, #33*): the owner chose
 on stormblock#179 (option b) that cross-node RAID1 lives on these heads,
