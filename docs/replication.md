@@ -141,8 +141,10 @@ enforces nothing. stormblock#6 builds the enforcement to this contract:
    `host_nqn` on the attach (stormblock#210). On the shared subsystem,
    the new head's attach would hand the namespace straight back to every
    connected host, the zombie included. stormstorage sends the head's
-   `host_nqn` on leg attaches with #27. Until #27, fencing is
-   bookkeeping only.
+   `host_nqn` on every leg attach (#27: `[legs] host_nqn`, default
+   `nqn.2026-10.lo.storm:stormstorage:{node}`), and the head opens the
+   leg with `hostnqn=` set to it. A promote attaches the legs for the
+   new head's NQN, which is a different subsystem from the old head's.
 5. **Persisted.** The epoch and the attachment epochs survive an engine
    restart, so a leg engine that restarts does not accept the zombie
    again.
@@ -249,7 +251,7 @@ and prestage. The rates are `[recovery] rate_low` (50 MiB/s),
 
 The window is bookkeeping on the volume. Serving the migration target
 needs no special attach: the served volume is an NVMe/TCP namespace that
-both hosts can reach. With per-host subsystems (#27) the target's host
+both hosts can reach. With per-host subsystems for consumers (#53) the target's host
 is admitted for the window's length.
 
 ## Not done
@@ -258,8 +260,8 @@ is admitted for the window's length.
   (a stormblock binary for an sc-build job). Everything above is tested
   against mock engines (`tests/replication.rs`) and in unit tests
   (`src/head.rs`).
-- Enforcement at the leg: stormblock#6, to the contract above; `host_nqn`
-  on leg attaches: #27.
+- Enforcement at the leg: stormblock#6, to the contract above (legs
+  already carry the head's `host_nqn`, #27).
 - Handover from a live head (planned promote, dual-attach commit):
   stormblock#296.
 - Automatic re-head when the head is lost: #14, using promote.

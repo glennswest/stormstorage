@@ -122,7 +122,7 @@ active → remove_member → drop old drive/volume.
       active, old volume gone
 - [ ] Node-loss handling: re-leg from surviving copies (#1, P1) — code
       done (999556f, 5deffda, c7d71f9); live run waits on
-      stormcentral#131, and current engines need #27 (host_nqn).
+      stormcentral#131 (#27 host_nqn done 2026-10-06).
       Plan: `LegState::Lost` (was created, node now unhealthy) and
       `AssemblyState::Degraded`; a reconciler on every poll marks legs
       lost and starts one re-leg per volume through the move machinery.
@@ -144,7 +144,7 @@ active → remove_member → drop old drive/volume.
       stormcentral#131 (no stormblock binary for an sc-build job, #25).
       When it passes: close #1 with the run, then the golden.
 - [ ] Consumer serving (#2) — code done; live e2e waits on
-      stormcentral#131 (#25) and #27. History (2026-09-27). Unblocked:
+      stormcentral#131 (#25) and, on closed engines, #53. History (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
       pins a /v1 volume) and v19.1.1 (#149: `transport: nvme_tcp` attach).
       Plan: `DistVolume.export` {state none|published|failed, volume_id,
@@ -380,7 +380,7 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
 - [x] Contract for stormblock#6 and the stormblock-csi#29 answer (read
       from stormstorage) posted on #33 / stormblock#6 / stormblock-csi#29.
 - [ ] Live run on real engines: waits on stormcentral#131 like #1/#2;
-      enforcement needs stormblock#6 + #27 (host_nqn); live handover needs
+      enforcement needs stormblock#6 (#27 done); live handover needs
       stormblock#296. Async backup legs split to #46.
 
 ### Phase 5: HA
@@ -415,7 +415,7 @@ tests; tests/rejoin.rs against a mock engine.
 Done: sc-build passes (59 unit incl. 4 new, tests/rejoin.rs 2/2). Not
 seen on a live engine (live runs wait on stormcentral#131).
 
-### Legs served to their head alone (#27, stormblock#210) — in progress 2026-10-06
+### Legs served to their head alone (#27, stormblock#210) — DONE 2026-10-06
 A closed engine admits no host on its shared subsystem; an attach must
 name `host_nqn` and the volume is served from that host's own subsystem
 (`<nqn>:host:<hex>`). The engine has no API that says what NQN its
@@ -431,6 +431,8 @@ still — the consumer is unknown here; filed separately. Detach needs no
 change (/v1 detach releases every host). DH-HMAC-CHAP waits on
 stormblock#213. Tests: unit (URI, template), mock engines check the
 attach body's `host_nqn` and the opened drive's `hostnqn=`.
+Done: sc-build passes (61 unit, export 7/7, replication 4/4). Consumer
+export host: #53. Not seen on a live closed engine (stormcentral#131).
 
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15

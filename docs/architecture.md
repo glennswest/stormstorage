@@ -238,9 +238,10 @@ optimization.
   - automatic re-head when the head node is lost (#14; promote is the
     manual path);
   - reassembly when the head's engine restarts (#15);
-  - attaching with the head's `host_nqn`, which engines with stormblock
-    #210 require on a closed node (#27). Until then assembly, export and
-    re-leg fail there unless the engine sets `allow_any_host`.
+  - naming the consumer's `host_nqn` on the export (#53). Legs already
+    name their head (*implemented, #27*: `[legs] host_nqn`, `hostnqn=` on
+    the drive URI), but on a closed engine (stormblock #210) the served
+    mirror still needs `allow_any_host`.
 - **Assembly retry** (*implemented, #7*): a failed assembly stays
   `pending_engine_support` and is retried by the reconciler once every
   leg's node is healthy, after `recovery.cooldown_secs`, or at once via

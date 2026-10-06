@@ -97,10 +97,13 @@ stormview components feed on **:9093**.
   thin volume per leg through each engine's `/v1/volumes`. If any leg
   fails, the legs already created are rolled back. With two or more legs,
   the volume is then **assembled**:
-  - every leg is exported with `/v1/volumes/{id}/attach`, which returns
-    the nqn, address and nsid;
+  - every leg is exported with `/v1/volumes/{id}/attach` to the head
+    alone: the attach names the head's `host_nqn` (`[legs] host_nqn`,
+    #27, stormblock#210), and the reply's nqn is that host's own
+    subsystem, with the address and nsid;
   - the head (the first placed node) opens each leg as an `nvme-tcp://`
-    drive, including its own leg over loopback;
+    drive with `&hostnqn=<the head's NQN>`, so it presents exactly that
+    name, including its own leg over loopback;
   - the head builds a RAID1 across those drives with `/api/v1/arrays`.
 
   If assembly fails, the legs are kept and the volume stays
@@ -172,9 +175,10 @@ stormview components feed on **:9093**.
   in `-mirror` are refused on create. Needs stormblock ≥ v19.1.1
   (dedicated arrays and pinning #150, NVMe-TCP attach on the master
   #149). An engine with stormblock #210 refuses an attach that names no
-  `host_nqn` unless it sets `[nvmeof] allow_any_host`. stormstorage does
-  not send one yet (#27), so on such an engine assembly, export and
-  re-leg fail.
+  `host_nqn` unless it sets `[nvmeof] allow_any_host`. Leg attaches name
+  their head (#27), so assembly, moves, re-leg and promote work on such
+  an engine. The consumer export does not name a host yet: it needs
+  `allow_any_host` on the head until #53.
 
   Kubernetes claims on stormcos do not come through here: a PVC is the
   built-in `stormblock` driver, where the kubelet clones a blank on the
@@ -286,6 +290,7 @@ worked example.
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
 | `[recovery] rate_low` / `rate_normal` / `rate_high` | `52428800` / `209715200` / `1073741824` | Rebuild cap, bytes a second, for a volume's `bandwidth_class` (#33); applied to the head's array. `unthrottled` is 0 (no cap). |
 | `[recovery] max_dual_attach_secs` | `3600` | Longest dual-attach window (#33). |
+| `[legs] host_nqn` | `nqn.2026-10.lo.storm:stormstorage:{node}` | The host NQN a head presents to its legs; `{node}` is the head's node name and is required. Every leg attach (assembly, move, re-leg, promote) names it, so the leg's engine serves the leg from a subsystem that admits that head alone (stormblock#210), and the head's drive URI carries it as `hostnqn=`. Must start `nqn.` and contain no `& ? / #` or spaces (#27). |
 | `[kubernetes] enabled` | `true` | Read each node volume's PV/PVC from the apiserver (#28). |
 | `[kubernetes] server` | `"https://127.0.0.1:6443"` | The apiserver. |
 | `[kubernetes] token_file` | unset | Bearer token file. `$KUBE_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `/data/stormcert/node-admin.token` (the node-admin token stormcert writes) and `/var/run/secrets/kubernetes.io/serviceaccount/token`. None found: anonymous. Read on every poll. |
@@ -417,8 +422,9 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
   `POST volumes/{id}/attach|detach`, `POST volumes/{id}/fence` (legs, #33).
   Legs are created with `replica_tier` `slaves = 0`. A served mirror is
   also created with `placement: {array_id}`. Every attach sends
-  `transport: nvme_tcp`; a leg attach also sends the leg's `epoch` once it
-  has been fenced (stormblock#6). `/v1` prestage, promote and dual-attach
+  `transport: nvme_tcp`; a leg attach also sends the head's `host_nqn`
+  (#27, stormblock#210) and the leg's `epoch` once it has been fenced
+  (stormblock#6). `/v1` prestage, promote and dual-attach
   are never called.
 - `/api/v1`: `GET slabs`, `GET slabs/{id}/slots`, `GET volumes`,
   `POST|DELETE volumes/{id}/attach` and `DELETE volumes/{id}` (a served
@@ -583,7 +589,9 @@ feed, peer replication) and 2 (leg wiring: assembled RAID1, leg move) are
 done. The open work:
 
 - #1, #2: re-leg and consumer serving are in the code; their live runs
-  wait on stormcentral#131, and current engines need #27 (`host_nqn`);
+  wait on stormcentral#131;
+- #53: the consumer export names no host, so a closed engine
+  (stormblock#210) refuses it without `allow_any_host`;
 - #8: the test suites are in and run on C2NR0Q2; see the issue for the
   latest run;
 - #33: replication on the RAID head is in the code (sync state, fence,

@@ -150,7 +150,7 @@ The source is `src/registry.rs`, `src/placement.rs`,
 | | Issue |
 |---|---|
 | Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
-| Attach with the head's `host_nqn` (engines with stormblock #210) | #27 (P1) |
+| Name the consumer's `host_nqn` on the export (legs name their head since #27) | #53 |
 | Re-head; reassemble after the head's engine restarts | #14, #15 |
 | Rebalance on pool watermarks; placement by IO load | #30, #31 (phase 3) |
 | Tier migration between pools | #32 (phase 3) |
@@ -241,8 +241,9 @@ write without the token when `api_token` is set.
 - **Biggest risks today:**
   - re-leg and serving are not yet verified on live engines
     (stormcentral#131);
-  - engines with stormblock #210 refuse attaches without `host_nqn` (#27).
-- **Next:** #27, the live runs, then #14 (re-head).
+  - engines with stormblock #210 refuse the consumer export without
+    `allow_any_host` (#53; legs are attached for their head, #27).
+- **Next:** the live runs, #53, then #14 (re-head).
 
 Docs: `README.md` (reference), `docs/architecture.md` (design),
 `CLAUDE.md` (work plan).
