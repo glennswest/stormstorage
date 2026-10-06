@@ -382,7 +382,9 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       from stormstorage) posted on #33 / stormblock#6 / stormblock-csi#29.
 - [ ] Live run on real engines: waits on stormcentral#131 like #1/#2;
       enforcement needs stormblock#6 (#27 done); live handover needs
-      stormblock#296. Async backup legs split to #46.
+      stormblock#296. Async backup legs split to #46: design pass in docs/async-legs.md
+      (2026-10-06), waits on the owner's choice (point-in-time B / async
+      replica A or C / both).
 
 ### Phase 5: HA
 - [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34)
