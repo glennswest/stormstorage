@@ -868,7 +868,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
             vol,
             Severity::Error,
             format!(
-                "{vol}: head {head} lost — the array lives there; not re-legged — fence it and promote a surviving leg's node (automatic re-head is #14)"
+                "{vol}: head {head} lost — the array lives there; not re-legged — fence it and promote a surviving leg's node, or turn on [recovery] rehead (#14)"
             ),
         )
         .await;
@@ -910,6 +910,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
     }
     rejoin_heads(state).await;
     reassemble_heads(state, now).await;
+    rehead_lost(state, now).await;
     // Host withdrawals an engine has not taken yet (#51).
     let pending: std::collections::BTreeSet<String> = {
         let fed = state.fed.read().await;
@@ -1023,6 +1024,130 @@ pub fn apply_head_reading(
     let changed = leg.message.as_deref() != Some(message.as_str());
     leg.message = Some(message);
     Some((found, changed))
+}
+
+/// What an automatic re-head would do this poll (#14).
+#[derive(Debug, Default, PartialEq)]
+pub struct ReheadPlan {
+    /// (volume, new head, epoch to fence at).
+    pub start: Vec<(String, String, u64)>,
+    /// (volume, why not) — head lost long enough, but no safe target.
+    pub held: Vec<(String, String)>,
+}
+
+/// Volumes whose head has been lost for `after` and the surviving leg to
+/// promote: one that reads `in_sync` (the head's last reading or the legs'
+/// superblocks, #48) on a healthy node. Never a leg without that evidence:
+/// promoting a stale copy loses the writes it missed. A volume already
+/// fenced is someone else's failover in flight (the consumer's
+/// tiebreaker, an operator) and is left alone. Pure.
+pub fn rehead_plan(
+    fed: &crate::model::FedState,
+    readings: &BTreeMap<String, crate::head::ArrayReading>,
+    interval: Duration,
+    after: Duration,
+    busy: &dyn Fn(&str) -> bool,
+    now: SystemTime,
+) -> ReheadPlan {
+    let mut plan = ReheadPlan::default();
+    for v in fed.volumes.values() {
+        if !matches!(v.assembly, AssemblyState::Assembled | AssemblyState::Degraded)
+            || v.fenced
+            || v.replacing.is_some()
+            || v.dual_attach.is_some()
+            || busy(&v.name)
+            || v.next_assemble_after.is_some_and(|t| t > now)
+        {
+            continue;
+        }
+        let Some(head) = v.head.as_deref() else { continue };
+        let Some(h) = fed.nodes.get(head) else { continue };
+        if h.status.healthy || interval * h.status.consecutive_failures < after {
+            continue;
+        }
+        let healthy = |n: &str| fed.nodes.get(n).is_some_and(|x| x.status.healthy);
+        let target = crate::head::replicas(v, readings.get(&v.name))
+            .into_iter()
+            .find(|r| r.node != head && healthy(&r.node) && r.sync == crate::head::SyncState::InSync)
+            .map(|r| r.node);
+        match target {
+            Some(t) => plan.start.push((v.name.clone(), t, v.epoch)),
+            None => plan.held.push((
+                v.name.clone(),
+                format!(
+                    "{}: head {head} lost; not re-headed — no surviving leg reads in_sync (no evidence it holds every write)",
+                    v.name
+                ),
+            )),
+        }
+    }
+    plan
+}
+
+/// Re-head volumes whose head is lost (#14), when `[recovery] rehead` is
+/// on: fence at the current epoch, then promote the in-sync leg's node.
+async fn rehead_lost(state: &Arc<AppState>, now: SystemTime) {
+    let rc = &state.config.recovery;
+    if !rc.rehead || !rc.active(!state.config.replication.peers.is_empty()) {
+        return;
+    }
+    let plan = {
+        let fed = state.fed.read().await;
+        let heads = state.heads.read().await;
+        rehead_plan(
+            &fed,
+            &heads,
+            Duration::from_secs(state.config.poll.interval_secs.max(1)),
+            Duration::from_secs(rc.rehead_after_secs),
+            &|n| busy(state, n),
+            now,
+        )
+    };
+    for (name, why) in plan.held {
+        let key = format!("rehead-held:{name}");
+        let first = state.noted.lock().expect("noted").insert(key);
+        if first {
+            event(state, &name, Severity::Warning, why).await;
+        }
+    }
+    for (name, target, epoch) in plan.start {
+        state.noted.lock().expect("noted").remove(&format!("rehead-held:{name}"));
+        event(
+            state,
+            &name,
+            Severity::Warning,
+            format!("{name}: head lost for {}s+ — re-heading automatically ([recovery] rehead): fence at epoch {epoch}, promote {target}", rc.rehead_after_secs),
+        )
+        .await;
+        let fenced = match crate::head::fence(state, &name, epoch).await {
+            Ok(f) => f.epoch,
+            Err(e) => {
+                // Someone fenced first (a consumer's failover): theirs.
+                event(state, &name, Severity::Info, format!("{name}: automatic re-head stood down: fence refused: {e}")).await;
+                continue;
+            }
+        };
+        if let Err(e) = crate::head::promote(state, &name, &target, fenced).await {
+            let cooldown = rc.cooldown_secs;
+            {
+                let mut fed = state.fed.write().await;
+                if let Some(v) = fed.volumes.get_mut(&name) {
+                    v.next_assemble_after = Some(now + Duration::from_secs(cooldown));
+                }
+            }
+            state.persist().await;
+            event(
+                state,
+                &name,
+                Severity::Error,
+                format!(
+                    "{name}: automatic re-head fenced at epoch {fenced} but the promote of {target} failed: {e} — \
+                     promote by hand: POST /api/v1/volumes/{name}/promote {{\"target_node\": \"{target}\", \"fenced_epoch\": {fenced}}}"
+                ),
+            )
+            .await;
+        }
+    }
 }
 
 /// Volumes whose head answers but was not read this poll — its array may
@@ -2045,6 +2170,42 @@ mod tests {
         let p = plan_recovery(&mut fed, true, now, &|_| true);
         assert!(p.lost.is_empty() && p.start.is_empty());
         assert_eq!(fed.volumes["v"].legs[1].state, LegState::Lost);
+    }
+
+    /// #14: re-head only a head lost long enough, only onto a leg that
+    /// reads in_sync, never over someone else's fence.
+    #[test]
+    fn rehead_plan_needs_time_evidence_and_no_fence() {
+        let mut fed = fed_with(&["a", "b"], &["a"]);
+        for (i, l) in fed.volumes.get_mut("v").unwrap().legs.iter_mut().enumerate() {
+            l.member_uuid = Some(format!("m{i}"));
+        }
+        fed.nodes.get_mut("a").unwrap().status.consecutive_failures = 4;
+        let iv = Duration::from_secs(15);
+        let after = Duration::from_secs(120);
+        let now = SystemTime::now();
+        let in_sync: BTreeMap<String, crate::head::ArrayReading> = [(
+            "v".to_string(),
+            crate::head::parse_array("a", "arr", &serde_json::json!({"members": [{"uuid": "m1", "state": "active"}]})),
+        )]
+        .into();
+        // Not long enough yet (4 × 15 s < 120 s).
+        assert_eq!(rehead_plan(&fed, &in_sync, iv, after, &|_| false, now), ReheadPlan::default());
+        fed.nodes.get_mut("a").unwrap().status.consecutive_failures = 8;
+        let p = rehead_plan(&fed, &in_sync, iv, after, &|_| false, now);
+        assert_eq!(p.start, vec![("v".to_string(), "b".to_string(), 1)]);
+        // No evidence the survivor is in sync: held, said why.
+        let p = rehead_plan(&fed, &BTreeMap::new(), iv, after, &|_| false, now);
+        assert!(p.start.is_empty());
+        assert!(p.held[0].1.contains("in_sync"), "{:?}", p.held);
+        // Someone else's failover in flight, or busy: left alone.
+        fed.volumes.get_mut("v").unwrap().fenced = true;
+        assert_eq!(rehead_plan(&fed, &in_sync, iv, after, &|_| false, now), ReheadPlan::default());
+        fed.volumes.get_mut("v").unwrap().fenced = false;
+        assert_eq!(rehead_plan(&fed, &in_sync, iv, after, &|_| true, now), ReheadPlan::default());
+        // The head answers again: nothing.
+        fed.nodes.get_mut("a").unwrap().status.healthy = true;
+        assert_eq!(rehead_plan(&fed, &in_sync, iv, after, &|_| false, now), ReheadPlan::default());
     }
 
     #[test]

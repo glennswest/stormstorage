@@ -46,6 +46,16 @@ pub struct RecoveryConfig {
     pub rate_high: u64,
     /// Longest dual-attach window a caller may open (#33).
     pub max_dual_attach_secs: u64,
+    /// Re-head a volume automatically when its head is lost (#14): fence
+    /// it and promote a surviving leg that reads `in_sync`. **Off by
+    /// default** (owner, 2026-10-06): turn it on only once a head is fenced
+    /// through cluster membership/quorum (stormcluster), not merely
+    /// unreachable from here — a partitioned head that keeps writing to
+    /// the legs is split-brain. Until then failover is the consumer's
+    /// tiebreaker's or an operator's (promote).
+    pub rehead: bool,
+    /// How long the head must have failed its polls before a re-head.
+    pub rehead_after_secs: u64,
 }
 
 impl Default for RecoveryConfig {
@@ -58,6 +68,8 @@ impl Default for RecoveryConfig {
             rate_normal: 200 << 20,
             rate_high: 1 << 30,
             max_dual_attach_secs: 3600,
+            rehead: false,
+            rehead_after_secs: 120,
         }
     }
 }

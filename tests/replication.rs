@@ -352,7 +352,12 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
 type Mocks = BTreeMap<String, Arc<Mutex<Mock>>>;
 
 async fn setup(nodes: &[&str]) -> (String, Arc<AppState>, Mocks) {
+    setup_cfg(nodes, |_| {}).await
+}
+
+async fn setup_cfg(nodes: &[&str], tweak: impl FnOnce(&mut Config)) -> (String, Arc<AppState>, Mocks) {
     let mut config = Config::default();
+    tweak(&mut config);
     config.local.enabled = false;
     config.kubernetes.enabled = false;
     let disks = Arc::new(Mutex::new(Disks::default()));
@@ -663,6 +668,65 @@ async fn a_head_engine_restart_is_reassembled_and_served_again() {
     stormstorage::registry::poll_once(&state).await;
     let log = mocks[&head].lock().unwrap().log.clone();
     assert!(!log.iter().any(|l| l.starts_with("assemble")), "{log:?}");
+}
+
+/// The slave's superblock as the mock engine serves it (#48), in sync at
+/// the head's last event count.
+async fn slave_superblock(state: &Arc<AppState>, mocks: &Mocks, name: &str, slave: &str, array: &str) {
+    let fed = state.fed.read().await;
+    let v = &fed.volumes[name];
+    let leg = v.legs.iter().find(|l| l.node == slave).unwrap();
+    let slots: Vec<Value> = v
+        .legs
+        .iter()
+        .enumerate()
+        .map(|(i, l)| json!({"slot": i, "member_uuid": l.member_uuid, "state": "active", "rebuilt_to": 0}))
+        .collect();
+    mocks[slave].lock().unwrap().sbs.insert(
+        leg.volume_id.clone().unwrap(),
+        json!({"array_uuid": array, "member_uuid": leg.member_uuid, "events": 7, "data_size": 1000, "slots": slots}),
+    );
+}
+
+/// The head is lost for good. With `[recovery] rehead` off (the default)
+/// nothing moves; with it on, the volume is fenced and the in-sync slave's
+/// node promoted (#14).
+#[tokio::test]
+async fn rehead_is_off_by_default_and_promotes_the_in_sync_leg_when_on() {
+    for on in [false, true] {
+        let (api, state, mocks) = setup_cfg(&["node-a", "node-b"], |c| {
+            c.recovery.rehead = on;
+            c.recovery.rehead_after_secs = 30;
+        })
+        .await;
+        let (head, other, array) = create_mirror(&api, "rh").await;
+        stormstorage::head::refresh(&state).await;
+        slave_superblock(&state, &mocks, "rh", &other, &array).await;
+        {
+            let mut fed = state.fed.write().await;
+            let n = fed.nodes.get_mut(&head).unwrap();
+            n.status.healthy = false;
+            n.status.consecutive_failures = 10;
+        }
+        stormstorage::head::refresh(&state).await;
+        stormstorage::orchestrate::reconcile(&state).await;
+        let fed = state.fed.read().await;
+        let v = &fed.volumes["rh"];
+        if !on {
+            assert_eq!(v.head.as_deref(), Some(head.as_str()), "off by default: no re-head");
+            assert_eq!(v.epoch, 1);
+            assert!(!v.fenced);
+            continue;
+        }
+        assert_eq!(v.head.as_deref(), Some(other.as_str()), "{v:?}");
+        assert_eq!(v.epoch, 2, "fenced once");
+        assert!(!v.fenced, "promoted");
+        assert_eq!(v.array_id.as_deref(), Some(array.as_str()));
+        assert_eq!(v.export.state, stormstorage::model::ExportState::Published, "{:?}", v.export);
+        drop(fed);
+        let ev = reqwest::get(format!("{api}/api/v1/events")).await.unwrap().text().await.unwrap();
+        assert!(ev.contains("re-heading automatically"), "{ev}");
+    }
 }
 
 #[tokio::test]

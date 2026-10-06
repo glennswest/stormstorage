@@ -50,6 +50,14 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     fed.apply_config_nodes(&config.nodes);
+    if config.recovery.rehead {
+        tracing::warn!(
+            after_secs = config.recovery.rehead_after_secs,
+            "[recovery] rehead is on: a head unreachable from here is fenced and replaced automatically (#14). \
+             Safe only when a lost head is fenced by cluster membership/quorum — a partitioned head that \
+             keeps writing to the legs is split-brain"
+        );
+    }
     tracing::info!(
         nodes = fed.nodes.len(),
         volumes = fed.volumes.len(),
