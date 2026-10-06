@@ -166,10 +166,47 @@ async fn assemble_inner(
             "{head}: {uri} is already a member of array {array}, which is not this volume's; \
              not building a second array over it"
         ),
-        ArrayMatch::None => head_engine
-            .create_raid1(&drive_uuids)
-            .await
-            .map_err(|e| anyhow::anyhow!("{head}: create raid1: {e:#}"))?,
+        ArrayMatch::None => match head_engine.create_raid1(&drive_uuids).await {
+            Ok(arr) => arr,
+            // The legs carry the superblock of an array the head does not
+            // hold (it was built, then the head's engine restarted before
+            // this was recorded — stormblock#252, #43): put that array
+            // back together rather than retry a create that cannot work.
+            Err(e) if crate::engine::status_of(&e) == Some(reqwest::StatusCode::CONFLICT) => {
+                let report = head_engine
+                    .assemble_arrays(&drive_uuids)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{head}: assemble after create refused: {e:#}"))?;
+                let ids: Vec<String> = report
+                    .get("arrays")
+                    .and_then(|a| a.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.get("id")?.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                let [id] = ids.as_slice() else {
+                    anyhow::bail!(
+                        "{head}: create refused ({e:#}) and the legs assembled into {} arrays, not one: {}",
+                        ids.len(),
+                        report.get("refused").cloned().unwrap_or_default()
+                    );
+                };
+                let arr = head_engine
+                    .get_array(id)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{head}: read assembled array {id}: {e:#}"))?;
+                if !matches!(match_array(std::slice::from_ref(&arr), &uris), ArrayMatch::Exact(_)) {
+                    anyhow::bail!("{head}: array {id} assembled from these legs has other members too; not adopting it");
+                }
+                event(
+                    state,
+                    &vol.name,
+                    Severity::Info,
+                    format!("{}: legs already carried array {id}; reassembled it on {head} (#43)", vol.name),
+                )
+                .await;
+                arr
+            }
+            Err(e) => anyhow::bail!("{head}: create raid1: {e:#}"),
+        },
     };
     let array_id = arr
         .get("id")
@@ -872,6 +909,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
         }
     }
     rejoin_heads(state).await;
+    reassemble_heads(state, now).await;
     // Host withdrawals an engine has not taken yet (#51).
     let pending: std::collections::BTreeSet<String> = {
         let fed = state.fed.read().await;
@@ -985,6 +1023,69 @@ pub fn apply_head_reading(
     let changed = leg.message.as_deref() != Some(message.as_str());
     leg.message = Some(message);
     Some((found, changed))
+}
+
+/// Volumes whose head answers but was not read this poll — its array may
+/// be gone after an engine restart (#15). Pure.
+pub fn reassemble_candidates(
+    fed: &crate::model::FedState,
+    read: &dyn Fn(&str) -> bool,
+    busy: &dyn Fn(&str) -> bool,
+    now: SystemTime,
+) -> Vec<String> {
+    fed.volumes
+        .values()
+        .filter(|v| matches!(v.assembly, AssemblyState::Assembled | AssemblyState::Degraded))
+        .filter(|v| !v.fenced && v.replacing.is_none() && v.dual_attach.is_none())
+        .filter(|v| v.next_assemble_after.map_or(true, |t| t <= now))
+        .filter(|v| {
+            v.head
+                .as_deref()
+                .and_then(|h| fed.nodes.get(h))
+                .is_some_and(|n| n.status.healthy)
+        })
+        .filter(|v| !read(&v.name) && !busy(&v.name))
+        .map(|v| v.name.clone())
+        .collect()
+}
+
+/// Put back the array of every volume whose head's engine restarted and
+/// forgot it (#15). Only on the instance that acts on recovery; a failure
+/// waits `recovery.cooldown_secs`.
+async fn reassemble_heads(state: &Arc<AppState>, now: SystemTime) {
+    if !state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+        return;
+    }
+    let due = {
+        let fed = state.fed.read().await;
+        let heads = state.heads.read().await;
+        let read = |n: &str| heads.get(n).is_some_and(|r| r.source == crate::head::SyncSource::Head);
+        reassemble_candidates(&fed, &read, &|n| busy(state, n), now)
+    };
+    for name in due {
+        if !claim(state, &name) {
+            continue;
+        }
+        let r = crate::head::reassemble(state, &name).await;
+        release(state, &name);
+        if let Err(e) = r {
+            let cooldown = state.config.recovery.cooldown_secs;
+            {
+                let mut fed = state.fed.write().await;
+                if let Some(v) = fed.volumes.get_mut(&name) {
+                    v.next_assemble_after = Some(now + Duration::from_secs(cooldown));
+                }
+            }
+            state.persist().await;
+            event(
+                state,
+                &name,
+                Severity::Error,
+                format!("{name}: reassembling its array on the head failed, retry in {cooldown}s: {e}"),
+            )
+            .await;
+        }
+    }
 }
 
 /// Bring a lost head leg back when its head answers again and still holds

@@ -60,8 +60,12 @@ impl std::error::Error for HttpStatus {}
 
 /// The engine said 404 — check before the error is wrapped in context.
 pub fn is_not_found(e: &anyhow::Error) -> bool {
-    e.chain()
-        .any(|c| c.downcast_ref::<HttpStatus>().is_some_and(|h| h.status == reqwest::StatusCode::NOT_FOUND))
+    status_of(e) == Some(reqwest::StatusCode::NOT_FOUND)
+}
+
+/// The engine's error status, if `e` is one.
+pub fn status_of(e: &anyhow::Error) -> Option<reqwest::StatusCode> {
+    e.chain().find_map(|c| c.downcast_ref::<HttpStatus>().map(|h| h.status))
 }
 
 #[derive(Debug, Clone, Default)]

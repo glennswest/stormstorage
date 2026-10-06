@@ -679,65 +679,8 @@ async fn promote_claimed(
     let surviving: Vec<usize> = (0..vol.legs.len())
         .filter(|&i| vol.legs[i].state == LegState::Created && engines.contains_key(&vol.legs[i].node))
         .collect();
-    let mut drive_uuids = Vec::new();
-    let host = state.config.legs.host_nqn_for(target);
-    for &i in &surviving {
-        let leg = &mut vol.legs[i];
-        let engine = engines.get(&leg.node).expect("surviving");
-        let vid = leg.volume_id.clone().expect("created");
-        let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
-        let att = engine
-            .attach_leg(&vid, &master, leg.epoch, Some(&host))
-            .await
-            .map_err(|e| Refusal::Upstream(format!("{}: attach leg: {e:#}", leg.node)))?;
-        let uri = att.drive_uri();
-        leg.export = Some(att);
-        let uuid = target_engine
-            .add_drive_idempotent(&uri)
-            .await
-            .map_err(|e| Refusal::Upstream(format!("{target}: open {uri}: {e:#}")))?;
-        leg.drive_uuid = Some(uuid.clone());
-        drive_uuids.push(uuid);
-    }
-    let report = target_engine
-        .assemble_arrays(&drive_uuids)
-        .await
-        .map_err(|e| Refusal::Upstream(format!("{target}: assemble: {e:#}")))?;
-    let found = report
-        .get("arrays")
-        .and_then(|a| a.as_array())
-        .is_some_and(|a| {
-            a.iter().any(|x| {
-                x.get("id").and_then(|i| i.as_str()).map(|i| i.eq_ignore_ascii_case(&array_id)) == Some(true)
-            })
-        });
-    if !found {
-        return Err(Refusal::Upstream(format!(
-            "{target}: the legs did not assemble into array {array_id}: {}",
-            report.get("refused").cloned().unwrap_or_default()
-        )));
-    }
-    // Members as the new head numbers them.
-    if let Ok(arr) = target_engine.get_array(&array_id).await {
-        let r = parse_array(target, &array_id, &arr);
-        for &i in &surviving {
-            let uri = vol.legs[i].export.as_ref().map(|x| x.drive_uri());
-            if let Some(m) = r.members.iter().find(|m| Some(&m.device_path) == uri.as_ref()) {
-                vol.legs[i].member_uuid = Some(m.uuid.clone());
-            }
-        }
-    }
-    let _ = target_engine.set_rebuild_rate(&array_id, state.config.recovery.rate(vol.bandwidth_class)).await;
-    // The served volume came across with the array's slab. Never make a
-    // new one in its place: an empty volume under the old name would read
-    // as the consumer's data gone.
+    let served = assemble_on(state, &mut vol, &surviving, target, &target_engine, &engines).await?;
     let mirror = format!("{name}{}", crate::orchestrate::MIRROR_SUFFIX);
-    let served = target_engine
-        .list_engine_volumes()
-        .await
-        .ok()
-        .and_then(|vs| vs.into_iter().find(|v| v.name == mirror))
-        .map(|v| v.id);
 
     let old = old_head.clone().unwrap_or_default();
     let old_uris: Vec<String> = vol
@@ -820,6 +763,206 @@ async fn promote_claimed(
         }
     }
     Ok(view_of(state, name).await)
+}
+
+/// Open the legs `idxs` on `target` for it as head and put the volume's
+/// array back together from their superblocks
+/// (`POST /api/v1/arrays/assemble`, stormblock#252) — the same array, not
+/// a new one. Records each leg's export, drive and member uuid, sets the
+/// rebuild rate, and returns the served volume that came across with the
+/// array's slab (`<name>-mirror`), if it did. Shared by promote (a new
+/// head) and reassemble (#15: the same head after its engine restarted).
+async fn assemble_on(
+    state: &Arc<AppState>,
+    vol: &mut DistVolume,
+    idxs: &[usize],
+    target: &str,
+    target_engine: &crate::engine::Engine,
+    engines: &std::collections::BTreeMap<String, crate::engine::Engine>,
+) -> Result<Option<String>, Refusal> {
+    let array_id = vol.array_id.clone().ok_or_else(|| Refusal::Conflict(format!("{}: no array id", vol.name)))?;
+    let mut drive_uuids = Vec::new();
+    let host = state.config.legs.host_nqn_for(target);
+    for &i in idxs {
+        let leg = &mut vol.legs[i];
+        let engine = engines
+            .get(&leg.node)
+            .ok_or_else(|| Refusal::Upstream(format!("{}: unreachable", leg.node)))?;
+        let vid = leg
+            .volume_id
+            .clone()
+            .ok_or_else(|| Refusal::Conflict(format!("{}: leg has no volume", leg.node)))?;
+        let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
+        let att = engine
+            .attach_leg(&vid, &master, leg.epoch, Some(&host))
+            .await
+            .map_err(|e| Refusal::Upstream(format!("{}: attach leg: {e:#}", leg.node)))?;
+        let uri = att.drive_uri();
+        leg.export = Some(att);
+        let uuid = target_engine
+            .add_drive_idempotent(&uri)
+            .await
+            .map_err(|e| Refusal::Upstream(format!("{target}: open {uri}: {e:#}")))?;
+        leg.drive_uuid = Some(uuid.clone());
+        drive_uuids.push(uuid);
+    }
+    let report = target_engine
+        .assemble_arrays(&drive_uuids)
+        .await
+        .map_err(|e| Refusal::Upstream(format!("{target}: assemble: {e:#}")))?;
+    let found = report
+        .get("arrays")
+        .and_then(|a| a.as_array())
+        .is_some_and(|a| {
+            a.iter().any(|x| {
+                x.get("id").and_then(|i| i.as_str()).map(|i| i.eq_ignore_ascii_case(&array_id)) == Some(true)
+            })
+        });
+    if !found {
+        return Err(Refusal::Upstream(format!(
+            "{target}: the legs did not assemble into array {array_id}: {}",
+            report.get("refused").cloned().unwrap_or_default()
+        )));
+    }
+    // Members as this head numbers them.
+    if let Ok(arr) = target_engine.get_array(&array_id).await {
+        let r = parse_array(target, &array_id, &arr);
+        for &i in idxs {
+            let uri = vol.legs[i].export.as_ref().map(|x| x.drive_uri());
+            if let Some(m) = r.members.iter().find(|m| Some(&m.device_path) == uri.as_ref()) {
+                vol.legs[i].member_uuid = Some(m.uuid.clone());
+            }
+        }
+    }
+    let _ = target_engine.set_rebuild_rate(&array_id, state.config.recovery.rate(vol.bandwidth_class)).await;
+    // The served volume came across with the array's slab. Never make a
+    // new one in its place: an empty volume under the old name would read
+    // as the consumer's data gone.
+    let mirror = format!("{}{}", vol.name, crate::orchestrate::MIRROR_SUFFIX);
+    Ok(target_engine
+        .list_engine_volumes()
+        .await
+        .ok()
+        .and_then(|vs| vs.into_iter().find(|v| v.name == mirror))
+        .map(|v| v.id))
+}
+
+/// What a reassembly did (#15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reassembled {
+    /// The head still holds the array: nothing to do.
+    Present,
+    /// The head's arrays could not be read: try at the next poll.
+    Unread,
+    /// Put back together from `legs` legs; `served` = the served volume
+    /// came across with it.
+    Done { legs: usize, served: bool },
+}
+
+/// Put a volume's array back together on its **own** head after the
+/// head's engine restarted and forgot it (#15): stormblock reassembles
+/// arrays on runtime `nvme-tcp://` drives only when asked
+/// (`POST /api/v1/arrays/assemble`, stormblock#252). The legs are opened
+/// again for the head, the same array (same id) comes back with its slab,
+/// and the served volume on it is served again. A head leg marked lost
+/// while the head was away (#26) is taken back in. Never creates an array:
+/// that would format over the legs.
+pub async fn reassemble(state: &Arc<AppState>, name: &str) -> Result<Reassembled, Refusal> {
+    let (mut vol, head, head_engine, engines) = {
+        let fed = state.fed.read().await;
+        let vol = fed
+            .volumes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Refusal::NotFound(format!("volume {name:?}")))?;
+        if !matches!(vol.assembly, AssemblyState::Assembled | AssemblyState::Degraded) {
+            return Err(Refusal::Conflict(format!("{name}: not assembled")));
+        }
+        if vol.fenced || vol.replacing.is_some() || vol.dual_attach.is_some() {
+            return Err(Refusal::Conflict(format!("{name}: fenced, replacing a leg or in a dual-attach window")));
+        }
+        let head = vol.head.clone().ok_or_else(|| Refusal::Conflict(format!("{name}: no head")))?;
+        let head_node = fed
+            .nodes
+            .get(&head)
+            .filter(|n| n.status.healthy)
+            .ok_or_else(|| Refusal::Upstream(format!("{name}: head {head} is unreachable")))?;
+        let head_engine = state.engine_for(head_node);
+        let mut engines = std::collections::BTreeMap::new();
+        for l in &vol.legs {
+            if let Some(n) = fed.nodes.get(&l.node).filter(|n| n.status.healthy) {
+                engines.insert(l.node.clone(), state.engine_for(n));
+            }
+        }
+        (vol, head, head_engine, engines)
+    };
+    let array_id = vol.array_id.clone().ok_or_else(|| Refusal::Conflict(format!("{name}: no array id")))?;
+    match head_engine.find_array(&array_id).await {
+        Ok(Some(_)) => return Ok(Reassembled::Present),
+        Ok(None) => {}
+        Err(_) => return Ok(Reassembled::Unread),
+    }
+    // Every leg whose node answers: created ones, and the head's own leg
+    // if it was marked lost while the head was away.
+    let legs: Vec<usize> = (0..vol.legs.len())
+        .filter(|&i| {
+            let l = &vol.legs[i];
+            engines.contains_key(&l.node)
+                && (l.state == LegState::Created || (l.state == LegState::Lost && l.node == head))
+        })
+        .collect();
+    if legs.is_empty() {
+        return Err(Refusal::Conflict(format!("{name}: no leg answers")));
+    }
+    let served = assemble_on(state, &mut vol, &legs, &head, &head_engine, &engines).await?;
+    for &i in &legs {
+        vol.legs[i].state = LegState::Created;
+        vol.legs[i].message = None;
+    }
+    vol.assembly = if vol.legs.iter().all(|l| l.state == LegState::Created) {
+        AssemblyState::Assembled
+    } else {
+        AssemblyState::Degraded
+    };
+    vol.next_assemble_after = None;
+    let mirror = format!("{name}{}", crate::orchestrate::MIRROR_SUFFIX);
+    let was_served = vol.export.state != crate::model::ExportState::None;
+    match &served {
+        Some(id) => {
+            // Came back with the slab: the engine-local id, attached
+            // through /api/v1 like a promoted head's.
+            vol.export.volume_id = Some(id.clone());
+            vol.export.local_id = Some(id.clone());
+            vol.export.node = Some(head.clone());
+            vol.export.master_node = None;
+            vol.export.adopted = true;
+        }
+        None if was_served => {
+            vol.export.state = crate::model::ExportState::Failed;
+            vol.export.gone = true;
+            vol.export.message = Some(format!(
+                "{name}: the served volume {mirror} did not come back with array {array_id} on {head}; its data is \
+                 not recreated — POST /api/v1/volumes/{name}/export {{\"recreate\": true}} serves a new, EMPTY one"
+            ));
+        }
+        None => {}
+    }
+    let gone_msg = vol.export.message.clone().filter(|_| vol.export.gone);
+    store(state, vol).await;
+    event(
+        state,
+        name,
+        Severity::Info,
+        format!("{name}: array {array_id} reassembled on {head} from {} legs after its engine restarted", legs.len()),
+    )
+    .await;
+    if served.is_some() && was_served {
+        let _ = crate::orchestrate::publish(state, name).await;
+    }
+    if let Some(m) = gone_msg {
+        event(state, name, Severity::Error, m).await;
+    }
+    Ok(Reassembled::Done { legs: legs.len(), served: served.is_some() })
 }
 
 /// The stormblock issue for releasing an array without writing to its

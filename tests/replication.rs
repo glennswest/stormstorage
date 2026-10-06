@@ -624,6 +624,47 @@ async fn promote_reserves_the_consumer_hosts() {
     assert!(!log.contains(&format!("attach-any {served}")), "no shared attach once hosts are named: {log:?}");
 }
 
+/// #15: the head's engine restarts and forgets its runtime `nvme-tcp://`
+/// leg drives and the array on them. The next poll opens the legs again,
+/// puts the *same* array back together from their superblocks
+/// (`/api/v1/arrays/assemble`, never a create), and serves the volume that
+/// came back with its slab. A poll after that leaves it alone.
+#[tokio::test]
+async fn a_head_engine_restart_is_reassembled_and_served_again() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, _other, array) = create_mirror(&api, "r").await;
+    let served = state.fed.read().await.volumes["r"].export.volume_id.clone().unwrap();
+    {
+        let mut m = mocks[&head].lock().unwrap();
+        m.arrays.clear();
+        m.drives.clear();
+        m.log.clear();
+    }
+    stormstorage::registry::poll_once(&state).await;
+    {
+        let fed = state.fed.read().await;
+        let v = &fed.volumes["r"];
+        assert_eq!(v.head.as_deref(), Some(head.as_str()));
+        assert_eq!(v.array_id.as_deref(), Some(array.as_str()), "the same array");
+        assert_eq!(v.assembly, stormstorage::model::AssemblyState::Assembled);
+        assert_eq!(v.export.state, stormstorage::model::ExportState::Published, "{:?}", v.export);
+        assert_eq!(v.export.volume_id.as_deref(), Some(served.as_str()), "the served volume that came back");
+        assert!(v.export.adopted);
+    }
+    let log = mocks[&head].lock().unwrap().log.clone();
+    assert!(log.contains(&format!("assemble {array}")), "{log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("array ")), "never a create: {log:?}");
+    assert!(log.contains(&format!("attach-any {served}")), "{log:?}");
+    let ev = reqwest::get(format!("{api}/api/v1/events")).await.unwrap().text().await.unwrap();
+    assert!(ev.contains("reassembled"), "{ev}");
+
+    // Present again: the next poll does nothing to it.
+    mocks[&head].lock().unwrap().log.clear();
+    stormstorage::registry::poll_once(&state).await;
+    let log = mocks[&head].lock().unwrap().log.clone();
+    assert!(!log.iter().any(|l| l.starts_with("assemble")), "{log:?}");
+}
+
 #[tokio::test]
 async fn dual_attach_windows() {
     let (api, state, _mocks) = setup(&["node-a", "node-b"]).await;

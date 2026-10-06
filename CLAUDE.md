@@ -193,9 +193,9 @@ active → remove_member → drop old drive/volume.
       per-volume claim (no concurrent re-leg/assemble). Before creating the
       RAID it lists the head's arrays: one whose members are exactly the
       legs' drive URIs is adopted (a create whose response was lost); one
-      holding any of them otherwise → refuse. stormblock's array create
-      does not refuse drives already in an array, so a blind retry would
-      format a second array over the legs → stormblock issue. Event text
+      holding any of them otherwise → refuse. (Since stormblock#215 create
+      itself 409s on held drives; a 409 for legs carrying a superblock of
+      an array the head lost now reassembles that array, #43.) Event text
       names the retry path. Tests: mock engine in tests/assemble.rs.
 
 ### Docs from code — DONE (#4, 2026-09-24)
