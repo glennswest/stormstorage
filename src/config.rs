@@ -588,4 +588,21 @@ mod tests {
         assert_eq!(Config::unknown_top_level_keys(text), vec!["token_file".to_string()]);
         assert!(Config::unknown_top_level_keys("[local]\ntoken_file = \"/x\"\n").is_empty());
     }
+
+    /// The component entry's shipped config (stormcentral, #42), verbatim.
+    #[test]
+    fn shipped_entry_config() {
+        let text = r#"# stormstorage under stormd, in a golden.
+listen_addr = "0.0.0.0:9093"
+data_dir    = "/var/lib/stormstorage"
+
+[local]
+# The node's stormblock engine refuses calls without its minted token
+# (stormblock 19); the unit mounts the host's /run/stormblock read-only.
+token_file  = "/run/stormblock/engine/api_token""#;
+        assert!(Config::unknown_top_level_keys(text).is_empty());
+        let c: Config = toml::from_str(text).unwrap();
+        assert_eq!(c.data_dir.as_deref(), Some("/var/lib/stormstorage"));
+        assert_eq!(c.local.token_file.as_deref(), Some("/run/stormblock/engine/api_token"));
+    }
 }

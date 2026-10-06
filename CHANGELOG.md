@@ -4,7 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-06
-- **fix:** The component entry's shipped config puts `token_file` under `[local]` (#42, stormcentral#72). It sat at the top level, where stormstorage ignores it and logs a WARN at start. Changed with `stormcentral component edit stormstorage --set config=…`. README, docs/presentation.md and CLAUDE.md now describe the corrected entry.
+- **fix:** The component entry's shipped config puts `token_file` under `[local]` (#42, stormcentral#72). It sat at the top level, where stormstorage ignores it and logs a WARN at start. Changed with `stormcentral component edit stormstorage --set config=…`. A unit test (`shipped_entry_config`) pins the entry's text: it parses, `token_file` lands in `[local]`, and there are no unknown top-level keys. README, docs/presentation.md and CLAUDE.md now describe the corrected entry.
 - **fix:** A head leg marked lost comes back when the head answers again (#26). A head that missed `poll.fail_threshold` polls (45 s by default — a loaded box was enough) marked its own leg `lost` and left the volume `degraded` for good, since a head leg is never re-legged. After each poll the reconciler now reads the array of every degraded, unfenced, idle volume whose head leg is lost and whose head is healthy (this poll's reading, else `GET /api/v1/arrays/{id}`). If the head's member is `active`, the leg goes back to `created` and the volume to `assembled` when no other leg is lost, with an info event. If the array is gone (404: engine restart, #15) or the member is not active, the volume stays `degraded`, and a warning event is logged once per finding (the leg's `message` says which). Unit tests in `src/orchestrate.rs`; `tests/rejoin.rs` against mock engines.
 
 ### 2026-10-05
