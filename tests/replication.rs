@@ -26,7 +26,7 @@ use stormstorage::api::AppState;
 use stormstorage::config::{Config, NodeConfig};
 use stormstorage::model::FedState;
 
-/// What lives on the legs themselves: member superblocks (drive path →
+/// What lives on the legs themselves: member superblocks (leg namespace →
 /// array id) and each array's slab (array id → [(volume id, name)]).
 #[derive(Default)]
 struct Disks {
@@ -59,6 +59,12 @@ struct Mock {
 struct S {
     m: Arc<Mutex<Mock>>,
     disks: Arc<Mutex<Disks>>,
+}
+
+/// The namespace a drive path opens: the URI without `hostnqn=`, which
+/// names who connects (#27), not what is on the disk.
+fn disk_of(path: &str) -> String {
+    path.split("&hostnqn=").next().unwrap().to_string()
 }
 
 fn coords(node: &str, nsid: u32) -> Value {
@@ -172,7 +178,7 @@ async fn create_array(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
     {
         let mut disks = s.disks.lock().unwrap();
         for x in &members {
-            disks.superblocks.insert(x.path.clone(), id.clone());
+            disks.superblocks.insert(disk_of(&x.path), id.clone());
         }
     }
     let out = array_json(&id, &members);
@@ -208,7 +214,7 @@ async fn assemble(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
     let mut found: BTreeMap<String, Vec<Member>> = BTreeMap::new();
     for d in b["drive_uuids"].as_array().unwrap() {
         let path = m.drives[d.as_str().unwrap()].clone();
-        if let Some(a) = disks.superblocks.get(&path) {
+        if let Some(a) = disks.superblocks.get(&disk_of(&path)) {
             found.entry(a.clone()).or_default().push(Member {
                 uuid: format!("m-{path}"),
                 path,
