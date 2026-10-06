@@ -171,7 +171,19 @@ stormview components feed on **:9093**.
   publish on a node that is unreachable is recorded as `failed` with its
   message and an event; a failed export keeps the last coordinates it
   handed out. A node whose engine answers again after being unreachable
-  republishes every export it serves, published or failed. Names ending
+  republishes every export it serves, published or failed.
+  **A served volume that is gone is never recreated unasked (#40).** If
+  the engine answers 404 for the recorded served volume, the export
+  becomes `failed` with `gone: true`, an error event, and a message
+  saying so. That covers the attach, the adopted attach, a host's attach,
+  or the lookup of its engine id. The served volume *is* the consumer's
+  data: an empty replacement would come up blank without an error. So
+  nothing attaches it again, recovery skips it, and a plain
+  `POST …/export` is a 409 that says what to do.
+  `POST …/export {"recreate": true}` serves a new, **empty**
+  `<name>-mirror` on the array, to the same hosts. It sets
+  `coordinates_changed` on the export and on every host. A single-leg
+  volume is refused, because its leg is the data: delete the volume. Names ending
   in `-mirror` are refused on create. Needs stormblock ≥ v19.1.1
   (dedicated arrays and pinning #150, NVMe-TCP attach on the master
   #149). An engine with stormblock #210 refuses an attach that names no
@@ -440,7 +452,7 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes/{name}/dual-attach` | `{target_node, ttl_secs}` → `{volume_id, epoch, target_node, expires_at_ms}`. Target must hold a slave; 409 for another target while one is open. |
 | POST | `/api/v1/volumes/{name}/dual-attach/close` | `{epoch, outcome: commit\|abort}`. Commit = fence + promote the target; 412 on the wrong epoch, 409 with none open. |
 | GET | `/api/v1/stale-heads` | Former heads to clean up when they answer: `{stale_heads: [{node, array_id, drive_uris, of_volume, epoch, since}]}`. |
-| POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Optional body `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53). Returns the `export` record (`hosts[]`, `per_host`, `local_id`, `withdrawing[]`; never a secret); 409 when it cannot be served (not assembled, node unreachable, engine error, a host refused). |
+| POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Optional body `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53); `{recreate: true}` replaces a served volume that is `gone` with a new, empty one (#40; 409 when nothing is gone or on a single leg). Returns the `export` record (`hosts[]`, `per_host`, `local_id`, `withdrawing[]`; never a secret); 409 when it cannot be served (not assembled, node unreachable, engine error, a host refused). |
 | POST | `/api/v1/volumes/{name}/export/hosts` | `{host_nqn, dhchap?}` → that host's record plus `dhchap_secret` when it has one (#51). Served from the host's own subsystem; idempotent. 400 for a value that is not a host NQN (`nqn.…`, ≤ 223 bytes), 404 for no such volume, 409 when it cannot be served. |
 | DELETE | `/api/v1/volumes/{name}/export/hosts/{host_nqn}` | Stop serving it to that host: `{host_nqn, withdrawn: done\|pending\|nothing_served}`. |
 | POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
