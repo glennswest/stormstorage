@@ -534,7 +534,7 @@ served again. Stale #7 note about stormblock#215 fixed.
 Done: aeb7bef; sc-build passes (replication 7/7). Live: an engine restart
 in the e2e waits on stormcentral#131.
 
-### Automatic re-head, opt-in (#14, P2) — in progress 2026-10-06
+### Automatic re-head, opt-in (#14, P2) — DONE 2026-10-06
 Owner (2026-10-06, master's recommendation): (b) automatic but opt-in,
 off by default; turn it on only once the head is fenced through cluster
 membership/quorum (stormcluster), not merely unreachable from here —
@@ -550,11 +550,13 @@ fence at the current epoch, promote onto that leg. Failure: cooldown
 (`next_assemble_after`), error event naming the manual promote. WARN at
 start when on. Pure `rehead_plan` + unit tests; tests/replication.rs:
 off by default does nothing; on + slave in sync (superblock) → re-headed.
+Done: c4d4a88 (+ dc897ef docs); sc-build passes (68 unit, replication 8/8).
+Turning it on waits on fencing through cluster membership + stormblock#6.
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
-- [ ] #14 re-head — owner chose (b) 2026-10-06, in progress (below); #35 forward announcements
+- [x] #14 re-head — opt-in, off by default (done 2026-10-06); #35 forward announcements
       to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
