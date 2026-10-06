@@ -438,7 +438,7 @@ export host: #53. Not seen on a live closed engine (stormcentral#131).
 `/replicas` read every leg `detached` once the head was lost, so
 stormblock-csi (waiting for `in_sync`) never failed over. Plan: when the
 head's array cannot be read, read each surviving leg's RAID superblock on
-its own engine (`GET /api/v1/volumes/{id}/raid-superblock`, filed as
+its own engine (`GET /v1/volumes/{id}/raid-superblock`, filed as
 stormblock#309; 404/err = no evidence) and build the reading from those
 (`sync_source: superblock`; live = `head`). A leg is `in_sync` only if its
 superblock is of this array, has the newest `events` among the reachable
