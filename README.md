@@ -154,7 +154,8 @@ stormview components feed on **:9093**.
   before the next. A lost leg stays lost even if its node comes back, so a
   flapping node gives one re-leg. A lost **head** is reported and not
   re-legged automatically, because the array lives there: fence it and
-  promote a surviving leg's node (#33, below); automatic re-head is #14. A head that
+  promote a surviving leg's node (#33, below), or turn on automatic re-head
+  (`[recovery] rehead`, #14: off by default, see the key). A head that
   only stalled past the threshold comes back (#26): once it answers again,
   its array is read (`GET /api/v1/arrays/{id}`), and if the head's member
   is active its leg is `created` again and the volume `assembled` (if no
@@ -309,9 +310,7 @@ stormview components feed on **:9093**.
   Enforcement at the legs is stormblock#6, to the contract in
   [docs/replication.md](docs/replication.md).
 
-**Not done yet** (tracked in issues, see [Status](#status)): automatic
-re-head when the head node is lost (#14; promote is the mechanism),
-rebalancing (#30),
+**Not done yet** (tracked in issues, see [Status](#status)): rebalancing (#30),
 IO-load placement (#31), tier migration (#32), async backup legs (#33)
 and HA state (#34).
 
@@ -365,6 +364,8 @@ worked example.
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
 | `[recovery] rate_low` / `rate_normal` / `rate_high` | `52428800` / `209715200` / `1073741824` | Rebuild cap, bytes a second, for a volume's `bandwidth_class` (#33); applied to the head's array. `unthrottled` is 0 (no cap). |
 | `[recovery] max_dual_attach_secs` | `3600` | Longest dual-attach window (#33). |
+| `[recovery] rehead` | `false` | Re-head a volume automatically when its head is lost (#14). **Off by default (owner, 2026-10-06). Turn it on only once a lost head is fenced through cluster membership or quorum (stormcluster)**, not merely unreachable from stormstorage: a partitioned head that keeps writing to the legs is split-brain. When on, and only on the instance that acts on recovery, the reconciler re-heads a volume when all of these hold: its head has failed polls for `rehead_after_secs`; it is not already fenced (someone else's failover in flight is left alone); it is idle; and a surviving leg on a healthy node reads `in_sync` (from the head's last reading or the legs' superblocks, #48). It then fences the volume at its epoch and promotes that leg's node. Without an in-sync leg it holds, with one warning: promoting a stale copy would lose writes. A failed promote leaves the volume fenced, names the manual promote in an error event, and waits `cooldown_secs`. A WARN is logged at start when it is on. Until it is on, failover is the consumer's tiebreaker's or an operator's (fence + promote). |
+| `[recovery] rehead_after_secs` | `120` | How long the head must have failed its polls before an automatic re-head. |
 | `[legs] host_nqn` | `nqn.2026-10.lo.storm:stormstorage:{node}` | The host NQN a head presents to its legs; `{node}` is the head's node name and is required. Every leg attach (assembly, move, re-leg, promote) names it, so the leg's engine serves the leg from a subsystem that admits that head alone (stormblock#210), and the head's drive URI carries it as `hostnqn=`. Must start `nqn.` and contain no `& ? / #` or spaces (#27). |
 | `[kubernetes] enabled` | `true` | Read each node volume's PV/PVC from the apiserver (#28). |
 | `[kubernetes] server` | `"https://127.0.0.1:6443"` | The apiserver. |
@@ -674,8 +675,6 @@ done. The open work:
   promote, prestage, dual-attach; mock-engine tested). Its live run waits
   on stormcentral#131; enforcement at the legs is stormblock#6, a handover
   from a live head stormblock#296;
-- #14: automatic re-head when the head node is lost (waits on an owner
-  decision);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #30–#32, #34–#36: rebalance, IO-load placement, tier migration, HA

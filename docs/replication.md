@@ -252,9 +252,19 @@ once as an error event. Closing its drives would write into the legs.
 Its writes are refused only once stormblock#6 lands, and it can let go
 only once stormblock#296 does.
 
-Automatic re-head on head loss (#14) is not done here. Promote is the
-mechanism #14 will call; until then it is an explicit call (the
-tiebreaker's, or an operator's).
+**Automatic re-head (#14)** is opt-in and **off by default**
+(`[recovery] rehead`, owner 2026-10-06). Turn it on only once a lost head
+is fenced through cluster membership or quorum, not merely unreachable
+from stormstorage. A partitioned head that keeps writing to the legs is
+split-brain, and until stormblock#6 a fence stops nothing at the legs.
+When it is on, the reconciler re-heads a volume once its head has failed
+for `rehead_after_secs` (default 120). It fences at the volume's epoch
+and promotes a surviving leg that reads `in_sync`, the same evidence
+`/replicas` gives (#48). It never promotes a leg without that evidence,
+and never acts on a volume someone else has already fenced. A consumer's
+tiebreaker that fences first wins the epoch CAS, and the re-head stands
+down. Until it is on, promote is an explicit call (the tiebreaker's, or
+an operator's).
 
 ## Prestage and bandwidth class
 
@@ -306,6 +316,7 @@ is admitted for the window's length.
   already carry the head's `host_nqn`, #27).
 - Handover from a live head (planned promote, dual-attach commit):
   stormblock#296.
-- Automatic re-head when the head is lost: #14, using promote.
+- Automatic re-head (#14) is in, opt-in; turning it on waits on fencing
+  through cluster membership (stormcluster) and stormblock#6.
 - Async catch-up legs for the backup tier: not started. Today every leg
   is a synchronous RAID1 member.

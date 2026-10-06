@@ -150,7 +150,6 @@ The source is `src/registry.rs`, `src/placement.rs`,
 | | Issue |
 |---|---|
 | Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
-| Automatic re-head (promote by hand until then) | #14 |
 | Rebalance on pool watermarks; placement by IO load | #30, #31 (phase 3) |
 | Tier migration between pools | #32 (phase 3) |
 | Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |
@@ -242,7 +241,8 @@ write without the token when `api_token` is set.
     (stormcentral#131);
   - serving to named consumer hosts (#51) is verified only against mock
     engines so far.
-- **Next:** the live runs, then #14 (re-head).
+- **Next:** the live runs; turning on automatic re-head once a lost head
+  is fenced by cluster membership (#14 is in, off by default).
 
 Docs: `README.md` (reference), `docs/architecture.md` (design),
 `CLAUDE.md` (work plan).

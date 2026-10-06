@@ -236,8 +236,6 @@ optimization.
 - **Served to consumers** (*implemented, #2*): a volume pinned to the
   head's array, attached over NVMe-TCP — see *Consumer serving* below.
 - **Not implemented yet:**
-  - automatic re-head when the head node is lost (#14; promote is the
-    manual path);
 - **Serving to named consumer hosts** (*implemented, #51/#53*): a
   consumer names its `host_nqn` (`POST …/export/hosts`, or `hosts` on
   create and export), and the serving engine serves the volume to that
@@ -322,8 +320,11 @@ DistVolume.export  { state: none | published | failed,
   legs on the head and calls `POST /api/v1/arrays/assemble`. The same
   array comes back with its slab and the served volume, which is served
   again (`export.adopted`).
-- *Not done:* a head lost for good (#14; fence + promote by hand or by
-  the consumer's tiebreaker until then).
+- **Automatic re-head** (*implemented, #14; opt-in, off by default*):
+  `[recovery] rehead` fences and promotes an in-sync surviving leg once
+  the head has failed for `rehead_after_secs`. Turn it on only when a lost
+  head is fenced by cluster membership or quorum; until then fence +
+  promote stays with the consumer's tiebreaker or an operator.
 
 **Replication on the RAID head** (*implemented, #33*): the owner chose
 on stormblock#179 (option b) that cross-node RAID1 lives on these heads,
