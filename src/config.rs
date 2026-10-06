@@ -525,6 +525,21 @@ pub struct PoolConfig {
     /// Default spread rung.
     #[serde(default = "default_rung")]
     pub rung: String,
+    /// Rebalance (#30): a node of the pool used above this fraction sheds
+    /// legs… Unset (with `low_watermark`): never rebalanced.
+    #[serde(default)]
+    pub high_watermark: Option<f64>,
+    /// …onto nodes of the pool used below this one, which stay at or
+    /// under `high_watermark` with the leg added.
+    #[serde(default)]
+    pub low_watermark: Option<f64>,
+    /// Rebalance moves in flight in this pool at a time.
+    #[serde(default = "default_max_moves")]
+    pub max_moves: u32,
+}
+
+fn default_max_moves() -> u32 {
+    1
 }
 
 fn default_replicas() -> u32 {

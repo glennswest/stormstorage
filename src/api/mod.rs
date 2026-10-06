@@ -160,6 +160,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/nodes/{name}/inventory", get(node_inventory))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/pools", get(list_pools))
+        .route("/api/v1/pools/{name}/rebalance", get(pool_rebalance))
         .route("/api/v1/placement/plan", post(plan_dry_run))
         .route("/api/v1/volumes", get(list_volumes).post(create_volume))
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
@@ -313,6 +314,39 @@ fn pool_rollup(pool: &PoolConfig, fed: &FedState) -> serde_json::Value {
 
 /// Policy pools from the config, then every node's slabs (a node's own
 /// pools), then the slabs summed per tier across nodes (#9).
+/// What rebalancing would do in a pool now (#30): the moves it would
+/// start and, if none, why. A dry run: nothing is moved.
+async fn pool_rebalance(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let pool = s
+        .config
+        .pools
+        .iter()
+        .find(|p| p.name == name)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("pool {name:?}")))?;
+    let fed = s.fed.read().await;
+    let p = crate::rebalance::plan(
+        &fed,
+        std::slice::from_ref(&pool),
+        &s.config.federation.rungs,
+        s.config.placement.io_weight,
+        &|n| s.replacing.lock().expect("replacing lock").contains(n),
+        SystemTime::now(),
+    );
+    Ok(Json(json!({
+        "pool": name,
+        "enabled": pool.high_watermark.is_some() && pool.low_watermark.is_some(),
+        "high_watermark": pool.high_watermark,
+        "low_watermark": pool.low_watermark,
+        "max_moves": pool.max_moves,
+        "moves": p.moves,
+        "held": p.held.into_iter().map(|h| h.why).collect::<Vec<_>>(),
+    })))
+}
+
 async fn list_pools(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let fed = s.fed.read().await;
     let mut pools: Vec<serde_json::Value> =

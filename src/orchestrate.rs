@@ -912,6 +912,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
     rejoin_heads(state).await;
     reassemble_heads(state, now).await;
     rehead_lost(state, now).await;
+    crate::rebalance::run(state, now).await;
     // Host withdrawals an engine has not taken yet (#51).
     let pending: std::collections::BTreeSet<String> = {
         let fed = state.fed.read().await;

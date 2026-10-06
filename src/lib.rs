@@ -14,6 +14,7 @@ pub mod kube;
 pub mod model;
 pub mod orchestrate;
 pub mod placement;
+pub mod rebalance;
 pub mod refusal;
 pub mod registry;
 pub mod replicate;
