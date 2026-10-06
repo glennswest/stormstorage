@@ -109,9 +109,19 @@ stormview components feed on **:9093**.
 - **Placement.** Picks one node per distinct failure domain at a rung
   (a domain is the node's label chain from the top rung down to that
   rung). Only healthy nodes with `free_bytes ≥ size` count. Within a
-  domain, and between domains, the node with the highest free ratio wins.
-  Ties go to the lower name. The result is deterministic. If there are
-  not enough domains, the request fails with an explanation.
+  domain, and between domains, the node with the highest score wins. The
+  score is `(1−w)·free_ratio + w·(1 − busy/max_busy)`, with
+  `w = [placement] io_weight` (0.3), so hot nodes shed new legs (#31).
+  `busy` is the node's live NVMe-oF load: each poll reads the engine's
+  `stormblock_nvmeof_io_seconds` counters from `/metrics`, and the rate
+  between two polls is I/O-seconds a second, the mean number of I/Os in
+  flight. It covers every leg-to-head and served-mirror I/O, but not
+  local ublk I/O. The node record carries it as `io {iops, busy, at}`,
+  and the feed shows it. A node without a reading counts as the mean of
+  the known ones. With no readings at all, the order is the free ratio's
+  alone, as before. Ties go to the lower name, so the result is
+  deterministic. If there are not enough domains, the request fails with
+  an explanation.
 - **Distributed volumes.** `POST /api/v1/volumes` creates one ordinary
   thin volume per leg through each engine's `/v1/volumes`. If any leg
   fails, the legs already created are rolled back. With two or more legs,
@@ -322,7 +332,7 @@ stormview components feed on **:9093**.
   [docs/replication.md](docs/replication.md).
 
 **Not done yet** (tracked in issues, see [Status](#status)): rebalancing (#30),
-IO-load placement (#31), tier migration (#32), async backup legs (#33)
+tier migration (#32), async backup legs (#33)
 and HA state (#34).
 
 ## Running
@@ -378,6 +388,7 @@ worked example.
 | `[recovery] max_dual_attach_secs` | `3600` | Longest dual-attach window (#33). |
 | `[recovery] rehead` | `false` | Re-head a volume automatically when its head is lost (#14). **Off by default (owner, 2026-10-06). Turn it on only once a lost head is fenced through cluster membership or quorum (stormcluster)**, not merely unreachable from stormstorage: a partitioned head that keeps writing to the legs is split-brain. When on, and only on the instance that acts on recovery, the reconciler re-heads a volume when all of these hold: its head has failed polls for `rehead_after_secs`; it is not already fenced (someone else's failover in flight is left alone); it is idle; and a surviving leg on a healthy node reads `in_sync` (from the head's last reading or the legs' superblocks, #48). It then fences the volume at its epoch and promotes that leg's node. Without an in-sync leg it holds, with one warning: promoting a stale copy would lose writes. A failed promote leaves the volume fenced, names the manual promote in an error event, and waits `cooldown_secs`. A WARN is logged at start when it is on. Until it is on, failover is the consumer's tiebreaker's or an operator's (fence + promote). |
 | `[recovery] rehead_after_secs` | `120` | How long the head must have failed its polls before an automatic re-head. |
+| `[placement] io_weight` | `0.3` | Weight of live I/O load against free space in placement, 0 to 1 (#31). 0 is free space alone. |
 | `[legs] host_nqn` | `nqn.2026-10.lo.storm:stormstorage:{node}` | The host NQN a head presents to its legs; `{node}` is the head's node name and is required. Every leg attach (assembly, move, re-leg, promote) names it, so the leg's engine serves the leg from a subsystem that admits that head alone (stormblock#210), and the head's drive URI carries it as `hostnqn=`. Must start `nqn.` and contain no `& ? / #` or spaces (#27). |
 | `[kubernetes] enabled` | `true` | Read each node volume's PV/PVC from the apiserver (#28). |
 | `[kubernetes] server` | `"https://127.0.0.1:6443"` | The apiserver. |

@@ -343,10 +343,15 @@ capacity ≥ size ∩ tier match), rung, replica count.
 
 1. Group candidates by domain (label-chain prefix at rung).
 2. Require ≥ replicas distinct domains — else a hard, explained error.
-3. Within each domain, **load-balance**: the highest free-capacity ratio
-   wins. Domains are then taken emptiest-first. A node that reports no
-   capacity scores 0 but stays eligible. *(Design: score by live IO load
-   as well, so hot nodes shed new legs. Not implemented, #31.)*
+3. Within each domain, **load-balance**: the highest score wins, and
+   domains are then taken best-first. The score is
+   `(1−w)·free_ratio + w·(1 − busy/max_busy)`, with `w = [placement]
+   io_weight` (0.3), so hot nodes shed new legs (*implemented, #31*).
+   `busy` is the node's NVMe-oF I/O-seconds a second, from the engine's
+   `stormblock_nvmeof_io_seconds` counters between two polls. A node
+   with no reading counts as the mean, so with none at all the order is
+   the free ratio's. A node that reports no capacity has a free ratio of
+   0 but stays eligible.
 4. Deterministic given equal inputs (testable); ties broken by name.
 
 A leg move's automatic target uses the same function over healthy nodes
@@ -471,7 +476,7 @@ stormconsole#53).
    API auth (#6), the test container (#8), and the engine token on every
    call with a back-off for an engine that refuses it (#38).
 3. **Rebalance + tier migration** (#30, #32): policy-driven leg moves;
-   pool capacity watermarks; IO-load placement (#31).
+   pool capacity watermarks (IO-load placement is in, #31).
 4. **Replication on the RAID head** (#33, in the code): sync state,
    fence, promote, prestage, dual-attach over DistVolumes (owner,
    stormblock#179 option b); enforcement at the legs is stormblock#6,

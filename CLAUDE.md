@@ -54,7 +54,8 @@ keeps the rungs distinct.
   node, legs placed across domains at a rung, assembled RAID1 on a head
   node over NVMe-TCP, and **legs move** (add member → rebuild → remove).
 - **Multiple pools**; a pool = node selection + policy (replicas, rung,
-  tier). **Load balancing** in placement (free-ratio now, IO load later).
+  tier). **Load balancing** in placement (free ratio weighted against live
+  NVMe-oF I/O load, #31).
 - stormblock nodes self-register using their existing `[stormfs]`
   heartbeat pointed at stormstorage — zero engine changes to enroll.
 - stormfs v2 consumes `GET /api/v1/nodes` + placed volumes for its

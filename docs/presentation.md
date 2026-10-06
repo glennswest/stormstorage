@@ -109,8 +109,9 @@ The source is `src/registry.rs`, `src/placement.rs`,
 - **Pools.** A pool is a selector (tier, labels, names) plus default
   `replicas` and `rung`. Pools may overlap.
 - **Placement.** Takes one node per distinct failure domain at a rung.
-  Only healthy nodes with enough free space count, and the node with the
-  highest free ratio wins. The result is deterministic. If there are too
+  Only healthy nodes with enough free space count. The best score wins:
+  free ratio, weighted against live NVMe-oF load (#31). The result is
+  deterministic. If there are too
   few domains, the request fails with an explanation.
 - **Volume create.** Creates one thin volume per leg through `/v1`. If a
   leg fails, the legs already made are rolled back.
@@ -150,7 +151,7 @@ The source is `src/registry.rs`, `src/placement.rs`,
 | | Issue |
 |---|---|
 | Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
-| Rebalance on pool watermarks; placement by IO load | #30, #31 (phase 3) |
+| Rebalance on pool watermarks | #30 (phase 3) |
 | Tier migration between pools | #32 (phase 3) |
 | Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |
 | HA state in StormKV/fastetcd | #34 (phase 5) |
