@@ -207,3 +207,94 @@ async fn per_node_token_order_and_no_minted_token_for_a_peer() {
         Some("inline")
     );
 }
+
+/// What a #274 engine was sent: (method path, bearer).
+type Seen = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// A stormblock after #274 (`admin_gate = enforce`): reads and ordinary
+/// verbs on the node token, destructive ones (array create/delete,
+/// members, drive close) on the admin credential only. `gated = false` is
+/// an engine from before #274: it takes the node token for everything and
+/// refuses any other bearer.
+async fn gated_engine(seen: Seen, gated: bool) -> String {
+    use axum::extract::Request;
+    let app = Router::new().fallback(move |req: Request| {
+        let seen = seen.clone();
+        async move {
+            let bearer = req
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .trim_start_matches("Bearer ")
+                .to_string();
+            let what = format!("{} {}", req.method(), req.uri().path());
+            seen.lock().unwrap().push((what.clone(), bearer.clone()));
+            let destructive = what == "POST /api/v1/arrays"
+                || what.starts_with("POST /api/v1/arrays/") && what.ends_with("/members")
+                || (what.starts_with("DELETE ") && !what.ends_with("/attach"));
+            let ok = match (gated, destructive) {
+                (true, true) => bearer == "admin",
+                _ => bearer == "node",
+            };
+            if !ok {
+                return unauthorized();
+            }
+            Json(json!({"id": "arr", "member_uuid": "m1", "items": []})).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// #47: the destructive verbs carry the admin credential, everything else
+/// the node token; an engine from before #274 still works (retry with the
+/// node token after a refused admin bearer).
+#[tokio::test]
+async fn destructive_verbs_carry_the_admin_credential() {
+    use stormstorage::engine::Engine;
+    for gated in [true, false] {
+        let seen: Seen = Default::default();
+        let url = gated_engine(seen.clone(), gated).await;
+        let e = Engine::new(&url, Some("node".into())).with_admin(Some("admin".into()));
+        e.create_raid1(&["d1".into(), "d2".into()]).await.unwrap();
+        e.array_add_member("arr", "d3").await.unwrap();
+        e.array_remove_member("arr", "m1").await.unwrap();
+        e.delete_array("arr").await.unwrap();
+        e.forget_array("arr").await.unwrap();
+        e.delete_drive("nvme-tcp://x", false).await.unwrap();
+        e.list_arrays().await.unwrap();
+        e.detach_any("vol").await.unwrap();
+        let seen = seen.lock().unwrap().clone();
+        let first = |w: &str| seen.iter().find(|(x, _)| x == w).map(|(_, b)| b.clone()).unwrap();
+        assert_eq!(first("POST /api/v1/arrays"), "admin", "{seen:?}");
+        assert_eq!(first("DELETE /api/v1/drives/nvme-tcp:%2F%2Fx"), "admin", "{seen:?}");
+        assert_eq!(first("GET /api/v1/arrays"), "node", "reads stay on the node token");
+        assert_eq!(first("DELETE /api/v1/volumes/vol/attach"), "node", "a detach is ordinary");
+        if gated {
+            assert_eq!(seen.len(), 8, "no retries on an engine that takes the admin credential: {seen:?}");
+        } else {
+            assert_eq!(seen.len(), 14, "each of the 6 destructive calls retried once with the node token: {seen:?}");
+        }
+    }
+}
+
+/// #47: which admin credential an engine is sent.
+#[tokio::test]
+async fn admin_credential_order() {
+    if std::env::var("STORMBLOCK_ADMIN_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
+        return;
+    }
+    let mut config = Config::default();
+    config.local.admin_token_file = Some(token_file("admin-local", "admin-minted").display().to_string());
+    config.kubernetes.token_file = Some(token_file("admin-kube", "kube-bearer").display().to_string());
+    let state = AppState::new(config, FedState::default(), None);
+    assert_eq!(state.admin_credential("http://127.0.0.1:9090").as_deref(), Some("admin-minted"));
+    assert_eq!(
+        state.admin_credential("http://192.0.2.1:9090").as_deref(),
+        Some("kube-bearer"),
+        "a peer gets the Kubernetes bearer, never this machine's admin token"
+    );
+}

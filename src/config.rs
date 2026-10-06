@@ -117,6 +117,14 @@ pub struct LocalConfig {
     /// (#12). The files above hold a token the engine minted for itself,
     /// which is presented only to an engine on this machine.
     pub shared_token_file: Option<String>,
+    /// The engine's **admin** token file, for its destructive verbs
+    /// (array create/delete/members, drive close; stormblock#274, #47).
+    /// Presented only to an engine on this machine, like a minted token.
+    /// No default: stormblock keeps it out of what services mount
+    /// (`/run/stormblock-admin/admin_token`); without it the `[kubernetes]`
+    /// bearer is presented, which the engine reviews against
+    /// `storage-admin`.
+    pub admin_token_file: Option<String>,
     /// Cluster-level tier role given to adopted nodes.
     pub tier: Option<String>,
 }
@@ -130,6 +138,7 @@ impl Default for LocalConfig {
             cluster_peers: true,
             token_file: None,
             shared_token_file: None,
+            admin_token_file: None,
             tier: None,
         }
     }
@@ -176,6 +185,21 @@ impl LocalConfig {
             );
         }
         token_search(None, &token_files(self.token_file.as_deref(), env("STORMBLOCK_TOKEN_FILE").as_deref()))
+    }
+}
+
+impl LocalConfig {
+    /// The admin token for the engine at `url` (#47): `$STORMBLOCK_ADMIN_TOKEN`
+    /// for any engine, else `admin_token_file` for an engine on this machine.
+    pub fn admin_token_for(&self, url: &str) -> Option<String> {
+        if let Some(t) = std::env::var("STORMBLOCK_ADMIN_TOKEN").ok().filter(|v| !v.trim().is_empty()) {
+            return Some(t.trim().to_string());
+        }
+        let file = self.admin_token_file.as_deref()?;
+        if !is_this_machine(url) {
+            return None;
+        }
+        token_search(None, &[file.to_string()]).0
     }
 }
 

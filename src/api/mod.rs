@@ -79,6 +79,19 @@ impl AppState {
 
     pub(crate) fn engine_for(&self, node: &Node) -> Engine {
         Engine::new(&node.config.engine_url, self.engine_token(&node.config))
+            .with_admin(self.admin_credential(&node.config.engine_url))
+    }
+
+    /// What to present for the engine's destructive verbs (#47,
+    /// stormblock#274): its admin token (`$STORMBLOCK_ADMIN_TOKEN`, or
+    /// `[local] admin_token_file` for this machine's engine), else the
+    /// `[kubernetes]` bearer, which the engine reviews with a
+    /// SubjectAccessReview against `storage-admin`.
+    pub fn admin_credential(&self, engine_url: &str) -> Option<String> {
+        self.config
+            .local
+            .admin_token_for(engine_url)
+            .or_else(|| self.config.kubernetes.token())
     }
 
     /// The token to present to a node's engine: its own when the config

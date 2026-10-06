@@ -9,6 +9,11 @@ use std::time::Duration;
 pub struct Engine {
     url: String,
     token: Option<String>,
+    /// The credential for the engine's destructive verbs (#47,
+    /// stormblock#274): the admin token or a Kubernetes bearer allowed
+    /// `storage.storm.io`. `None`: the node token, which an engine with
+    /// `admin_gate = enforce` refuses for them.
+    admin: Option<String>,
     http: reqwest::Client,
 }
 
@@ -57,6 +62,17 @@ impl std::fmt::Display for HttpStatus {
 }
 
 impl std::error::Error for HttpStatus {}
+
+/// What to set when an engine refuses a destructive verb (#47).
+fn admin_hint(status: reqwest::StatusCode) -> &'static str {
+    match status {
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            " — a destructive verb (stormblock#274) needs the engine's admin token \
+             ($STORMBLOCK_ADMIN_TOKEN or [local] admin_token_file) or a [kubernetes] bearer bound to storage-admin"
+        }
+        _ => "",
+    }
+}
 
 /// The engine said 404 — check before the error is wrapped in context.
 pub fn is_not_found(e: &anyhow::Error) -> bool {
@@ -125,11 +141,18 @@ impl Engine {
         Self {
             url: url.trim_end_matches('/').to_string(),
             token,
+            admin: None,
             http: reqwest::Client::builder()
                 .timeout(READ_TIMEOUT)
                 .build()
                 .expect("reqwest client"),
         }
+    }
+
+    /// Present `admin` on the destructive verbs (#47).
+    pub fn with_admin(mut self, admin: Option<String>) -> Self {
+        self.admin = admin.filter(|t| !t.trim().is_empty());
+        self
     }
 
     /// The management API's base URL.
@@ -246,8 +269,56 @@ impl Engine {
             .map(|s| s.to_string())
     }
 
+    /// A destructive verb (stormblock#274: array create/delete, members,
+    /// drive close): with the admin credential when there is one (#47).
+    fn admin_req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let r = self
+            .http
+            .request(method, format!("{}{path}", self.url))
+            .timeout(MUTATE_TIMEOUT);
+        match self.admin.as_ref().or(self.token.as_ref()) {
+            Some(t) if !t.is_empty() => r.bearer_auth(t),
+            _ => r,
+        }
+    }
+
     async fn v1_post(&self, path: &str, body: Value) -> anyhow::Result<Value> {
-        let resp = self.req(reqwest::Method::POST, path).json(&body).send().await?;
+        self.post_json(self.req(reqwest::Method::POST, path), path, body).await
+    }
+
+    /// Send a destructive verb with the admin credential; if the engine
+    /// refuses it (401/403) and it is not the node token, once more with
+    /// the node token — an engine from before stormblock#274 gates nothing
+    /// and does not review Kubernetes bearers.
+    async fn admin_send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> anyhow::Result<reqwest::Response> {
+        let with = |rb: reqwest::RequestBuilder| match body {
+            Some(b) => rb.json(b),
+            None => rb,
+        };
+        let resp = with(self.admin_req(method.clone(), path)).send().await?;
+        let refused = matches!(resp.status(), reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN);
+        if refused && self.admin.is_some() && self.admin != self.token {
+            return Ok(with(self.req(method, path)).send().await?);
+        }
+        Ok(resp)
+    }
+
+    async fn admin_post(&self, path: &str, body: Value) -> anyhow::Result<Value> {
+        let resp = self.admin_send(reqwest::Method::POST, path, Some(&body)).await?;
+        Self::read_post(path, resp).await
+    }
+
+    async fn post_json(&self, rb: reqwest::RequestBuilder, path: &str, body: Value) -> anyhow::Result<Value> {
+        let resp = rb.json(&body).send().await?;
+        Self::read_post(path, resp).await
+    }
+
+    async fn read_post(path: &str, resp: reqwest::Response) -> anyhow::Result<Value> {
         let status = resp.status();
         let out: Value = resp.json().await.unwrap_or(Value::Null);
         if !status.is_success() {
@@ -551,14 +622,14 @@ impl Engine {
     /// are now another head's (#33).
     pub async fn forget_array(&self, id: &str) -> anyhow::Result<()> {
         let resp = self
-            .req(
+            .admin_send(
                 reqwest::Method::DELETE,
                 &format!("/api/v1/arrays/{id}?keep_superblocks=true"),
+                None,
             )
-            .send()
             .await?;
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-            anyhow::bail!("forget array {id}: {}", resp.status());
+            anyhow::bail!("forget array {id}: {}{}", resp.status(), admin_hint(resp.status()));
         }
         Ok(())
     }
@@ -575,7 +646,7 @@ impl Engine {
 
     /// POST /api/v1/arrays — RAID1 across already-opened drives.
     pub async fn create_raid1(&self, drive_uuids: &[String]) -> anyhow::Result<Value> {
-        self.v1_post(
+        self.admin_post(
             "/api/v1/arrays",
             serde_json::json!({ "level": "Raid1", "drive_uuids": drive_uuids }),
         )
@@ -609,11 +680,10 @@ impl Engine {
 
     pub async fn delete_array(&self, id: &str) -> anyhow::Result<()> {
         let resp = self
-            .req(reqwest::Method::DELETE, &format!("/api/v1/arrays/{id}"))
-            .send()
+            .admin_send(reqwest::Method::DELETE, &format!("/api/v1/arrays/{id}"), None)
             .await?;
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-            anyhow::bail!("delete array {id}: {}", resp.status());
+            anyhow::bail!("delete array {id}: {}{}", resp.status(), admin_hint(resp.status()));
         }
         Ok(())
     }
@@ -621,7 +691,7 @@ impl Engine {
     /// POST /api/v1/arrays/{id}/members — returns the member uuid.
     pub async fn array_add_member(&self, array_id: &str, drive_uuid: &str) -> anyhow::Result<String> {
         let v = self
-            .v1_post(
+            .admin_post(
                 &format!("/api/v1/arrays/{array_id}/members"),
                 serde_json::json!({ "drive_uuid": drive_uuid }),
             )
@@ -634,14 +704,14 @@ impl Engine {
 
     pub async fn array_remove_member(&self, array_id: &str, member_uuid: &str) -> anyhow::Result<()> {
         let resp = self
-            .req(
+            .admin_send(
                 reqwest::Method::DELETE,
                 &format!("/api/v1/arrays/{array_id}/members/{member_uuid}"),
+                None,
             )
-            .send()
             .await?;
         if !resp.status().is_success() {
-            anyhow::bail!("remove member {member_uuid}: {}", resp.status());
+            anyhow::bail!("remove member {member_uuid}: {}{}", resp.status(), admin_hint(resp.status()));
         }
         Ok(())
     }
@@ -707,11 +777,10 @@ impl Engine {
         let enc = id_or_path.replace('%', "%25").replace('/', "%2F");
         let q = if force { "?force=true" } else { "" };
         let resp = self
-            .req(reqwest::Method::DELETE, &format!("/api/v1/drives/{enc}{q}"))
-            .send()
+            .admin_send(reqwest::Method::DELETE, &format!("/api/v1/drives/{enc}{q}"), None)
             .await?;
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-            anyhow::bail!("close drive {id_or_path}: {}", resp.status());
+            anyhow::bail!("close drive {id_or_path}: {}{}", resp.status(), admin_hint(resp.status()));
         }
         Ok(())
     }
