@@ -225,7 +225,12 @@ stormview components feed on **:9093**.
 - **Delete.** Revokes the export first: it detaches the served volume and
   deletes it. The head's array refuses deletion while a volume is pinned
   to it, so if this fails on a reachable head, the record is kept and the
-  API returns 502. It then tears the assembly down (array, head drives, leg
+  API returns 502. The export is then `revoking` (#24). The engine may
+  have deleted the served volume even though its answer never came, so a
+  `revoking` export is never attached again. A recovery skips it, and
+  `POST …/export` is a 409 that says to delete it again. A retried DELETE
+  finishes, because a served volume that is already gone counts as
+  deleted. It then tears the assembly down (array, head drives, leg
   exports). This step is best-effort, and problems are logged as a warning
   event. Then it deletes every leg volume, including a replacement leg in
   flight. A leg on an unreachable node is recorded as an orphan to reap
