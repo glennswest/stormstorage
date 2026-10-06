@@ -515,7 +515,7 @@ minted-if-local. The refusal log says which applied. Unit tests of the
 choice; tests/token.rs: a remote peer is not sent the minted token.
 Done: c944a27; sc-build passes (67 unit, token 4/4).
 
-### Reassemble the array after the head's engine restarts (#15 + #43, P2) — in progress 2026-10-06
+### Reassemble the array after the head's engine restarts (#15 + #43, P2) — DONE 2026-10-06
 stormblock#252: an engine reassembles arrays from v2 superblocks itself
 only for configured drives; runtime `nvme-tcp://` legs need re-opening and
 `POST /api/v1/arrays/assemble`; create 409s on held legs. Plan: factor
@@ -531,11 +531,13 @@ gated by `recovery.active`, cooldown `next_assemble_after` on failure.
 superblock → assemble instead of retrying. Test: tests/replication.rs mock
 head drops its arrays + drives (restart) → reassembled, same array id,
 served again. Stale #7 note about stormblock#215 fixed.
+Done: aeb7bef; sc-build passes (replication 7/7). Live: an engine restart
+in the e2e waits on stormcentral#131.
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
-- [ ] #14 re-head — waits on the owner (2026-10-06: auto re-head (a) never, (b) opt-in now, (c) once stormblock#6 enforces fencing; promote is the mechanism); #15
-      reassemble after head engine restart; #35 forward announcements
+- [x] #15 reassemble after head engine restart (done 2026-10-06).
+- [ ] #14 re-head — waits on the owner (2026-10-06: auto re-head (a) never, (b) opt-in now, (c) once stormblock#6 enforces fencing; promote is the mechanism); #35 forward announcements
       to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
