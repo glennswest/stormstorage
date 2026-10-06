@@ -112,7 +112,7 @@ async fn v1_attach(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Val
     if !m.volumes.contains_key(&id) || b["node"] != m.node.as_str() || b["transport"] != "nvme_tcp" {
         return (StatusCode::NOT_FOUND, Json(json!({"message": id})));
     }
-    m.log.push(format!("attach {id} epoch={}", b["epoch"]));
+    m.log.push(format!("attach {id} host={} epoch={}", b["host_nqn"].as_str().unwrap_or("-"), b["epoch"]));
     let nsid = id.rsplit('-').next().unwrap().parse::<u32>().unwrap();
     let node = m.node.clone();
     (StatusCode::OK, Json(coords(&node, nsid)))
@@ -478,6 +478,9 @@ async fn fence_then_promote_after_the_head_is_lost() {
         assert!(!m.volumes.values().any(|v| v.0 == "p-mirror"), "no new served volume made");
         // The leg was attached at its fenced epoch.
         assert!(m.log.iter().any(|l| l.starts_with("attach ") && l.ends_with("epoch=2")), "{:?}", m.log);
+        // …and served to the new head alone (#27).
+        let host = format!("host=nqn.2026-10.lo.storm:stormstorage:{target} epoch=2");
+        assert!(m.log.iter().any(|l| l.starts_with("attach ") && l.ends_with(&host)), "{:?}", m.log);
         assert_eq!(m.rates[&array], 200 << 20, "normal class rate on the new head");
     }
     // Promote again at the same epoch: no longer fenced.

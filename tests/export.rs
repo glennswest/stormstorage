@@ -85,7 +85,11 @@ async fn v1_attach(
     let n = m.attached.len() as u32 + 1;
     let nsid = *m.attached.entry(id.clone()).or_insert(n);
     m.log.push(format!("attach {id}"));
-    let nqn = format!("nqn.2024.io.stormblock:{}", m.node);
+    // stormblock#210: named host → that host's own subsystem.
+    let nqn = match b["host_nqn"].as_str() {
+        Some(h) => format!("nqn.2024.io.stormblock:{}:host:{h}", m.node),
+        None => format!("nqn.2024.io.stormblock:{}", m.node),
+    };
     (
         StatusCode::OK,
         Json(json!({"transport": "nvme_tcp", "nqn": nqn, "nsid": nsid,
@@ -252,6 +256,19 @@ async fn assembled_volume_is_served_from_the_array_and_revoked_first() {
         assert!(m.attached.contains_key(&served));
     }
     assert!(v["legs"].as_array().unwrap().iter().all(|l| l["volume_id"] != served.as_str()));
+    // Each leg is served to the head alone (#27): attached for its host
+    // NQN, opened with `hostnqn=` from the per-host subsystem.
+    let host = format!("nqn.2026-10.lo.storm:stormstorage:{head}");
+    {
+        let m = mocks[&head].lock().unwrap();
+        for leg in v["legs"].as_array().unwrap() {
+            let e = &leg["export"];
+            assert_eq!(e["host_nqn"], host.as_str(), "{leg}");
+            assert!(e["nqn"].as_str().unwrap().ends_with(&format!(":host:{host}")), "{e}");
+            let path = &m.drives[leg["drive_uuid"].as_str().unwrap()];
+            assert!(path.ends_with(&format!("&hostnqn={host}")), "{path}");
+        }
+    }
     // A wildcard listen address is replaced by the engine's host.
     assert_eq!(ex["coordinates"]["traddr"], "127.0.0.1");
     assert_eq!(ex["coordinates"]["nqn"], format!("nqn.2024.io.stormblock:{head}"));

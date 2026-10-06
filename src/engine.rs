@@ -20,14 +20,24 @@ pub struct AttachedLeg {
     pub traddr: String,
     pub trsvcid: u16,
     pub nsid: u32,
+    /// The host the namespace is served to (#27, stormblock#210): the head
+    /// presents it on connect (`hostnqn=` in the drive URI). `None` for a
+    /// leg attached before #27 or a consumer export — the shared subsystem.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_nqn: Option<String>,
 }
 
 impl AttachedLeg {
     pub fn drive_uri(&self) -> String {
-        format!(
+        let mut u = format!(
             "nvme-tcp://{}:{}/{}?nsid={}",
             self.traddr, self.trsvcid, self.nqn, self.nsid
-        )
+        );
+        if let Some(h) = &self.host_nqn {
+            u.push_str("&hostnqn=");
+            u.push_str(h);
+        }
+        u
     }
 }
 
@@ -229,14 +239,23 @@ impl Engine {
     /// namespace and return the attach coordinates. `node` must be the
     /// volume's master node (the engine's own name, captured at create).
     pub async fn attach_volume(&self, id: &str, node: &str) -> anyhow::Result<AttachedLeg> {
-        self.attach_leg(id, node, None).await
+        self.attach_leg(id, node, None, None).await
     }
 
-    /// [`Self::attach_volume`] presenting the leg's fencing epoch (#33): the
-    /// attach contract of stormblock#6, under which an engine refuses an
-    /// attach at an epoch other than the volume's (412 `stale_epoch`).
-    /// Engines before #6 ignore the field.
-    pub async fn attach_leg(&self, id: &str, node: &str, epoch: Option<u64>) -> anyhow::Result<AttachedLeg> {
+    /// [`Self::attach_volume`] for a RAID leg: served to `host_nqn` alone,
+    /// the head that opens it (#27, stormblock#210: a closed engine refuses
+    /// an attach that names no host; it serves the volume from that host's
+    /// own subsystem, whose NQN the reply carries). With the leg's fencing
+    /// epoch (#33): the attach contract of stormblock#6, under which an
+    /// engine refuses an attach at an epoch other than the volume's (412
+    /// `stale_epoch`). Engines before #6 / #210 ignore the fields.
+    pub async fn attach_leg(
+        &self,
+        id: &str,
+        node: &str,
+        epoch: Option<u64>,
+        host_nqn: Option<&str>,
+    ) -> anyhow::Result<AttachedLeg> {
         // Network coordinates even though `node` is the engine itself — the
         // head or client is elsewhere (stormblock#149, v19.1.1; older
         // engines ignore the field).
@@ -244,8 +263,13 @@ impl Engine {
         if let Some(e) = epoch {
             body["epoch"] = serde_json::json!(e);
         }
+        if let Some(h) = host_nqn {
+            body["host_nqn"] = serde_json::json!(h);
+        }
         let v = self.v1_post(&format!("/v1/volumes/{id}/attach"), body).await?;
-        self.parse_attach(id, &v)
+        let mut att = self.parse_attach(id, &v)?;
+        att.host_nqn = host_nqn.map(str::to_string);
+        Ok(att)
     }
 
     /// The coordinates in an attach answer (`/v1` and `/api/v1` return the
@@ -297,6 +321,7 @@ impl Engine {
             traddr,
             trsvcid,
             nsid,
+            host_nqn: None,
         })
     }
 
@@ -767,11 +792,28 @@ mod tests {
             traddr: "10.0.0.2".into(),
             trsvcid: 4420,
             nsid: 7,
+            host_nqn: None,
         };
         assert_eq!(
             leg.drive_uri(),
             "nvme-tcp://10.0.0.2:4420/nqn.2024.io.stormblock:b?nsid=7"
         );
+        // Served to one head (#27): the URI names it, as stormblock parses it.
+        let hosted = AttachedLeg {
+            nqn: "nqn.2024.io.stormblock:b:host:0123456789abcdef".into(),
+            host_nqn: Some("nqn.2026-10.lo.storm:stormstorage:a".into()),
+            ..leg.clone()
+        };
+        assert_eq!(
+            hosted.drive_uri(),
+            "nvme-tcp://10.0.0.2:4420/nqn.2024.io.stormblock:b:host:0123456789abcdef?nsid=7\
+             &hostnqn=nqn.2026-10.lo.storm:stormstorage:a"
+        );
+        // A record from before #27 has no host and keeps its URI.
+        let old: AttachedLeg =
+            serde_json::from_str(r#"{"nqn":"n","traddr":"h","trsvcid":4420,"nsid":1}"#).unwrap();
+        assert_eq!(old.host_nqn, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("host_nqn"));
 
         let e = Engine::new("http://192.168.8.150:9090", None);
         assert_eq!(e.host(), "192.168.8.150");

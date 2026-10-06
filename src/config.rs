@@ -15,6 +15,7 @@ pub struct Config {
     pub replication: ReplicationConfig,
     pub local: LocalConfig,
     pub recovery: RecoveryConfig,
+    pub legs: LegsConfig,
     pub kubernetes: KubeConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
@@ -259,10 +260,52 @@ impl Default for Config {
             replication: ReplicationConfig::default(),
             local: LocalConfig::default(),
             recovery: RecoveryConfig::default(),
+            legs: LegsConfig::default(),
             kubernetes: KubeConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }
+    }
+}
+
+/// How a leg is served to its head (#27, stormblock#210).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LegsConfig {
+    /// The host NQN a head presents to its legs; `{node}` is the head's
+    /// node name. Each leg is attached for this NQN alone (served from a
+    /// subsystem of that host's own), and the head's drive URI carries it
+    /// as `hostnqn=`, so the head presents exactly this name whatever its
+    /// engine's default initiator NQN is.
+    pub host_nqn: String,
+}
+
+impl Default for LegsConfig {
+    fn default() -> Self {
+        Self { host_nqn: "nqn.2026-10.lo.storm:stormstorage:{node}".into() }
+    }
+}
+
+impl LegsConfig {
+    /// The host NQN of head `node`.
+    pub fn host_nqn_for(&self, node: &str) -> String {
+        self.host_nqn.replace("{node}", node)
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        let n = self.host_nqn_for("x");
+        // What the engine accepts (nqn., at most 223 bytes); `&`, `?`,
+        // `/` and whitespace would break the drive URI it rides in.
+        if !n.starts_with("nqn.") || self.host_nqn.len() > 200 {
+            anyhow::bail!("legs.host_nqn {:?}: must start with nqn. and be short (≤ 200)", self.host_nqn);
+        }
+        if !self.host_nqn.contains("{node}") {
+            anyhow::bail!("legs.host_nqn {:?}: needs {{node}}, so each head has its own", self.host_nqn);
+        }
+        if n.chars().any(|c| matches!(c, '&' | '?' | '/' | '#') || c.is_whitespace()) {
+            anyhow::bail!("legs.host_nqn {:?}: no & ? / # or spaces (it goes into a drive URI)", self.host_nqn);
+        }
+        Ok(())
     }
 }
 
@@ -449,6 +492,7 @@ impl Config {
                 );
             }
         }
+        self.legs.validate()?;
         if self.poll.interval_secs == 0 {
             anyhow::bail!("poll.interval_secs must be non-zero");
         }
@@ -463,7 +507,7 @@ impl Config {
 fn unknown_top_level_keys(text: &str) -> Vec<String> {
     const KNOWN: &[&str] = &[
         "listen_addr", "data_dir", "federation", "poll", "api", "replication",
-        "local", "recovery", "kubernetes", "nodes", "pools",
+        "local", "recovery", "legs", "kubernetes", "nodes", "pools",
     ];
     match text.parse::<toml::Table>() {
         Ok(t) => t.keys().filter(|k| !KNOWN.contains(&k.as_str())).cloned().collect(),
@@ -580,6 +624,19 @@ mod tests {
         assert!(t.is_none());
         assert!(why.contains("missing") && why.contains("is empty"), "{why}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legs_host_nqn_template() {
+        let l = LegsConfig::default();
+        assert_eq!(l.host_nqn_for("server1"), "nqn.2026-10.lo.storm:stormstorage:server1");
+        let c: Config = toml::from_str("[legs]\nhost_nqn = \"nqn.x:h-{node}\"\n").unwrap();
+        assert_eq!(c.legs.host_nqn_for("a"), "nqn.x:h-a");
+        c.validate().unwrap();
+        for bad in ["nqn.x:fixed", "iqn.x:{node}", "nqn.x:{node}&y"] {
+            let c = Config { legs: LegsConfig { host_nqn: bad.into() }, ..Config::default() };
+            assert!(c.validate().is_err(), "{bad}");
+        }
     }
 
     #[test]

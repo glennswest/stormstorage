@@ -459,7 +459,7 @@ async fn promote_claimed(
         // Promoting the head it already has: it keeps the array, now at the
         // new epoch. Its legs are re-attached at their fenced epochs.
         let mut vol = vol;
-        reattach_legs(&mut vol, &engines).await;
+        reattach_legs(state, &mut vol, &engines, target).await;
         vol.fenced = false;
         store(state, vol).await;
         event(state, name, Severity::Info, format!("{name}: {target} stays head at epoch {fenced_epoch}")).await;
@@ -485,13 +485,14 @@ async fn promote_claimed(
         .filter(|&i| vol.legs[i].state == LegState::Created && engines.contains_key(&vol.legs[i].node))
         .collect();
     let mut drive_uuids = Vec::new();
+    let host = state.config.legs.host_nqn_for(target);
     for &i in &surviving {
         let leg = &mut vol.legs[i];
         let engine = engines.get(&leg.node).expect("surviving");
         let vid = leg.volume_id.clone().expect("created");
         let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
         let att = engine
-            .attach_leg(&vid, &master, leg.epoch)
+            .attach_leg(&vid, &master, leg.epoch, Some(&host))
             .await
             .map_err(|e| Refusal::Upstream(format!("{}: attach leg: {e:#}", leg.node)))?;
         let uri = att.drive_uri();
@@ -625,15 +626,18 @@ async fn promote_claimed(
 pub const RELEASE_ISSUE: u32 = 296;
 
 async fn reattach_legs(
+    state: &Arc<AppState>,
     vol: &mut DistVolume,
     engines: &std::collections::BTreeMap<String, crate::engine::Engine>,
+    head: &str,
 ) {
+    let host = state.config.legs.host_nqn_for(head);
     for leg in vol.legs.iter_mut().filter(|l| l.state == LegState::Created) {
         let (Some(engine), Some(vid)) = (engines.get(&leg.node), leg.volume_id.clone()) else {
             continue;
         };
         let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
-        if let Ok(att) = engine.attach_leg(&vid, &master, leg.epoch).await {
+        if let Ok(att) = engine.attach_leg(&vid, &master, leg.epoch, Some(&host)).await {
             leg.export = Some(att);
         }
     }

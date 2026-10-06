@@ -103,17 +103,21 @@ async fn assemble_inner(
     head: &str,
     head_engine: &crate::engine::Engine,
 ) -> anyhow::Result<()> {
-    // 1. Export every leg (idempotent on the engine side: attach re-returns
-    //    the namespace it already hot-added).
+    // 1. Export every leg to the head alone (idempotent on the engine side:
+    //    attach re-returns the namespace it already hot-added).
+    let host = state.config.legs.host_nqn_for(head);
     for leg in vol.legs.iter_mut() {
-        if leg.export.is_some() {
+        // Kept: an export for this head, or one from before #27 (no host;
+        // its URI is what an array made then holds). One made for another
+        // head is attached again for this one.
+        if leg.export.as_ref().is_some_and(|x| x.host_nqn.as_deref().map_or(true, |h| h == host)) {
             continue;
         }
         let engine = engines.get(&leg.node).expect("leg engine");
         let vid = leg.volume_id.as_deref().expect("checked created");
         let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
         let att = engine
-            .attach_leg(vid, &master, leg.epoch)
+            .attach_leg(vid, &master, leg.epoch, Some(&host))
             .await
             .map_err(|e| anyhow::anyhow!("{}: attach: {e:#}", leg.node))?;
         leg.export = Some(att);
@@ -464,8 +468,9 @@ async fn build_replacement(
     let wired: anyhow::Result<()> = async {
         let vid = leg.volume_id.clone().expect("set");
         let master = leg.master_node.clone().expect("set");
+        let host = state.config.legs.host_nqn_for(&head);
         let att = target_engine
-            .attach_volume(&vid, &master)
+            .attach_leg(&vid, &master, None, Some(&host))
             .await
             .map_err(|e| anyhow::anyhow!("{target}: attach: {e:#}"))?;
         let uri = att.drive_uri();
