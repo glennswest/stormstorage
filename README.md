@@ -122,6 +122,29 @@ stormview components feed on **:9093**.
   alone, as before. Ties go to the lower name, so the result is
   deterministic. If there are not enough domains, the request fails with
   an explanation.
+- **Tier migration (#32).** `POST /api/v1/volumes/{name}/migrate {pool}`
+  moves every leg of an assembled volume into another pool, for example
+  from the 3.5" cluster's pool to the 2.5" one. It is refused (409) when
+  the volume is not assembled or is a single leg, is fenced, replacing a
+  leg or in a dual-attach window, or already has every leg in that pool.
+  It is also refused when the destination cannot hold every leg in
+  distinct domains at its rung now. Asking again for the same pool returns
+  the migration in flight. The volume then carries
+  `migration {to_pool, from_pool, started_at, state, message}`. After each
+  poll, on the instance that acts on recovery, the reconciler moves one
+  leg at a time: the next leg outside the pool that is not the head's,
+  to the best node of the pool in a domain distinct from the legs that
+  stay. It uses the leg-move sequence (reason `tier migration`), so the
+  volume never has fewer copies. **The head's own leg moves by promote
+  only**, and a handover from a live head needs stormblock#296. So once
+  only that leg is outside the pool, the migration is `waiting_handover`,
+  with an event saying so. When every leg is in the pool, the volume's
+  `pool` and `rung` become the destination's and the migration is
+  cleared. A blocked step (a lost leg, no room) is an event once, and a
+  move that cannot start waits `recovery.cooldown_secs`.
+  `DELETE …/migrate` cancels: legs already moved stay, and a move in
+  flight finishes. Rebalance leaves a migrating volume alone. The feed
+  shows `migrating → <pool>`.
 - **Rebalance (#30).** Opt-in per pool: a `[[pools]]` entry with
   `high_watermark` and `low_watermark` (fractions of a node used) is
   rebalanced; a pool without them never is. After each poll, on the
@@ -354,9 +377,9 @@ stormview components feed on **:9093**.
   Enforcement at the legs is stormblock#6, to the contract in
   [docs/replication.md](docs/replication.md).
 
-**Not done yet** (tracked in issues, see [Status](#status)):
-tier migration (#32), async backup legs (#46)
-and HA state (#34).
+**Not done yet** (tracked in issues, see [Status](#status)): async backup
+legs (#46), HA state (#34), and moving a head by handover (stormblock#296),
+which is what a tier migration of the head's own leg waits on.
 
 ## Running
 
@@ -532,6 +555,8 @@ with a token set, their Delete/Publish actions get 401.
 | DELETE | `/api/v1/volumes/{name}/export/hosts/{host_nqn}` | Stop serving it to that host: `{host_nqn, withdrawn: done\|pending\|nothing_served}`. |
 | POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
 | DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
+| POST | `/api/v1/volumes/{name}/migrate` | Body `{pool}`. Tier migration (#32): every leg moves into that pool, one at a time; the head's own leg waits on a handover (stormblock#296). Returns the `migration`. 404 for an unknown volume or pool, 409 when it cannot start (see *Tier migration*). |
+| DELETE | `/api/v1/volumes/{name}/migrate` | Cancel the tier migration: `{cancelled}`. Legs already moved stay. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
 | GET | `/api/v1/orphans` | Leg volumes left on unreachable nodes: `{orphans: [{node, volume_id, master_node, of_volume, reason, since}]}`. Reaped when the node answers. |
 | GET | `/api/v1/events?since=<seq>` | Event ring (4096 entries, in memory): `{latest_seq, events}`. |
@@ -727,6 +752,6 @@ done. The open work:
   from a live head stormblock#296;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #32, #34–#36: tier migration, HA
+- #34–#36: HA
   state, forwarding announcements to stormfs, and the stormblock-csi
   analysis.

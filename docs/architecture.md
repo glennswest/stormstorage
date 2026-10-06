@@ -370,14 +370,20 @@ It runs only when every node of the pool answers, keeps at most
 
 ### Tiering across clusters
 
-*Design, not implemented (#32).* Today a tier is only a node attribute that
-pool selectors and create requests filter on.
+*Tier migration is implemented (#32); async backup legs are not (#46).* A
+tier is a node attribute that pool selectors and create requests filter
+on, and a volume can move between pools.
 
 A tier can be an entire cluster (testbed: 2.5" = high, 3.5" = medium,
-PVE = backup). Tier migration = leg moves between pools: create legs in
-the destination pool, mirror over, drop source legs. The backup tier is
-asymmetric by design — an async catchup leg (engine #5/#6/#7 machinery
-when it lands), not a synchronous mirror member.
+PVE = backup). Tier migration = leg moves between pools:
+`POST /api/v1/volumes/{name}/migrate {pool}` moves one non-head leg at a
+time into the destination pool through the leg-move sequence (new leg,
+rebuild, old leg retired). When every leg is there, the volume's pool
+changes. The head's own leg moves by promote only. A handover from a live
+head waits on stormblock#296, so until then a migration ends
+`waiting_handover` with every other leg moved. The backup tier is
+asymmetric by design: an async catch-up leg, not a synchronous mirror
+member. Its design pass is [async-legs.md](async-legs.md) (#46).
 
 ### StormFS
 
@@ -481,9 +487,8 @@ stormconsole#53).
    Also since v0.3.0: local adoption and node inventory (#9, #11), inbound
    API auth (#6), the test container (#8), and the engine token on every
    call with a back-off for an engine that refuses it (#38).
-3. **Rebalance + tier migration** (#30, #32): rebalance by pool
-   watermarks and IO-load placement (#31) are in; tier migration (#32)
-   is not.
+3. **Rebalance + tier migration** (#30, #31, #32): in. Moving the
+   head's own leg waits on a live handover (stormblock#296).
 4. **Replication on the RAID head** (#33, in the code): sync state,
    fence, promote, prestage, dual-attach over DistVolumes (owner,
    stormblock#179 option b); enforcement at the legs is stormblock#6,

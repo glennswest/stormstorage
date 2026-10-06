@@ -151,7 +151,6 @@ The source is `src/registry.rs`, `src/placement.rs`,
 | | Issue |
 |---|---|
 | Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
-| Tier migration between pools | #32 (phase 3) |
 | Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |
 | HA state in StormKV/fastetcd | #34 (phase 5) |
 
