@@ -402,10 +402,20 @@ aborted|failed, bytes_remaining, T's volume for the kubelet) →
 S) or `…/abort` (delete T). Persisted, events, feed, auth, tests against a
 mock engine. Consumer: rustkube-node#40.
 
+### Head leg back from lost (#26, P1) — in progress 2026-10-06
+A head that misses `fail_threshold` polls marks its own leg lost and the
+volume degraded; nothing brought it back. Plan: in the reconciler, for a
+degraded, unfenced, idle volume whose head leg is lost and whose head is
+healthy again, read the head's array (this poll's reading, else
+`GET /api/v1/arrays/{id}`, 404 = gone). Head member active → leg
+`created`, assembly `assembled` when no leg is lost, Info event. Array
+gone (#15) or member not active → stays degraded, one Warning event per
+change (dedup on the leg's message). Pure `apply_head_reading` + unit
+tests; tests/rejoin.rs against a mock engine.
+
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
-      reassemble after head engine restart; #26 stalled head leg stays
-      lost; #27 host_nqn on attach; #35 forward announcements
+      reassemble after head engine restart; #27 host_nqn on attach; #35 forward announcements
       to stormfs; #42 the registry entry's config has `token_file` at the
       top level (ignored, now warned; the default paths find the token
       anyway since ef3af98) — entry fix is stormcentral#72.
