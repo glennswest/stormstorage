@@ -17,6 +17,7 @@ pub struct Config {
     pub recovery: RecoveryConfig,
     pub legs: LegsConfig,
     pub kubernetes: KubeConfig,
+    pub placement: PlacementConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
 }
@@ -361,9 +362,26 @@ impl Default for Config {
             recovery: RecoveryConfig::default(),
             legs: LegsConfig::default(),
             kubernetes: KubeConfig::default(),
+            placement: PlacementConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }
+    }
+}
+
+/// How placement ranks candidates (#31).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlacementConfig {
+    /// Weight of live I/O load against free space, 0..1: a candidate's
+    /// score is `(1−w)·free_ratio + w·(1 − busy/max_busy)`. 0 = free space
+    /// alone, as before #31.
+    pub io_weight: f64,
+}
+
+impl Default for PlacementConfig {
+    fn default() -> Self {
+        Self { io_weight: 0.3 }
     }
 }
 
@@ -610,7 +628,7 @@ impl Config {
 fn unknown_top_level_keys(text: &str) -> Vec<String> {
     const KNOWN: &[&str] = &[
         "listen_addr", "data_dir", "federation", "poll", "api", "replication",
-        "local", "recovery", "legs", "kubernetes", "nodes", "pools",
+        "local", "recovery", "legs", "kubernetes", "placement", "nodes", "pools",
     ];
     match text.parse::<toml::Table>() {
         Ok(t) => t.keys().filter(|k| !KNOWN.contains(&k.as_str())).cloned().collect(),

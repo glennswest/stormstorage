@@ -63,6 +63,33 @@ impl std::fmt::Display for HttpStatus {
 
 impl std::error::Error for HttpStatus {}
 
+/// `_count` and `_sum` of `stormblock_nvmeof_io_seconds` in a Prometheus
+/// text exposition, each summed over every label set. Pure.
+pub fn parse_io_metrics(text: &str) -> Option<(f64, f64)> {
+    const NAME: &str = "stormblock_nvmeof_io_seconds";
+    let (mut count, mut sum, mut seen) = (0.0, 0.0, false);
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix(NAME) else { continue };
+        let (which, rest) = if let Some(r) = rest.strip_prefix("_count") {
+            (&mut count, r)
+        } else if let Some(r) = rest.strip_prefix("_sum") {
+            (&mut sum, r)
+        } else {
+            continue;
+        };
+        if !(rest.starts_with('{') || rest.starts_with(' ')) {
+            continue;
+        }
+        // The value follows the label set (labels may hold spaces).
+        let after = rest.rsplit_once('}').map(|(_, v)| v).unwrap_or(rest);
+        if let Some(v) = after.split_whitespace().next().and_then(|v| v.parse::<f64>().ok()) {
+            *which += v;
+            seen = true;
+        }
+    }
+    seen.then_some((count, sum))
+}
+
 /// What to set when an engine refuses a destructive verb (#47).
 fn admin_hint(status: reqwest::StatusCode) -> &'static str {
     match status {
@@ -153,6 +180,14 @@ impl Engine {
     pub fn with_admin(mut self, admin: Option<String>) -> Self {
         self.admin = admin.filter(|t| !t.trim().is_empty());
         self
+    }
+
+    /// `GET /metrics`: the `stormblock_nvmeof_io_seconds` histogram's
+    /// `_count` and `_sum`, summed over its labels (#31). `None` when the
+    /// engine does not export it.
+    pub async fn io_counters(&self) -> anyhow::Result<Option<(f64, f64)>> {
+        let text = self.get("/metrics").send().await?.error_for_status()?.text().await?;
+        Ok(parse_io_metrics(&text))
     }
 
     /// The management API's base URL.
@@ -950,6 +985,22 @@ fn first_capacity_object(v: &Value) -> Option<&serde_json::Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn io_metrics_are_summed_over_labels() {
+        let text = "# HELP stormblock_nvmeof_io_seconds x\n\
+            # TYPE stormblock_nvmeof_io_seconds summary\n\
+            stormblock_nvmeof_io_seconds{op=\"read\",quantile=\"0.5\"} 0.001\n\
+            stormblock_nvmeof_io_seconds_sum{op=\"read\"} 1.5\n\
+            stormblock_nvmeof_io_seconds_count{op=\"read\"} 1000\n\
+            stormblock_nvmeof_io_seconds_sum{op=\"write two\"} 0.5\n\
+            stormblock_nvmeof_io_seconds_count{op=\"write two\"} 250\n\
+            stormblock_nvmeof_io_seconds_counter_other 9\n\
+            stormblock_volumes_total 4\n";
+        assert_eq!(parse_io_metrics(text), Some((1250.0, 2.0)));
+        assert_eq!(parse_io_metrics("stormblock_nvmeof_io_seconds_sum 3\nstormblock_nvmeof_io_seconds_count 7"), Some((7.0, 3.0)));
+        assert_eq!(parse_io_metrics("stormblock_volumes_total 4\n"), None, "an engine without the metric");
+    }
 
     #[test]
     fn master_node_and_attach_helpers() {

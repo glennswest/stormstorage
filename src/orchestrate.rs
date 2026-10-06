@@ -355,6 +355,7 @@ pub fn move_target_candidates(
             labels: n.labels(),
             free_bytes: n.status.free_bytes,
             total_bytes: n.status.total_bytes,
+            io_busy: n.status.io.map(|i| i.busy),
         })
         .collect()
 }
@@ -464,7 +465,7 @@ async fn build_replacement(
             }
             None => {
                 let cands = move_target_candidates(&fed, rungs, &vol, from);
-                crate::placement::plan(&cands, rungs, &vol.rung, 1, vol.size_bytes)
+                crate::placement::plan(&cands, rungs, &vol.rung, 1, vol.size_bytes, state.config.placement.io_weight)
                     .map_err(|e| anyhow::anyhow!("no target: {e}"))?
                     .remove(0)
             }

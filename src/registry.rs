@@ -92,6 +92,7 @@ pub async fn poll_once(state: &Arc<AppState>) {
         }
         if reachable {
             refresh_inventory(state, &name, &engine).await;
+            refresh_io(state, &name, &engine).await;
         }
     }
     crate::kube::refresh(state).await;
@@ -237,6 +238,21 @@ fn hostname() -> Option<String> {
         .or_else(|| std::env::var("HOSTNAME").ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Read the node's NVMe-oF I/O counters and turn two readings into a rate
+/// (#31). Best effort: an engine without the metric, or an error, leaves
+/// the last rate as it was and never fails the poll.
+async fn refresh_io(state: &Arc<AppState>, name: &str, engine: &Engine) {
+    let Ok(Some((count, sum))) = engine.io_counters().await else { return };
+    let cur = crate::model::IoSample { count, sum, at: std::time::Instant::now() };
+    let mut fed = state.fed.write().await;
+    if let Some(n) = fed.nodes.get_mut(name) {
+        if let Some(rate) = crate::model::io_rate(n.status.io_sample, cur) {
+            n.status.io = Some(rate);
+        }
+        n.status.io_sample = Some(cur);
+    }
 }
 
 /// Adopt the engine on this machine once it answers, and the live peers of

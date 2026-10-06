@@ -424,6 +424,7 @@ async fn resolve_plan(s: &AppState, req: &PlanRequest) -> Result<ResolvedPlan, A
             labels: n.labels(),
             free_bytes: n.status.free_bytes,
             total_bytes: n.status.total_bytes,
+            io_busy: n.status.io.map(|i| i.busy),
         })
         .collect();
     Ok(ResolvedPlan {
@@ -444,6 +445,7 @@ async fn plan_dry_run(
         &rp.rung,
         rp.replicas,
         req.size_bytes,
+        s.config.placement.io_weight,
     )
     .map_err(ApiError::conflict)?;
     Ok(Json(json!({ "replicas": rp.replicas, "rung": rp.rung, "legs": picks })))
@@ -530,6 +532,7 @@ async fn create_volume(
         &rp.rung,
         rp.replicas,
         req.size_bytes,
+        s.config.placement.io_weight,
     )
     .map_err(ApiError::conflict)?;
 

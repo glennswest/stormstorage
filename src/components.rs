@@ -245,11 +245,18 @@ fn node_component(n: &Node, inv: Option<&NodeInventory>) -> ComponentSummary {
         label: n.config.name.clone(),
         health,
         detail: detail.join(" · "),
-        metrics: vec![
-            Metric::new("free", stormview::format_bytes(n.status.free_bytes)),
-            Metric::new("total", stormview::format_bytes(n.status.total_bytes)).tone("muted"),
-            Metric::new("vols", n.status.volumes.to_string()),
-        ],
+        metrics: {
+            let mut m = vec![
+                Metric::new("free", stormview::format_bytes(n.status.free_bytes)),
+                Metric::new("total", stormview::format_bytes(n.status.total_bytes)).tone("muted"),
+                Metric::new("vols", n.status.volumes.to_string()),
+            ];
+            // Live NVMe-oF load, which placement weighs (#31).
+            if let Some(io) = n.status.io {
+                m.push(Metric::new("io", format!("{:.0} iops, {:.2} busy", io.iops, io.busy)).tone("muted"));
+            }
+            m
+        },
         actions: Vec::new(),
         relations: vec![
             Relation::belongs_to("system", "system"),

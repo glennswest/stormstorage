@@ -37,6 +37,42 @@ pub struct NodeStatus {
     #[serde(default)]
     pub volumes: u64,
     pub source: NodeSource,
+    /// Live I/O load over NVMe-oF, from the engine's `/metrics` (#31).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io: Option<IoLoad>,
+    /// The counters last read, for the next rate. Memory only.
+    #[serde(skip)]
+    pub io_sample: Option<IoSample>,
+}
+
+/// A node's I/O rate between two polls (#31).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct IoLoad {
+    /// I/Os a second.
+    pub iops: f64,
+    /// I/O-seconds a second: the mean number of I/Os in flight. What
+    /// placement weighs, since it counts slow I/Os as well as many.
+    pub busy: f64,
+    pub at: SystemTime,
+}
+
+/// `stormblock_nvmeof_io_seconds` `_count` and `_sum`, summed over labels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IoSample {
+    pub count: f64,
+    pub sum: f64,
+    pub at: std::time::Instant,
+}
+
+/// The rate from `prev` to `cur`; none on the first sample, a counter
+/// reset (engine restart) or no time between them. Pure.
+pub fn io_rate(prev: Option<IoSample>, cur: IoSample) -> Option<IoLoad> {
+    let p = prev?;
+    let dt = cur.at.checked_duration_since(p.at)?.as_secs_f64();
+    if dt <= 0.0 || cur.count < p.count || cur.sum < p.sum {
+        return None;
+    }
+    Some(IoLoad { iops: (cur.count - p.count) / dt, busy: (cur.sum - p.sum) / dt, at: SystemTime::now() })
 }
 
 impl NodeStatus {
@@ -50,6 +86,8 @@ impl NodeStatus {
             engine_topology: BTreeMap::new(),
             volumes: 0,
             source,
+            io: None,
+            io_sample: None,
         }
     }
 }
@@ -415,6 +453,17 @@ impl FedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn io_rate_between_two_samples() {
+        let t0 = std::time::Instant::now();
+        let s = |count: f64, sum: f64, secs: u64| IoSample { count, sum, at: t0 + std::time::Duration::from_secs(secs) };
+        assert_eq!(io_rate(None, s(10.0, 1.0, 0)), None, "first sample");
+        let r = io_rate(Some(s(100.0, 1.0, 0)), s(1600.0, 4.0, 15)).unwrap();
+        assert_eq!((r.iops, r.busy), (100.0, 0.2));
+        assert_eq!(io_rate(Some(s(100.0, 1.0, 0)), s(5.0, 0.1, 15)), None, "counter reset");
+        assert_eq!(io_rate(Some(s(100.0, 1.0, 0)), s(200.0, 2.0, 0)), None, "no time between");
+    }
 
     fn nc(name: &str) -> NodeConfig {
         toml::from_str(&format!(
