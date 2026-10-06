@@ -37,6 +37,9 @@ struct Mock {
     fail_creates: u32,
     /// Array creates to perform but answer 500 — a lost response (#7).
     lose_creates: u32,
+    /// Volume deletes to perform but answer 500 — the engine finishing a
+    /// delete after the caller gave up on it (#24).
+    lose_deletes: u32,
     /// Every mutating call, in order.
     log: Vec<String>,
 }
@@ -107,7 +110,12 @@ async fn v1_detach(State(m): State<M>, Path(id): Path<String>) -> Json<Value> {
 async fn v1_delete(State(m): State<M>, Path(id): Path<String>) -> StatusCode {
     let mut m = m.lock().unwrap();
     m.volumes.remove(&id);
+    m.attached.remove(&id);
     m.log.push(format!("delete {id}"));
+    if m.lose_deletes > 0 {
+        m.lose_deletes -= 1;
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -495,4 +503,51 @@ async fn the_reconciler_retries_a_pending_volume() {
     assert_eq!(v.assembly, stormstorage::model::AssemblyState::Assembled);
     assert_eq!(v.export.state, ExportState::Published);
     assert_eq!(arrays_on(&mocks), 1);
+}
+
+/// #24: the head deleted the served volume but its answer never came, so
+/// the delete stopped with the record kept. The volume is `revoking`: no
+/// recovery attaches the vanished served volume again (it 404'd on every
+/// one), a publish is refused, and the delete, retried, finishes.
+#[tokio::test]
+async fn a_delete_stopped_while_revoking_is_not_republished() {
+    let (api, state, mocks) = setup().await;
+    let r = http_post(format!("{api}/api/v1/volumes"), json!({"name": "ev", "size_bytes": 1u64 << 30, "replicas": 2}))
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["export"]["state"], "published", "{v}");
+    let head = v["head"].as_str().unwrap().to_string();
+    let served = v["export"]["volume_id"].as_str().unwrap().to_string();
+
+    mocks[&head].lock().unwrap().lose_deletes = 1;
+    let r = reqwest::Client::new().delete(format!("{api}/api/v1/volumes/ev")).send().await.unwrap();
+    assert!(!r.status().is_success());
+    {
+        let fed = state.fed.read().await;
+        let ex = &fed.volumes["ev"].export;
+        assert_eq!(ex.state, ExportState::Revoking, "{:?}", ex);
+        assert!(ex.message.as_deref().unwrap_or("").contains("500"), "{:?}", ex.message);
+    }
+    assert!(!mocks[&head].lock().unwrap().volumes.contains_key(&served), "the engine did delete it");
+
+    // The head comes back: nothing attaches the served volume again.
+    mocks[&head].lock().unwrap().log.clear();
+    stormstorage::orchestrate::republish_on(&state, &head).await;
+    let log = mocks[&head].lock().unwrap().log.clone();
+    assert!(!log.iter().any(|l| l.starts_with("attach")), "{log:?}");
+    assert_eq!(state.fed.read().await.volumes["ev"].export.state, ExportState::Revoking);
+    // Publishing it is refused, with what to do.
+    let r = http_post(format!("{api}/api/v1/volumes/ev/export"), json!({})).send().await.unwrap();
+    assert_eq!(r.status().as_u16(), 409);
+    assert!(r.text().await.unwrap().contains("DELETE it again"));
+    let feed = stormstorage::components::collect(&state).await;
+    let c = feed.iter().find(|c| c.id == "volume:ev").unwrap();
+    assert!(c.metrics.iter().any(|m| m.label == "export" && m.value == "revoking"));
+
+    // The delete, retried, finishes (a 404 on the served volume is gone).
+    let r = reqwest::Client::new().delete(format!("{api}/api/v1/volumes/ev")).send().await.unwrap();
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    assert!(!state.fed.read().await.volumes.contains_key("ev"));
 }

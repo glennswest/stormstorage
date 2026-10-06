@@ -123,6 +123,8 @@ const syncChips=(x)=>{if(!x.replica_sync||x.legs.length<2)return '';
 const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=`<button title="publish / republish" onclick="pubVol('${x.name}')">↻</button>`;
   if(e.state==='published'&&c)return `<span class="mono" title="${c.nqn}">${c.traddr}:${c.trsvcid} ns ${c.nsid}</span>${e.coordinates_changed?' '+chip('moved','c-warn'):''} ${b}`;
   if(e.state==='failed')return `${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
+  if(e.state==='revoking')return `${chip('delete unfinished','c-warn')} <span class="dim">${e.message||''} — delete it again</span>`;
+  if(e.state==='published'&&e.per_host)return chip(`${(e.hosts||[]).length} host(s)`,'c-ok')+' '+b;
   return x.assembly==='pending_engine_support'?'':b;};
 window.delVol=(n)=>{ if(confirm(`Delete volume ${n} and all its legs?`))
   call(`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})

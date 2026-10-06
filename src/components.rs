@@ -306,6 +306,7 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
             metrics.push(Metric::new("export", "published").tone(tone));
         }
         ExportState::Failed => metrics.push(Metric::new("export", "failed").tone("error")),
+        ExportState::Revoking => metrics.push(Metric::new("export", "revoking").tone("warn")),
         ExportState::None => {}
     }
     // Consumer hosts it is served to (#51).
@@ -381,6 +382,10 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
                 (ExportState::Published, Some(c)) => format!(" · served at {}", c.drive_uri()),
                 (ExportState::Failed, _) => format!(
                     " · export failed: {}",
+                    v.export.message.as_deref().unwrap_or("")
+                ),
+                (ExportState::Revoking, _) => format!(
+                    " · delete unfinished (retry it): {}",
                     v.export.message.as_deref().unwrap_or("")
                 ),
                 _ => String::new(),

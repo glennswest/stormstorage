@@ -1232,6 +1232,14 @@ async fn publish_inner(
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        // A delete began taking the served volume down (#24): the engine
+        // may no longer have it, and attaching it would 404 for ever.
+        if vol.export.state == crate::model::ExportState::Revoking {
+            anyhow::bail!(
+                "{name}: being deleted — a delete stopped while revoking its export ({}); DELETE it again",
+                vol.export.message.as_deref().unwrap_or("no message")
+            );
+        }
         // Nothing to serve yet (not assembled): refused, record untouched.
         let at = serve_at(state, &fed, &vol)?;
         if fed.nodes.get(&at.node).map(|n| n.status.healthy).unwrap_or(false) {
@@ -1639,22 +1647,39 @@ pub async fn revoke(state: &Arc<AppState>, vol: &DistVolume) -> anyhow::Result<(
             None => return Ok(()),
         }
     };
-    if vol.export.adopted {
-        let _ = engine.detach_any(vid).await;
-        return engine
-            .delete_any_volume(vid)
-            .await
-            .map_err(|e| anyhow::anyhow!("{node}: consumer volume {vid}: {e:#}"));
+    // From here the engine may delete the served volume even if its answer
+    // never comes back (#24): recorded first, so nothing attaches it again.
+    set_export_state(state, &vol.name, crate::model::ExportState::Revoking, Some("delete in progress".into())).await;
+    let r = async {
+        if vol.export.adopted {
+            let _ = engine.detach_any(vid).await;
+            return engine.delete_any_volume(vid).await;
+        }
+        let master = vol.export.master_node.clone().unwrap_or_else(|| "localhost".into());
+        if vol.export.coordinates.is_some() || !vol.export.hosts.is_empty() {
+            // Best-effort: the delete below is what must succeed.
+            let _ = engine.detach_volume(vid, &master).await;
+        }
+        engine.delete_volume(vid).await
     }
-    let master = vol.export.master_node.clone().unwrap_or_else(|| "localhost".into());
-    if vol.export.coordinates.is_some() {
-        // Best-effort: the delete below is what must succeed.
-        let _ = engine.detach_volume(vid, &master).await;
+    .await
+    .map_err(|e| anyhow::anyhow!("{node}: consumer volume {vid}: {e:#}"));
+    if let Err(e) = &r {
+        set_export_state(state, &vol.name, crate::model::ExportState::Revoking, Some(format!("{e:#}"))).await;
     }
-    engine
-        .delete_volume(vid)
-        .await
-        .map_err(|e| anyhow::anyhow!("{node}: consumer volume {vid}: {e:#}"))
+    r
+}
+
+async fn set_export_state(state: &Arc<AppState>, name: &str, st: crate::model::ExportState, message: Option<String>) {
+    {
+        let mut fed = state.fed.write().await;
+        let Some(v) = fed.volumes.get_mut(name) else { return };
+        v.export.state = st;
+        v.export.message = message;
+        fed.revision += 1;
+    }
+    crate::replicate::push_to_peers(state.clone());
+    state.persist().await;
 }
 
 /// Republish every published or failed export served from `node` — run

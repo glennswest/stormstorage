@@ -165,6 +165,10 @@ pub enum ExportState {
     Published,
     /// The last publish failed; `message` says why.
     Failed,
+    /// A delete began taking the served volume down and did not finish
+    /// (#24): the engine may already have deleted it, so it is never
+    /// attached again — a retried DELETE finishes the job.
+    Revoking,
 }
 
 /// What a consumer attaches: the mirror, never one side of it. For an
