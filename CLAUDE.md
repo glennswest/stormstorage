@@ -502,6 +502,17 @@ it on; a single-leg volume's leg is the data, so recreate is refused there.
 Engine 404 is typed (`engine::HttpStatus`) so it survives wrapping.
 Tests in tests/export.rs (+ a per-host case in tests/hosts.rs).
 
+### Engine token for peers (#12, P2) — in progress 2026-10-06
+Default-path half done by #42 (ef3af98: family order incl.
+`/run/stormblock/engine/api_token`). Peer half, by stormblock's own rule
+(`mgmt::auth::token_for`, #107): a *shared* token — `$STORMBLOCK_API_TOKEN`
+or the new `[local] shared_token_file` — goes to every engine; a *minted*
+one (the file search) only to an engine on this machine (loopback, this
+hostname, or an IP held here: a UDP bind to it succeeds). New per-node
+`[[nodes]] token_file`. Order per node: `api_token`, `token_file`, shared,
+minted-if-local. The refusal log says which applied. Unit tests of the
+choice; tests/token.rs: a remote peer is not sent the minted token.
+
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #35 forward announcements
