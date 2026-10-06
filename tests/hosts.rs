@@ -145,7 +145,7 @@ async fn call(method: reqwest::Method, url: String, body: Option<Value>) -> (u16
     (st, r.json().await.unwrap_or(Value::Null))
 }
 
-async fn post(url: String, body: Value) -> (u16, Value) {
+async fn post_json(url: String, body: Value) -> (u16, Value) {
     call(reqwest::Method::POST, url, Some(body)).await
 }
 
@@ -165,12 +165,12 @@ async fn a_volume_is_served_to_named_hosts_and_withdrawn() {
     let (api, state, m) = setup().await;
 
     // No host named: the closed engine refuses the shared attach.
-    let (st, v) = post(format!("{api}/api/v1/volumes"), json!({"name": "s", "size_bytes": 1u64 << 30, "replicas": 1})).await;
+    let (st, v) = post_json(format!("{api}/api/v1/volumes"), json!({"name": "s", "size_bytes": 1u64 << 30, "replicas": 1})).await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["export"]["state"], "failed", "{v}");
 
     // A host asks for it, with DH-HMAC-CHAP.
-    let (st, h) = post(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": "nqn.2014-08.org.nvmexpress:uuid:h1", "dhchap": true})).await;
+    let (st, h) = post_json(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": "nqn.2014-08.org.nvmexpress:uuid:h1", "dhchap": true})).await;
     assert_eq!(st, 200, "{h}");
     assert_eq!(h["host_nqn"], "nqn.2014-08.org.nvmexpress:uuid:h1");
     assert_eq!(h["coordinates"]["nqn"], "nqn.2024.io.stormblock:node-a:host:nqn.2014-08.org.nvmexpress:uuid:h1");
@@ -194,7 +194,7 @@ async fn a_volume_is_served_to_named_hosts_and_withdrawn() {
     assert_no_secret(&api, &state).await;
 
     // Asked again: the same coordinates and secret, unchanged.
-    let (st, again) = post(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": "nqn.2014-08.org.nvmexpress:uuid:h1"})).await;
+    let (st, again) = post_json(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": "nqn.2014-08.org.nvmexpress:uuid:h1"})).await;
     assert_eq!(st, 200);
     assert_eq!(again["coordinates"], h["coordinates"]);
     assert_eq!(again["dhchap"], true, "dhchap stays on");
@@ -202,13 +202,13 @@ async fn a_volume_is_served_to_named_hosts_and_withdrawn() {
     assert_eq!(again["dhchap_secret"], h["dhchap_secret"]);
 
     // Not a host NQN.
-    let (st, _) = post(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": "h1"})).await;
+    let (st, _) = post_json(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": "h1"})).await;
     assert_eq!(st, 400);
-    let (st, _) = post(format!("{api}/api/v1/volumes/nope/export/hosts"), json!({"host_nqn": "nqn.x"})).await;
+    let (st, _) = post_json(format!("{api}/api/v1/volumes/nope/export/hosts"), json!({"host_nqn": "nqn.x"})).await;
     assert_eq!(st, 404);
 
     // A second host through POST …/export (#53).
-    let (st, ex) = post(format!("{api}/api/v1/volumes/s/export"), json!({"hosts": [{"host_nqn": "nqn.h2"}]})).await;
+    let (st, ex) = post_json(format!("{api}/api/v1/volumes/s/export"), json!({"hosts": [{"host_nqn": "nqn.h2"}]})).await;
     assert_eq!(st, 200, "{ex}");
     assert_eq!(ex["hosts"].as_array().unwrap().len(), 2, "{ex}");
     assert!(m.lock().unwrap().served.contains(&(local.clone(), "nqn.h2".into())));
@@ -249,7 +249,7 @@ async fn a_volume_is_served_to_named_hosts_and_withdrawn() {
 #[tokio::test]
 async fn hosts_named_at_create_are_served_without_the_shared_subsystem() {
     let (api, _state, m) = setup().await;
-    let (st, v) = post(
+    let (st, v) = post_json(
         format!("{api}/api/v1/volumes"),
         json!({"name": "c", "size_bytes": 1u64 << 30, "replicas": 1, "hosts": [{"host_nqn": "nqn.h3"}]}),
     )
@@ -260,7 +260,7 @@ async fn hosts_named_at_create_are_served_without_the_shared_subsystem() {
     let log = m.lock().unwrap().log.clone();
     assert!(!log.iter().any(|l| l.starts_with("v1attach")), "no shared attach: {log:?}");
     // A bad NQN at create is refused before anything is made.
-    let (st, _) = post(
+    let (st, _) = post_json(
         format!("{api}/api/v1/volumes"),
         json!({"name": "d", "size_bytes": 1u64 << 30, "replicas": 1, "hosts": [{"host_nqn": "bad"}]}),
     )
