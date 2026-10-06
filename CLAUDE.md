@@ -434,6 +434,22 @@ attach body's `host_nqn` and the opened drive's `hostnqn=`.
 Done: sc-build passes (61 unit, export 7/7, replication 4/4). Consumer
 export host: #53. Not seen on a live closed engine (stormcentral#131).
 
+### Sync evidence that survives the head (#48, P1) — in progress 2026-10-06
+`/replicas` read every leg `detached` once the head was lost, so
+stormblock-csi (waiting for `in_sync`) never failed over. Plan: when the
+head's array cannot be read, read each surviving leg's RAID superblock on
+its own engine (`GET /api/v1/volumes/{id}/raid-superblock`, filed as
+stormblock#309; 404/err = no evidence) and build the reading from those
+(`sync_source: superblock`; live = `head`). A leg is `in_sync` only if its
+superblock is of this array, has the newest `events` among the reachable
+legs, every newest superblock records it active, its events are not below
+the last live head reading's, and that reading (kept in memory per
+volume) did not show it other than active. Rebuilding → resyncing from
+`rebuilt_to`. Residual window (documented): a slave dropped after the
+last live reading, when only the dead head recorded the drop (2 legs).
+Pure `from_superblocks` + unit tests; tests/replication.rs mock engine
+serves the endpoint. Live run waits on stormblock#309 + stormcentral#131.
+
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #35 forward announcements
