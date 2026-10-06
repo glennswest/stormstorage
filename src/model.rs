@@ -200,6 +200,60 @@ pub struct Export {
     /// attached, detached and deleted through `/api/v1/volumes/{id}`.
     #[serde(default)]
     pub adopted: bool,
+    /// Consumer hosts it is served to (#51), each from its own subsystem
+    /// on the serving engine. With any named, the shared subsystem is not
+    /// used: a closed engine (stormblock#210) admits no host there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HostServe>,
+    /// Served per host from the first host named on: with every host
+    /// withdrawn it is served to none, never back on the shared subsystem.
+    #[serde(default)]
+    pub per_host: bool,
+    /// The served volume's engine-local id, which the per-host attach and
+    /// withdraw take (a /v1 id is not one). Found by name when first needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_id: Option<String>,
+    /// Hosts withdrawn while the serving engine did not answer: withdrawn
+    /// there when it does (`republish_on`), so a node that no longer runs
+    /// the workload cannot keep reaching it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withdrawing: Vec<PendingWithdraw>,
+}
+
+/// A host withdrawal waiting for its engine (#51).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingWithdraw {
+    pub node: String,
+    /// The served volume's engine-local id; `None` when it was never
+    /// learned (found by `name` on that engine then).
+    pub local_id: Option<String>,
+    /// The served volume's name on that engine.
+    pub name: String,
+    pub host_nqn: String,
+}
+
+/// One consumer host a volume is served to (#51). The DH-HMAC-CHAP secret
+/// is never kept here: it is returned to the caller that asks for the host
+/// and nowhere else (not persisted, not replicated, not in events).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostServe {
+    pub host_nqn: String,
+    #[serde(default)]
+    pub dhchap: bool,
+    /// What that host connects to: the per-host subsystem's NQN, the
+    /// address and the NSID, with `host_nqn` (`--hostnqn`).
+    #[serde(default)]
+    pub coordinates: Option<crate::engine::AttachedLeg>,
+    /// The last re-serve (move, promote, recovery) answered different
+    /// coordinates: the host must reconnect, and with `dhchap` ask again
+    /// for its secret.
+    #[serde(default)]
+    pub coordinates_changed: bool,
+    #[serde(default)]
+    pub served_at: Option<SystemTime>,
+    /// Why the last serve to this host failed, if it did.
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// How fast a resync onto a new leg may run (#33, stormblock-csi's

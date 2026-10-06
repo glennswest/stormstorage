@@ -16,6 +16,7 @@ use crate::api::AppState;
 use crate::events::Severity;
 use crate::model::{AssemblyState, DistVolume, Leg, LegState, Orphan, Replacement};
 use crate::placement::domain_at;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -871,6 +872,18 @@ pub async fn reconcile(state: &Arc<AppState>) {
         }
     }
     rejoin_heads(state).await;
+    // Host withdrawals an engine has not taken yet (#51).
+    let pending: std::collections::BTreeSet<String> = {
+        let fed = state.fed.read().await;
+        fed.volumes
+            .values()
+            .flat_map(|v| v.export.withdrawing.iter().map(|w| w.node.clone()))
+            .filter(|n| fed.nodes.get(n).is_some_and(|x| x.status.healthy))
+            .collect()
+    };
+    for node in pending {
+        withdraw_pending_on(state, &node).await;
+    }
     let closed = {
         let mut fed = state.fed.write().await;
         crate::head::expire_windows(&mut fed, now)
@@ -1169,7 +1182,49 @@ fn serve_at(
 /// made — so it is also how a republish learns whether the coordinates
 /// changed. A failure is recorded on the volume (`export.state = failed`)
 /// and returned.
+///
+/// With consumer hosts named (#51), the volume is served to each of them
+/// from its own subsystem and not on the shared one (a closed engine,
+/// stormblock#210, admits no host there); every re-serve (move, promote,
+/// recovery) serves them all again.
 pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate::model::Export> {
+    publish_inner(state, name).await.map(|(ex, _)| ex)
+}
+
+/// The served volume's engine-local id on `at`: what the per-host attach
+/// and withdraw take. Recorded once known.
+async fn served_local_id(at: &ServeAt, vol: &DistVolume, volume_id: &str, adopted: bool) -> anyhow::Result<String> {
+    if adopted {
+        // Came across with the array: no /v1 record, the id is the engine's.
+        return Ok(volume_id.to_string());
+    }
+    if vol.export.node.as_deref() == Some(at.node.as_str())
+        && vol.export.volume_id.as_deref() == Some(volume_id)
+    {
+        if let Some(l) = &vol.export.local_id {
+            return Ok(l.clone());
+        }
+    }
+    at.engine
+        .local_volume_id(&served_name(vol))
+        .await
+        .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))
+}
+
+/// The served volume's name on its engine: the mirror, or the only leg.
+fn served_name(vol: &DistVolume) -> String {
+    match vol.assembly {
+        AssemblyState::SingleLeg => vol.name.clone(),
+        _ => format!("{}{MIRROR_SUFFIX}", vol.name),
+    }
+}
+
+/// [`publish`], plus each host's DH-HMAC-CHAP secret as the engine
+/// answered it — for the caller that asked for a host, never stored.
+async fn publish_inner(
+    state: &Arc<AppState>,
+    name: &str,
+) -> anyhow::Result<(crate::model::Export, BTreeMap<String, String>)> {
     let ready = {
         let fed = state.fed.read().await;
         let vol = fed
@@ -1219,7 +1274,10 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
     // Served volume that came across with the array on a promote (#33): no
     // /v1 record on this head, and never replaced by a new, empty one.
     let adopted = vol.export.adopted && vol.export.node.as_deref() == Some(at.node.as_str());
-    let result: anyhow::Result<crate::engine::AttachedLeg> = async {
+    let hosts = vol.export.hosts.clone();
+    let per_host = vol.export.per_host || !hosts.is_empty();
+    // The shared attach, when no host is named; `None` when serving hosts.
+    let mut result: anyhow::Result<Option<crate::engine::AttachedLeg>> = async {
         if adopted {
             let vid = volume_id.clone().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1227,7 +1285,10 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
                     at.node
                 )
             })?;
-            return at.engine.attach_any(&vid).await.map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node));
+            if per_host {
+                return Ok(None);
+            }
+            return at.engine.attach_any(&vid).await.map(Some).map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node));
         }
         if volume_id.is_none() {
             let array_id = at.array_id.as_deref().expect("assembled");
@@ -1247,14 +1308,56 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
             volume_id = Some(id);
             master_node = crate::engine::Engine::master_node_of(&created);
         }
+        if per_host {
+            return Ok(None);
+        }
         let vid = volume_id.clone().expect("set");
         let master = master_node.clone().unwrap_or_else(|| "localhost".into());
         at.engine
             .attach_volume(&vid, &master)
             .await
+            .map(Some)
             .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))
     }
     .await;
+
+    // Serve each named host (#51).
+    let mut local_id = None;
+    let mut served: BTreeMap<String, crate::model::HostServe> = BTreeMap::new();
+    let mut secrets = BTreeMap::new();
+    let mut host_failures = Vec::new();
+    if result.is_ok() && !hosts.is_empty() {
+        let vid = volume_id.clone().expect("set");
+        match served_local_id(&at, &vol, &vid, adopted).await {
+            Err(e) => result = Err(e),
+            Ok(lid) => {
+                for h in &hosts {
+                    let mut rec = h.clone();
+                    match at.engine.attach_for_host(&lid, &h.host_nqn, h.dhchap).await {
+                        Ok((coords, secret)) => {
+                            rec.coordinates_changed = h.coordinates.as_ref().is_some_and(|c| *c != coords);
+                            rec.coordinates = Some(coords);
+                            rec.served_at = Some(SystemTime::now());
+                            rec.message = None;
+                            if let Some(sec) = secret {
+                                secrets.insert(h.host_nqn.clone(), sec);
+                            }
+                        }
+                        Err(e) => {
+                            let m = format!("{}: {e:#}", at.node);
+                            host_failures.push(format!("{}: {m}", h.host_nqn));
+                            rec.message = Some(m);
+                        }
+                    }
+                    served.insert(h.host_nqn.clone(), rec);
+                }
+                local_id = Some(lid);
+            }
+        }
+    }
+    if result.is_ok() && !host_failures.is_empty() {
+        result = Err(anyhow::anyhow!("serving {}", host_failures.join("; ")));
+    }
 
     let (export, previous) = {
         let mut fed = state.fed.write().await;
@@ -1262,15 +1365,29 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
             anyhow::bail!("{name}: deleted while it was being published");
         };
         let previous = v.export.clone();
+        // Hosts as they are now (one may have been asked for or withdrawn
+        // while this ran), with what this serve found for each.
+        let hosts_now: Vec<crate::model::HostServe> = previous
+            .hosts
+            .iter()
+            .map(|h| match served.get(&h.host_nqn) {
+                Some(r) => crate::model::HostServe { dhchap: h.dhchap || r.dhchap, ..r.clone() },
+                None => h.clone(),
+            })
+            .collect();
+        let same_served = previous.node.as_deref() == Some(at.node.as_str()) && previous.volume_id == volume_id;
         let mut ex = crate::model::Export {
             volume_id: volume_id.clone(),
             node: Some(at.node.clone()),
             master_node: master_node.clone(),
             adopted,
+            per_host: per_host || previous.per_host,
+            local_id: local_id.or_else(|| previous.local_id.clone().filter(|_| same_served)),
+            withdrawing: previous.withdrawing.clone(),
             ..Default::default()
         };
         match &result {
-            Ok(coords) => {
+            Ok(Some(coords)) => {
                 ex.state = crate::model::ExportState::Published;
                 // Against the last coordinates handed out, published or not:
                 // a consumer may still hold them after a failed attempt.
@@ -1284,35 +1401,223 @@ pub async fn publish(state: &Arc<AppState>, name: &str) -> anyhow::Result<crate:
                     }
                 }
             }
+            Ok(None) => {
+                // Served per host: no shared coordinates to hand out.
+                ex.state = crate::model::ExportState::Published;
+                ex.coordinates_changed = hosts_now.iter().any(|h| h.coordinates_changed);
+                ex.published_at = Some(SystemTime::now());
+            }
             Err(e) => {
                 ex.state = crate::model::ExportState::Failed;
                 ex.message = Some(format!("{e:#}"));
                 ex.coordinates = previous.coordinates.clone();
             }
         }
+        ex.hosts = hosts_now;
         v.export = ex.clone();
         fed.revision += 1;
         (ex, previous)
     };
     crate::replicate::push_to_peers(state.clone());
     state.persist().await;
-    match (&result, &export.coordinates) {
-        (Ok(_), Some(c)) => {
-            let what = if export.coordinates_changed {
-                "republished with NEW coordinates — consumers must reconnect"
-            } else if previous.state != crate::model::ExportState::Published {
-                "published"
-            } else {
-                "republished, coordinates unchanged"
-            };
-            event(state, name, Severity::Info, format!("{name}: {what} on {} at {}", at.node, c.drive_uri())).await;
+    let what = |changed: bool| {
+        if changed {
+            "republished with NEW coordinates — consumers must reconnect"
+        } else if previous.state != crate::model::ExportState::Published {
+            "published"
+        } else {
+            "republished, coordinates unchanged"
         }
-        _ => {
+    };
+    match &result {
+        Ok(Some(c)) => {
+            let w = what(export.coordinates_changed);
+            event(state, name, Severity::Info, format!("{name}: {w} on {} at {}", at.node, c.drive_uri())).await;
+        }
+        Ok(None) => {
+            let w = what(export.coordinates_changed);
+            let to: Vec<&str> = export.hosts.iter().map(|h| h.host_nqn.as_str()).collect();
+            let to = if to.is_empty() { "no host".to_string() } else { to.join(", ") };
+            event(state, name, Severity::Info, format!("{name}: {w} on {} to {to}", at.node)).await;
+        }
+        Err(_) => {
             let e = export.message.clone().unwrap_or_default();
             event(state, name, Severity::Error, format!("{name}: export failed: {e}")).await;
         }
     }
-    result.map(|_| export)
+    result.map(|_| (export, secrets))
+}
+
+/// A host NQN as stormblock takes one (`nqn.…`, at most 223 bytes).
+pub fn valid_host_nqn(h: &str) -> bool {
+    let h = h.trim();
+    h.starts_with("nqn.") && h.len() <= 223 && !h.chars().any(char::is_whitespace)
+}
+
+/// Serve a volume to one consumer host (#51): record the host, then serve
+/// every recorded host (the publish). Returns that host's record and its
+/// DH-HMAC-CHAP secret when it has one. Idempotent; `dhchap` once asked for
+/// stays on (the engine never drops a host's secret either).
+pub async fn serve_host(
+    state: &Arc<AppState>,
+    name: &str,
+    host_nqn: &str,
+    dhchap: bool,
+) -> anyhow::Result<(crate::model::HostServe, Option<String>)> {
+    let host_nqn = host_nqn.trim();
+    if !valid_host_nqn(host_nqn) {
+        anyhow::bail!("{host_nqn:?} is not a host NQN (nqn.…, at most 223 bytes)");
+    }
+    {
+        let mut fed = state.fed.write().await;
+        let v = fed
+            .volumes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        match v.export.hosts.iter_mut().find(|h| h.host_nqn == host_nqn) {
+            Some(h) => h.dhchap |= dhchap,
+            None => v.export.hosts.push(crate::model::HostServe {
+                host_nqn: host_nqn.to_string(),
+                dhchap,
+                ..Default::default()
+            }),
+        }
+        v.export.per_host = true;
+        // Asked for again: no withdrawal of it is pending any more.
+        v.export.withdrawing.retain(|w| w.host_nqn != host_nqn);
+        fed.revision += 1;
+    }
+    let (ex, mut secrets) = match publish_inner(state, name).await {
+        Ok(r) => r,
+        Err(e) => {
+            // This host's own failure says more than the whole export's.
+            let why = state
+                .fed
+                .read()
+                .await
+                .volumes
+                .get(name)
+                .and_then(|v| v.export.hosts.iter().find(|h| h.host_nqn == host_nqn).and_then(|h| h.message.clone()));
+            return Err(match why {
+                Some(m) => anyhow::anyhow!("{name}: serving {host_nqn}: {m}"),
+                None => e,
+            });
+        }
+    };
+    let rec = ex
+        .hosts
+        .iter()
+        .find(|h| h.host_nqn == host_nqn)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{name}: {host_nqn} was withdrawn while it was being served"))?;
+    Ok((rec, secrets.remove(host_nqn)))
+}
+
+/// What a withdrawal did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Withdrawn {
+    /// The serving engine no longer serves it to that host.
+    Done,
+    /// The engine does not answer: withdrawn there when it does.
+    Pending,
+    /// Nothing was served there (no export yet).
+    NothingServed,
+}
+
+/// Stop serving a volume to one consumer host (#51). The host leaves the
+/// record at once, so no re-serve brings it back; the engine withdraws it
+/// now, or when it answers again.
+pub async fn withdraw_host(state: &Arc<AppState>, name: &str, host_nqn: &str) -> anyhow::Result<Withdrawn> {
+    let host_nqn = host_nqn.trim().to_string();
+    let (node, local_id, served) = {
+        let mut fed = state.fed.write().await;
+        let v = fed
+            .volumes
+            .get_mut(name)
+            .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        v.export.hosts.retain(|h| h.host_nqn != host_nqn);
+        let out = (v.export.node.clone(), v.export.local_id.clone(), served_name(v));
+        fed.revision += 1;
+        out
+    };
+    crate::replicate::push_to_peers(state.clone());
+    state.persist().await;
+    let Some(node) = node else {
+        return Ok(Withdrawn::NothingServed);
+    };
+    let pending = crate::model::PendingWithdraw { node: node.clone(), local_id, name: served, host_nqn: host_nqn.clone() };
+    let outcome = withdraw_on_engine(state, &pending).await;
+    let result = match &outcome {
+        Ok(()) => Withdrawn::Done,
+        Err(_) => {
+            let mut fed = state.fed.write().await;
+            if let Some(v) = fed.volumes.get_mut(name) {
+                if !v.export.withdrawing.contains(&pending) {
+                    v.export.withdrawing.push(pending.clone());
+                }
+            }
+            fed.revision += 1;
+            Withdrawn::Pending
+        }
+    };
+    if result == Withdrawn::Pending {
+        crate::replicate::push_to_peers(state.clone());
+        state.persist().await;
+    }
+    let msg = match &outcome {
+        Ok(()) => format!("{name}: no longer served to {host_nqn} on {node}"),
+        Err(e) => format!("{name}: withdrawal of {host_nqn} on {node} pending until it answers: {e:#}"),
+    };
+    let sev = if outcome.is_ok() { Severity::Info } else { Severity::Warning };
+    event(state, name, sev, msg).await;
+    Ok(result)
+}
+
+async fn withdraw_on_engine(state: &Arc<AppState>, w: &crate::model::PendingWithdraw) -> anyhow::Result<()> {
+    let engine = {
+        let fed = state.fed.read().await;
+        fed.nodes
+            .get(&w.node)
+            .filter(|n| n.status.healthy)
+            .map(|n| state.engine_for(n))
+            .ok_or_else(|| anyhow::anyhow!("{} is unreachable", w.node))?
+    };
+    let id = match &w.local_id {
+        Some(id) => id.clone(),
+        None => match engine.local_volume_id(&w.name).await {
+            Ok(id) => id,
+            // The served volume is gone from that engine: nothing to withdraw.
+            Err(e) if e.to_string().starts_with("no engine volume") => return Ok(()),
+            Err(e) => return Err(e),
+        },
+    };
+    engine.withdraw_host(&id, &w.host_nqn).await
+}
+
+/// Withdrawals waiting for `node` (#51), done now that it answers.
+async fn withdraw_pending_on(state: &Arc<AppState>, node: &str) {
+    let due: Vec<(String, crate::model::PendingWithdraw)> = {
+        let fed = state.fed.read().await;
+        fed.volumes
+            .values()
+            .flat_map(|v| v.export.withdrawing.iter().filter(|w| w.node == node).map(|w| (v.name.clone(), w.clone())))
+            .collect()
+    };
+    for (name, w) in due {
+        if withdraw_on_engine(state, &w).await.is_ok() {
+            {
+                let mut fed = state.fed.write().await;
+                if let Some(v) = fed.volumes.get_mut(&name) {
+                    v.export.withdrawing.retain(|x| x != &w);
+                }
+                fed.revision += 1;
+            }
+            crate::replicate::push_to_peers(state.clone());
+            state.persist().await;
+            event(state, &name, Severity::Info, format!("{name}: no longer served to {} on {node}", w.host_nqn)).await;
+        }
+    }
 }
 
 /// Stop serving a volume before it is torn down (#2): detach the consumer
@@ -1357,6 +1662,7 @@ pub async fn revoke(state: &Arc<AppState>, vol: &DistVolume) -> anyhow::Result<(
 /// restarted engine may hand out different coordinates, and a publish that
 /// failed while the node was unreachable can now succeed.
 pub async fn republish_on(state: &Arc<AppState>, node: &str) {
+    withdraw_pending_on(state, node).await;
     let names: Vec<String> = {
         let fed = state.fed.read().await;
         fed.volumes

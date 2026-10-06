@@ -308,6 +308,12 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
         ExportState::Failed => metrics.push(Metric::new("export", "failed").tone("error")),
         ExportState::None => {}
     }
+    // Consumer hosts it is served to (#51).
+    if v.export.per_host {
+        let failed = v.export.hosts.iter().filter(|h| h.message.is_some()).count();
+        let tone = if failed > 0 { "error" } else { "ok" };
+        metrics.push(Metric::new("hosts", format!("{}", v.export.hosts.len())).tone(tone));
+    }
     if let Some(r) = &v.replacing {
         metrics.push(Metric::new("rebuilding", format!("{} → {}", r.from, r.leg.node)).tone("warn"));
     }

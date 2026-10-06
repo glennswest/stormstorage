@@ -338,6 +338,62 @@ impl Engine {
         self.parse_attach(id, &v)
     }
 
+    /// POST /api/v1/volumes/{id}/attach for one consumer host (#51,
+    /// stormblock#210): served from that host's own subsystem, which admits
+    /// it alone; with `dhchap` the host must prove a DH-HMAC-CHAP secret.
+    /// `id` is the engine-local volume id. Returns the coordinates (the
+    /// per-host subsystem NQN) and the secret, if the engine gave one — the
+    /// engine keeps a host's secret, so a repeat returns the same one.
+    pub async fn attach_for_host(
+        &self,
+        id: &str,
+        host_nqn: &str,
+        dhchap: bool,
+    ) -> anyhow::Result<(AttachedLeg, Option<String>)> {
+        let v = self
+            .v1_post(
+                &format!("/api/v1/volumes/{id}/attach"),
+                serde_json::json!({ "transport": "nvme_tcp", "host_nqn": host_nqn, "dhchap": dhchap }),
+            )
+            .await?;
+        let mut att = self.parse_attach(id, &v)?;
+        att.host_nqn = Some(host_nqn.to_string());
+        let secret = v.get("dhchap_secret").and_then(|x| x.as_str()).map(str::to_string);
+        Ok((att, secret))
+    }
+
+    /// DELETE /api/v1/volumes/{id}/attach?host_nqn= — stop serving it to
+    /// that host only (#51). Idempotent; a 404 (volume gone) is done.
+    pub async fn withdraw_host(&self, id: &str, host_nqn: &str) -> anyhow::Result<()> {
+        let resp = self
+            .req(reqwest::Method::DELETE, &format!("/api/v1/volumes/{id}/attach"))
+            .query(&[("host_nqn", host_nqn)])
+            .send()
+            .await?;
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("withdraw {id} from {host_nqn}: {}", resp.status());
+        }
+        Ok(())
+    }
+
+    /// The engine-local id of the volume named `name` (GET /api/v1/volumes):
+    /// a /v1 volume's id is not its engine id, and the per-host attach and
+    /// withdraw take the engine id. Exactly one match, else an error.
+    pub async fn local_volume_id(&self, name: &str) -> anyhow::Result<String> {
+        let ids: Vec<String> = self
+            .get_items("/api/v1/volumes")
+            .await?
+            .iter()
+            .filter(|v| v.get("name").and_then(|n| n.as_str()) == Some(name))
+            .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
+            .collect();
+        match ids.as_slice() {
+            [id] => Ok(id.clone()),
+            [] => anyhow::bail!("no engine volume named {name:?}"),
+            _ => anyhow::bail!("{} engine volumes named {name:?}", ids.len()),
+        }
+    }
+
     /// DELETE /api/v1/volumes/{id}/attach — stop serving it. Idempotent.
     pub async fn detach_any(&self, id: &str) -> anyhow::Result<()> {
         let resp = self

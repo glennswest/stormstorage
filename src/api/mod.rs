@@ -11,7 +11,7 @@ use crate::placement::{self, Candidate};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
@@ -139,6 +139,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes/{name}", get(get_volume).delete(delete_volume))
         .route("/api/v1/volumes/{name}/move", post(move_volume_leg))
         .route("/api/v1/volumes/{name}/export", post(export_volume))
+        .route("/api/v1/volumes/{name}/export/hosts", post(serve_export_host))
+        .route("/api/v1/volumes/{name}/export/hosts/{host_nqn}", delete(withdraw_export_host))
         .route("/api/v1/volumes/{name}/assemble", post(assemble_volume))
         .route("/api/v1/volumes/{name}/replicas", get(volume_replicas))
         .route("/api/v1/volumes/{name}/fence", post(fence_volume))
@@ -436,6 +438,34 @@ struct CreateVolumeRequest {
     /// Resync rate class for later legs (#33).
     #[serde(default)]
     bandwidth_class: Option<crate::model::BandwidthClass>,
+    /// Consumer hosts to serve it to (#51/#53), each from its own
+    /// subsystem; none = the shared subsystem, as before.
+    #[serde(default)]
+    hosts: Vec<HostRequest>,
+}
+
+/// A consumer host to serve a volume to (#51).
+#[derive(Deserialize)]
+struct HostRequest {
+    host_nqn: String,
+    /// Ask the engine for a DH-HMAC-CHAP secret for this host.
+    #[serde(default)]
+    dhchap: bool,
+}
+
+fn host_records(hosts: &[HostRequest]) -> Result<Vec<crate::model::HostServe>, ApiError> {
+    let mut out: Vec<crate::model::HostServe> = Vec::new();
+    for h in hosts {
+        let nqn = h.host_nqn.trim();
+        if !crate::orchestrate::valid_host_nqn(nqn) {
+            return Err(ApiError::bad_request(format!("{nqn:?} is not a host NQN (nqn.…, at most 223 bytes)")));
+        }
+        match out.iter_mut().find(|x| x.host_nqn == nqn) {
+            Some(x) => x.dhchap |= h.dhchap,
+            None => out.push(crate::model::HostServe { host_nqn: nqn.to_string(), dhchap: h.dhchap, ..Default::default() }),
+        }
+    }
+    Ok(out)
 }
 
 async fn create_volume(
@@ -445,6 +475,7 @@ async fn create_volume(
     if req.name.is_empty() || req.size_bytes == 0 {
         return Err(ApiError::bad_request("name and size_bytes required"));
     }
+    let hosts = host_records(&req.hosts)?;
     if req.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
         // The head names the consumer volume `<name>-mirror`; a leg of that
         // name would be answered as the consumer volume (name-idempotent).
@@ -543,7 +574,7 @@ async fn create_volume(
         replacing: None,
         next_releg_after: None,
         next_assemble_after: None,
-        export: Default::default(),
+        export: crate::model::Export { per_host: !hosts.is_empty(), hosts, ..Default::default() },
         epoch: 1,
         fenced: false,
         bandwidth_class: req.bandwidth_class.unwrap_or_default(),
@@ -888,19 +919,89 @@ async fn move_volume_leg(
     Ok(Json(json!({ "moving": body.from, "to": target, "status": "rebuilding" })))
 }
 
+#[derive(Deserialize, Default)]
+struct ExportBody {
+    /// Consumer hosts to serve it to as well (#53); added to the recorded
+    /// ones. Secrets are returned by `…/export/hosts`, not here.
+    #[serde(default)]
+    hosts: Vec<HostRequest>,
+}
+
 /// Publish the volume to consumers, or republish it and report whether the
-/// coordinates changed (#2). Returns the export record.
+/// coordinates changed (#2). Returns the export record. An optional body
+/// `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53).
 async fn export_volume(
     State(s): State<Arc<AppState>>,
     Path(name): Path<String>,
+    body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !s.fed.read().await.volumes.contains_key(&name) {
-        return Err(ApiError::not_found(format!("volume {name:?}")));
+    let body: ExportBody = if body.iter().all(u8::is_ascii_whitespace) {
+        ExportBody::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|e| ApiError::bad_request(format!("body: {e}")))?
+    };
+    let add = host_records(&body.hosts)?;
+    {
+        let mut fed = s.fed.write().await;
+        let v = fed
+            .volumes
+            .get_mut(&name)
+            .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?;
+        v.export.per_host |= !add.is_empty();
+        for h in add {
+            match v.export.hosts.iter_mut().find(|x| x.host_nqn == h.host_nqn) {
+                Some(x) => x.dhchap |= h.dhchap,
+                None => v.export.hosts.push(h),
+            }
+        }
     }
     let ex = crate::orchestrate::publish(&s, &name)
         .await
         .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
     Ok(Json(serde_json::to_value(ex).unwrap_or_default()))
+}
+
+/// Serve a volume to one consumer host (#51): that host's coordinates (its
+/// own subsystem on the serving engine) and, with `dhchap`, its secret.
+/// The secret is in this answer only. Idempotent.
+async fn serve_export_host(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(req): Json<HostRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !s.fed.read().await.volumes.contains_key(&name) {
+        return Err(ApiError::not_found(format!("volume {name:?}")));
+    }
+    if !crate::orchestrate::valid_host_nqn(&req.host_nqn) {
+        return Err(ApiError::bad_request(format!(
+            "{:?} is not a host NQN (nqn.…, at most 223 bytes)",
+            req.host_nqn
+        )));
+    }
+    let (rec, secret) = crate::orchestrate::serve_host(&s, &name, &req.host_nqn, req.dhchap)
+        .await
+        .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    let mut out = serde_json::to_value(&rec).unwrap_or_default();
+    if let Some(sec) = secret {
+        out["dhchap_secret"] = json!(sec);
+    }
+    Ok(Json(out))
+}
+
+/// Stop serving a volume to one consumer host (#51). `withdrawn`: `done`,
+/// or `pending` when the serving engine does not answer (withdrawn there
+/// when it does), or `nothing_served`.
+async fn withdraw_export_host(
+    State(s): State<Arc<AppState>>,
+    Path((name, host_nqn)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !s.fed.read().await.volumes.contains_key(&name) {
+        return Err(ApiError::not_found(format!("volume {name:?}")));
+    }
+    let w = crate::orchestrate::withdraw_host(&s, &name, &host_nqn)
+        .await
+        .map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+    Ok(Json(json!({ "host_nqn": host_nqn.trim(), "withdrawn": w })))
 }
 
 /// Retry a pending volume's assembly (#7), then serve it. Resumes from

@@ -768,6 +768,11 @@ async fn promote_claimed(
         coordinates_changed: false,
         message: None,
         adopted: true,
+        // Re-served to on the new head by the publish that follows.
+        hosts: vol.export.hosts.clone(),
+        per_host: vol.export.per_host,
+        local_id: served.clone(),
+        withdrawing: vol.export.withdrawing.clone(),
     };
     {
         let mut fed = state.fed.write().await;
