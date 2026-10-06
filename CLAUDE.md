@@ -489,6 +489,19 @@ question → asked on #40, `needs-owner`.
 Done: the fix commit + b1d39bc docs; sc-build passes (export 8/8). #40 waits
 on the owner's answer (recreate empty, or refuse).
 
+### A served volume gone from its engine (#40, P2) — in progress 2026-10-06
+Owner (2026-10-06, master's recommendation accepted): never hand out an
+empty replacement. Plan: when publish's attach of a *recorded* served
+volume (v1 attach, adopted attach_any, per-host attach, or the local-id
+lookup) gets 404, the export is `failed` with `gone: true` ("served volume
+gone; its data is not recreated") and an Error event; recovery and plain
+`POST …/export` no longer attach it (409 says what to do). Only `POST
+…/export {"recreate": true}` (assembled volumes: a new pinned
+`<name>-mirror`, hosts re-served, `coordinates_changed`) or a delete moves
+it on; a single-leg volume's leg is the data, so recreate is refused there.
+Engine 404 is typed (`engine::HttpStatus`) so it survives wrapping.
+Tests in tests/export.rs (+ a per-host case in tests/hosts.rs).
+
 ### Other open
 - [ ] #12 engine token default path and peer calls; #14 re-head; #15
       reassemble after head engine restart; #35 forward announcements
