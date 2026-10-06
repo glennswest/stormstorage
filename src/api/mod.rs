@@ -86,10 +86,23 @@ impl AppState {
     /// `[local] token_file`), read now so a re-minted file is picked up.
     /// Nodes stormblock registered and nodes adopted carry none (#38).
     pub fn engine_token(&self, node: &NodeConfig) -> Option<String> {
-        node.api_token
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .or_else(|| self.config.local.token())
+        self.engine_token_source(node).0
+    }
+
+    /// [`Self::engine_token`] and where it came from (#12): the node's
+    /// `api_token`, its `token_file`, then the `[local]` rule — the shared
+    /// token for any engine, the minted one only for this machine's.
+    pub fn engine_token_source(&self, node: &NodeConfig) -> (Option<String>, String) {
+        if let Some(t) = node.api_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            return (Some(t.to_string()), format!("{}: api_token", node.name));
+        }
+        if let Some(f) = node.token_file.as_deref() {
+            let found = crate::config::token_search(None, &[f.to_string()]);
+            if found.0.is_some() {
+                return found;
+            }
+        }
+        self.config.local.token_for(&node.engine_url)
     }
 }
 
@@ -1088,6 +1101,7 @@ async fn register_node(
             name: a.hostname.clone(),
             engine_url: url.clone(),
             api_token: None,
+            token_file: None,
             labels: Default::default(),
             tier: None,
         },

@@ -100,6 +100,11 @@ pub struct LocalConfig {
     /// otherwise the first readable of this file, `$STORMBLOCK_TOKEN_FILE`,
     /// and [`DEFAULT_TOKEN_FILES`].
     pub token_file: Option<String>,
+    /// A file holding the cluster's *shared* engine token (stormblock's
+    /// `management.api_token`), presented to every engine, peers too
+    /// (#12). The files above hold a token the engine minted for itself,
+    /// which is presented only to an engine on this machine.
+    pub shared_token_file: Option<String>,
     /// Cluster-level tier role given to adopted nodes.
     pub tier: Option<String>,
 }
@@ -112,6 +117,7 @@ impl Default for LocalConfig {
             name: None,
             cluster_peers: true,
             token_file: None,
+            shared_token_file: None,
             tier: None,
         }
     }
@@ -132,12 +138,69 @@ impl LocalConfig {
     /// `$STORMBLOCK_TOKEN_FILE`, and the default paths — the last one is
     /// where a stormcos unit mounts the engine's minted token (stormcos#104).
     pub fn token_source(&self) -> (Option<String>, String) {
-        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        token_search(
-            env("STORMBLOCK_API_TOKEN"),
-            &token_files(self.token_file.as_deref(), env("STORMBLOCK_TOKEN_FILE").as_deref()),
-        )
+        self.token_for(&self.engine_url)
     }
+
+    /// The token to present to the engine at `url`, and where it came from
+    /// — stormblock's own rule (`mgmt::auth::token_for`, #107; #12): the
+    /// cluster's *shared* token for any engine; else the token this
+    /// machine's engine minted, but only for an engine on this machine. A
+    /// minted token means nothing to a peer, which minted its own.
+    pub fn token_for(&self, url: &str) -> (Option<String>, String) {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let shared = token_search(env("STORMBLOCK_API_TOKEN"), &self.shared_token_file.iter().cloned().collect::<Vec<_>>());
+        if shared.0.is_some() {
+            return shared;
+        }
+        if !is_this_machine(url) {
+            return (
+                None,
+                format!(
+                    "no shared token for an engine on another machine ({}) — a minted token means nothing \
+                     to a peer: set $STORMBLOCK_API_TOKEN or [local] shared_token_file to the cluster's \
+                     api_token, or the node's api_token/token_file",
+                    shared.1
+                ),
+            );
+        }
+        token_search(None, &token_files(self.token_file.as_deref(), env("STORMBLOCK_TOKEN_FILE").as_deref()))
+    }
+}
+
+/// The host part of an engine URL, without port or brackets.
+fn url_host(url: &str) -> &str {
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    let hostport = rest.split(['/', '?']).next().unwrap_or("");
+    if let Some(v6) = hostport.strip_prefix('[') {
+        return v6.split(']').next().unwrap_or("");
+    }
+    match hostport.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => hostport,
+    }
+}
+
+/// Whether the engine at `url` runs on this machine: a loopback host,
+/// this machine's hostname, or an IP address held here (binding a socket
+/// to it succeeds only then). A local engine may announce itself by its
+/// LAN address (self-registration).
+pub fn is_this_machine(url: &str) -> bool {
+    let host = url_host(url);
+    if matches!(host, "" | "localhost") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback() || std::net::UdpSocket::bind((ip, 0)).is_ok();
+    }
+    let me = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .or_else(|_| std::fs::read_to_string("/etc/hostname"))
+        .unwrap_or_default();
+    let me = me.trim();
+    // Exact, or a bare name equal to our short name: never a same-named
+    // host in another domain, which would be handed our minted token.
+    !me.is_empty()
+        && (host.eq_ignore_ascii_case(me)
+            || (!host.contains('.') && host.eq_ignore_ascii_case(me.split('.').next().unwrap_or(""))))
 }
 
 /// The node's Kubernetes apiserver, read for each node volume's PV and
@@ -224,7 +287,7 @@ fn token_files(config: Option<&str>, env: Option<&str>) -> Vec<String> {
     v
 }
 
-fn token_search(env_token: Option<String>, files: &[String]) -> (Option<String>, String) {
+pub fn token_search(env_token: Option<String>, files: &[String]) -> (Option<String>, String) {
     if let Some(t) = env_token {
         return (Some(t.trim().to_string()), "$STORMBLOCK_API_TOKEN".into());
     }
@@ -373,6 +436,10 @@ pub struct NodeConfig {
     pub engine_url: String,
     #[serde(default)]
     pub api_token: Option<String>,
+    /// A file holding that engine's token, read on every call (#12). After
+    /// `api_token`, before the `[local]` tokens.
+    #[serde(default)]
+    pub token_file: Option<String>,
     /// Failure-domain labels, rung → value (site/rack/cluster/…).
     /// "node" defaults to `name`; "cluster" defaults to `name` too (SNO).
     #[serde(default)]
@@ -623,6 +690,48 @@ mod tests {
         let (t, why) = token_search(None, &files[..2]);
         assert!(t.is_none());
         assert!(why.contains("missing") && why.contains("is empty"), "{why}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn this_machine_by_url() {
+        assert_eq!(url_host("http://10.0.0.5:9090/x"), "10.0.0.5");
+        assert_eq!(url_host("http://[::1]:9090"), "::1");
+        assert_eq!(url_host("http://node-a"), "node-a");
+        assert!(is_this_machine("http://127.0.0.1:9090"));
+        assert!(is_this_machine("http://localhost:9090"));
+        assert!(is_this_machine("http://[::1]:9090"));
+        // TEST-NET-1: never held by a build box.
+        assert!(!is_this_machine("http://192.0.2.1:9090"));
+        assert!(!is_this_machine("http://peer-that-is-not-me.invalid:9090"));
+        let me = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+        if !me.trim().is_empty() {
+            assert!(is_this_machine(&format!("http://{}:9090", me.trim())));
+        }
+    }
+
+    /// #12: the minted token goes to this machine's engine only; a shared
+    /// one goes everywhere. (Run only without $STORMBLOCK_API_TOKEN set,
+    /// which would be the shared token for every engine.)
+    #[test]
+    fn minted_token_stays_local_shared_goes_to_peers() {
+        if std::env::var("STORMBLOCK_API_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ss-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let minted = dir.join("minted");
+        let shared = dir.join("shared");
+        std::fs::write(&minted, "mint\n").unwrap();
+        std::fs::write(&shared, "fleet\n").unwrap();
+        let mut l = LocalConfig { token_file: Some(minted.display().to_string()), ..Default::default() };
+        assert_eq!(l.token_for("http://127.0.0.1:9090").0.as_deref(), Some("mint"));
+        let (t, why) = l.token_for("http://192.0.2.1:9090");
+        assert!(t.is_none());
+        assert!(why.contains("shared_token_file"), "{why}");
+        l.shared_token_file = Some(shared.display().to_string());
+        assert_eq!(l.token_for("http://192.0.2.1:9090").0.as_deref(), Some("fleet"));
+        assert_eq!(l.token_for("http://127.0.0.1:9090").0.as_deref(), Some("fleet"), "shared wins, as in stormblock");
         std::fs::remove_dir_all(&dir).ok();
     }
 

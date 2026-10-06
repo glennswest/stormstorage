@@ -92,6 +92,7 @@ fn registered(url: &str) -> FedState {
                 name: "node-a".into(),
                 engine_url: url.into(),
                 api_token: None,
+                token_file: None,
                 labels: Default::default(),
                 tier: None,
             },
@@ -179,4 +180,30 @@ async fn a_refusing_engine_is_backed_off_and_a_new_token_is_tried_at_once() {
         .since(0)
         .iter()
         .any(|e| e.kind == "auth" && e.message.contains("accepts")));
+}
+
+/// #12: per node — its `api_token`, then its `token_file`, then the
+/// `[local]` rule: the minted token only for an engine on this machine.
+#[tokio::test]
+async fn per_node_token_order_and_no_minted_token_for_a_peer() {
+    if std::env::var("STORMBLOCK_API_TOKEN").is_ok_and(|v| !v.trim().is_empty()) {
+        return;
+    }
+    let mut config = Config::default();
+    config.local.token_file = Some(token_file("peer-minted", "minted").display().to_string());
+    let state = AppState::new(config, FedState::default(), None);
+    let node = |url: &str, toml_extra: &str| -> NodeConfig {
+        toml::from_str(&format!("name = \"n\"\nengine_url = \"{url}\"\n{toml_extra}")).unwrap()
+    };
+    assert_eq!(state.engine_token(&node("http://127.0.0.1:9090", "")).as_deref(), Some("minted"));
+    let (t, why) = state.engine_token_source(&node("http://192.0.2.1:9090", ""));
+    assert!(t.is_none(), "a peer is never sent this machine's minted token");
+    assert!(why.contains("minted token means nothing"), "{why}");
+    let f = token_file("peer-own", "peer-token");
+    let own = format!("token_file = \"{}\"", f.display());
+    assert_eq!(state.engine_token(&node("http://192.0.2.1:9090", &own)).as_deref(), Some("peer-token"));
+    assert_eq!(
+        state.engine_token(&node("http://192.0.2.1:9090", &format!("api_token = \"inline\"\n{own}"))).as_deref(),
+        Some("inline")
+    );
 }

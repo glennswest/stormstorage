@@ -165,7 +165,7 @@ async fn note_outcome(
     let interval = Duration::from_secs(state.config.poll.interval_secs.max(1));
     match state.refusals.refused(url, token, interval, Instant::now()) {
         crate::refusal::Report::First => {
-            let (_, source) = state.config.local.token_source();
+            let (_, source) = state.config.local.token_for(url);
             let sent = if token.is_some() { "a token" } else { "no token" };
             tracing::warn!(
                 %url,
@@ -286,6 +286,7 @@ pub async fn adopt_local(state: &Arc<AppState>) {
         // The configured token is presented at call time
         // (`AppState::engine_token`), never copied into the state file.
         api_token: None,
+        token_file: None,
         labels: Default::default(),
         tier: local.tier.clone(),
     }];
@@ -296,6 +297,7 @@ pub async fn adopt_local(state: &Arc<AppState>) {
                     name: p.node_name.clone(),
                     engine_url: crate::api::engine_url_from(&p.mgmt_addr),
                     api_token: None,
+                    token_file: None,
                     labels: Default::default(),
                     tier: local.tier.clone(),
                 });
