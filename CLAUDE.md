@@ -556,8 +556,8 @@ Turning it on waits on fencing through cluster membership + stormblock#6.
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
-- [x] #14 re-head — opt-in, off by default (done 2026-10-06); #35 forward announcements
-      to stormfs.
+- [x] #14 re-head — opt-in, off by default (done 2026-10-06).
+- [ ] #35 forward announcements to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
       `token_file` is now under `[local]` (checked with `component export`).
