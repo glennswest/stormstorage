@@ -26,13 +26,21 @@ stormview components feed on **:9093**.
   (volume create, attach, arrays, deletes) after 300 s, since an array
   create formats a slab through the RAID and a loaded engine can take
   far longer than a poll should wait.
-- **Engine token (#38).** Every engine call presents a bearer token: the
-  node's own `api_token` from `[[nodes]]`, else the configured engine token
-  (`$STORMBLOCK_API_TOKEN`, else the first readable of `[local] token_file`,
+- **Engine token (#38, #12).** Every engine call presents a bearer token.
+  The node's own `api_token` or `token_file` from `[[nodes]]` comes first.
+  Otherwise stormblock's own rule applies (`token_for`, stormblock#107).
+  The cluster's **shared** token (`$STORMBLOCK_API_TOKEN`, else `[local]
+  shared_token_file`) goes to every engine. Otherwise the token **this
+  machine's engine minted** goes only to an engine on this machine. That
+  token is the first readable of `[local] token_file`,
   `$STORMBLOCK_TOKEN_FILE`, `/etc/stormblock/api_token`,
-  `/var/lib/stormblock/api_token`, `/run/stormblock/engine/api_token`). The token
-  is read on every call, so a re-minted file is picked up. Self-registered
-  and adopted nodes have no token of their own and get the configured one.
+  `/var/lib/stormblock/api_token` and `/run/stormblock/engine/api_token`.
+  "On this machine" means a loopback host, this machine's hostname, or an
+  IP address held here. A minted token means nothing to a peer, which
+  minted its own. So a cluster peer adopted or self-registered from
+  another machine gets the shared token, or none: then it refuses and is
+  backed off, and the log says why. The token is read on every call, so a
+  re-minted file is picked up.
   It is never copied into `state.json`. A 401 or 403 is treated as a
   configuration error, not an outage. That engine URL is backed off: no
   calls for twice the poll interval, doubling up to 5 min, and each skipped
@@ -336,6 +344,7 @@ worked example.
 | `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
 | `[local] token_file` | unset | Engine bearer token file. `$STORMBLOCK_API_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `$STORMBLOCK_TOKEN_FILE`, `/etc/stormblock/api_token`, `/var/lib/stormblock/api_token` and `/run/stormblock/engine/api_token` (the family order, stormdrive#14; the last is where a stormcos unit mounts the minted token) (#42). The token is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). The key belongs under `[local]`: a top-level `token_file` is ignored, and every unknown top-level key is logged as a WARN at start. |
+| `[local] shared_token_file` | unset | File holding the cluster's **shared** engine token (stormblock's `management.api_token`), presented to every engine, peers included (#12). `$STORMBLOCK_API_TOKEN` wins over it. The `token_file` search above finds a token the engine minted for itself, which goes only to an engine on this machine. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
@@ -357,7 +366,8 @@ worked example.
 |---|---|---|
 | `name` | required | Node name, also its registry key. |
 | `engine_url` | required | stormblock management base URL, e.g. `http://192.168.8.150:9090`. |
-| `api_token` | unset | Bearer token for that engine's API. Unset: the `[local]` engine token. |
+| `api_token` | unset | Bearer token for that engine's API. Unset: `token_file`, then the `[local]` rule (shared token; minted token only for an engine on this machine, #12). |
+| `token_file` | unset | File holding that engine's token, read on every call (#12). |
 | `labels` | `{}` | Rung → value. `node` and `cluster` default to `name` (SNO). Config labels override the labels the engine reports. |
 | `tier` | unset | Free-form tier role (`high`, `medium`, `backup`, …). |
 
