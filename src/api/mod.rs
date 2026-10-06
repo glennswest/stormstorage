@@ -40,6 +40,9 @@ pub struct AppState {
     /// Each assembled volume's array as last read on its head (#33). Not
     /// persisted, not replicated.
     pub heads: RwLock<BTreeMap<String, crate::head::ArrayReading>>,
+    /// Each volume's last *live* reading of its head, kept while the head
+    /// does not answer: the bar a reading from superblocks must meet (#48).
+    pub head_live: RwLock<BTreeMap<String, crate::head::ArrayReading>>,
     /// Conditions already reported once (keys), so a poll does not repeat
     /// the same error event.
     pub noted: std::sync::Mutex<std::collections::BTreeSet<String>>,
@@ -57,6 +60,7 @@ impl AppState {
             refusals: Default::default(),
             kube: Default::default(),
             heads: Default::default(),
+            head_live: Default::default(),
             noted: Default::default(),
         }
     }
@@ -662,6 +666,8 @@ async fn volume_replicas(State(s): State<Arc<AppState>>, Path(name): Path<String
         "head": v.head,
         "dual_attach": v.dual_attach,
         "sync_read_at": reading.map(|r| r.read_at),
+        "sync_source": reading.map(|r| r.source),
+        "head_read_at": reading.and_then(|r| r.head_read_at),
         "rebuild_bytes_per_sec": reading.and_then(|r| r.rebuild_bytes_per_sec),
     }))
     .into_response()

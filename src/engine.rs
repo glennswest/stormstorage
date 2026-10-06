@@ -376,6 +376,18 @@ impl Engine {
             .ok_or_else(|| anyhow::anyhow!("volume {id}: no epoch in {v}"))
     }
 
+    /// GET /v1/volumes/{id}/raid-superblock (stormblock#309): the RAID
+    /// superblock a head wrote into this leg, read on the leg's own engine.
+    /// `None` when the volume carries none or the engine has no such route
+    /// (404) — no evidence, never an error a caller must act on.
+    pub async fn leg_superblock(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        let resp = self.get(&format!("/v1/volumes/{id}/raid-superblock")).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(resp.error_for_status()?.json().await?))
+    }
+
     /// POST /v1/volumes/{id}/fence {expected_epoch} — the engine's CAS.
     pub async fn v1_fence(&self, id: &str, expected_epoch: u64) -> anyhow::Result<FenceOutcome> {
         let path = format!("/v1/volumes/{id}/fence");

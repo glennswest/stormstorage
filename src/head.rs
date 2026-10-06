@@ -73,6 +73,18 @@ pub struct MemberReading {
     pub rebuilt_bytes: Option<u64>,
 }
 
+/// Where a reading's member states came from (#48).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncSource {
+    /// The head's array, read live.
+    #[default]
+    Head,
+    /// The head could not be read: the RAID superblocks the head wrote
+    /// into the surviving legs, read on the legs' own engines.
+    Superblock,
+}
+
 /// The head's array as last read. In memory only: every instance reads
 /// the engines itself, like node status.
 #[derive(Debug, Clone, Serialize)]
@@ -80,12 +92,18 @@ pub struct ArrayReading {
     pub read_at: SystemTime,
     pub head: String,
     pub array_id: String,
-    /// The engine's array state: clean, degraded, rebuilding, failed.
+    /// The engine's array state: clean, degraded, rebuilding, failed
+    /// ("unknown" for a reading from superblocks).
     pub state: String,
     pub member_data_bytes: u64,
     pub members: Vec<MemberReading>,
     /// Rate of the running rebuild, if one is running.
     pub rebuild_bytes_per_sec: Option<u64>,
+    /// The array's event count: the head's, or the newest superblock's.
+    pub events: Option<u64>,
+    pub source: SyncSource,
+    /// For a reading from superblocks: when the head was last read live.
+    pub head_read_at: Option<SystemTime>,
 }
 
 /// Parse `GET /api/v1/arrays/{id}`.
@@ -129,7 +147,151 @@ pub fn parse_array(head: &str, array_id: &str, v: &serde_json::Value) -> ArrayRe
             .filter(|r| r.get("running").and_then(|x| x.as_bool()).unwrap_or(false))
             .and_then(|r| r.get("rate_bytes_per_sec"))
             .and_then(|x| x.as_u64()),
+        events: v.get("events").and_then(|x| x.as_u64()),
+        source: SyncSource::Head,
+        head_read_at: None,
     }
+}
+
+/// One slot of a leg's RAID superblock.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotRecord {
+    pub member_uuid: String,
+    pub state: String,
+    pub rebuilt_to: u64,
+}
+
+/// The RAID superblock a head wrote into a leg (stormblock#309), as read
+/// on the leg's own engine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LegSuperblock {
+    pub array_uuid: String,
+    /// The member this leg is.
+    pub member_uuid: String,
+    pub events: u64,
+    pub data_size: u64,
+    pub slots: Vec<SlotRecord>,
+}
+
+/// Parse `GET /v1/volumes/{id}/raid-superblock`. `None` for a body that
+/// is not one (no array uuid, member uuid or event count).
+pub fn parse_superblock(v: &serde_json::Value) -> Option<LegSuperblock> {
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|x| x.to_lowercase());
+    Some(LegSuperblock {
+        array_uuid: s("array_uuid")?,
+        member_uuid: s("member_uuid")?,
+        events: v.get("events").and_then(|x| x.as_u64())?,
+        data_size: v.get("data_size").and_then(|x| x.as_u64()).unwrap_or(0),
+        slots: v
+            .get("slots")
+            .and_then(|x| x.as_array())
+            .map(|ss| {
+                ss.iter()
+                    .filter_map(|x| {
+                        Some(SlotRecord {
+                            member_uuid: x.get("member_uuid")?.as_str()?.to_lowercase(),
+                            state: x.get("state")?.as_str()?.to_lowercase(),
+                            rebuilt_to: x.get("rebuilt_to").and_then(|r| r.as_u64()).unwrap_or(0),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    })
+}
+
+/// The state a set of superblocks gives one member: worst wins
+/// (failed/spare/other < rebuilding < active); a newest superblock that
+/// does not list the member at all means it was taken out ("removed").
+fn agreed_state(member: &str, newest: &[&LegSuperblock]) -> (String, u64) {
+    let rank = |st: &str| match st {
+        "active" => 2,
+        "rebuilding" => 1,
+        _ => 0,
+    };
+    let mut out: Option<(String, u64)> = None;
+    for sb in newest {
+        let Some(rec) = sb.slots.iter().find(|r| r.member_uuid == member) else {
+            return ("removed".into(), 0);
+        };
+        out = Some(match out {
+            None => (rec.state.clone(), rec.rebuilt_to),
+            Some((st, _)) if rank(&rec.state) < rank(&st) => (rec.state.clone(), rec.rebuilt_to),
+            Some((st, rb)) if rec.state == st => (st, rb.min(rec.rebuilt_to)),
+            Some(keep) => keep,
+        });
+    }
+    out.unwrap_or_else(|| ("removed".into(), 0))
+}
+
+/// A reading of a volume's array built from its surviving legs'
+/// superblocks, for when the head cannot be read (#48). Pure.
+///
+/// A member reads `active` (→ `in_sync`) only when all of these hold:
+/// its own superblock is of this array and carries the newest event count
+/// among the legs read; every superblock at that count records it active;
+/// its count is not below the last live reading of the head; and, unless
+/// its superblock is newer than that reading, the reading had it active
+/// too. Anything older or contradicted is "stale"/the reading's state,
+/// which is `detached`. `last` is the last live reading of this head.
+pub fn from_superblocks(
+    vol: &DistVolume,
+    last: Option<&ArrayReading>,
+    sbs: &[LegSuperblock],
+    now: SystemTime,
+) -> Option<ArrayReading> {
+    let head = vol.head.clone()?;
+    let array_id = vol.array_id.clone()?;
+    let last = last.filter(|r| r.source == SyncSource::Head && r.head == head && r.array_id == array_id);
+    let ours: Vec<&LegSuperblock> =
+        sbs.iter().filter(|s| s.array_uuid.eq_ignore_ascii_case(&array_id)).collect();
+    let max = ours.iter().map(|s| s.events).max()?;
+    let newest: Vec<&LegSuperblock> = ours.iter().copied().filter(|s| s.events == max).collect();
+    let floor = last.and_then(|l| l.events);
+    let members = ours
+        .iter()
+        .map(|sb| {
+            let (mut state, mut rebuilt) = if sb.events < max || floor.is_some_and(|f| sb.events < f) {
+                ("stale".to_string(), 0)
+            } else {
+                agreed_state(&sb.member_uuid, &newest)
+            };
+            // No newer evidence than the last live reading: it must agree.
+            let newer = floor.is_some_and(|f| sb.events > f);
+            if let Some(l) = last.filter(|_| !newer) {
+                match l.members.iter().find(|m| m.uuid.eq_ignore_ascii_case(&sb.member_uuid)) {
+                    Some(m) if m.state == "active" => {}
+                    Some(m) if state == "active" || (state == "rebuilding" && m.state != "rebuilding") => {
+                        state = m.state.clone();
+                        rebuilt = m.rebuilt_bytes.unwrap_or(0);
+                    }
+                    Some(_) => {}
+                    None => state = "removed".into(),
+                }
+            }
+            MemberReading {
+                uuid: sb.member_uuid.clone(),
+                device_path: String::new(),
+                state,
+                rebuilt_bytes: Some(rebuilt),
+            }
+        })
+        .collect();
+    Some(ArrayReading {
+        read_at: now,
+        head,
+        array_id,
+        state: "unknown".into(),
+        member_data_bytes: last
+            .map(|l| l.member_data_bytes)
+            .filter(|b| *b > 0)
+            .unwrap_or_else(|| newest.iter().map(|s| s.data_size).max().unwrap_or(0)),
+        members,
+        rebuild_bytes_per_sec: None,
+        events: Some(max),
+        source: SyncSource::Superblock,
+        head_read_at: last.map(|l| l.read_at),
+    })
 }
 
 fn member_sync(m: &MemberReading, data_bytes: u64) -> SyncState {
@@ -153,7 +315,7 @@ fn member_sync(m: &MemberReading, data_bytes: u64) -> SyncState {
 pub fn member_of<'a>(leg: &crate::model::Leg, r: &'a ArrayReading) -> Option<&'a MemberReading> {
     let uri = leg.export.as_ref().map(|x| x.drive_uri());
     r.members.iter().find(|m| {
-        leg.member_uuid.as_deref() == Some(m.uuid.as_str())
+        leg.member_uuid.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(&m.uuid))
             || uri.as_deref() == Some(m.device_path.as_str())
     })
 }
@@ -214,32 +376,65 @@ pub fn view(vol: &DistVolume, reading: Option<&ArrayReading>) -> serde_json::Val
             "sync_read_at".into(),
             serde_json::to_value(reading.map(|r| r.read_at)).unwrap_or_default(),
         );
+        o.insert(
+            "sync_source".into(),
+            serde_json::to_value(reading.map(|r| r.source)).unwrap_or_default(),
+        );
     }
     v
 }
 
 /// Read every assembled volume's array on its head (run after each poll).
-/// A head that cannot be read loses its reading — no stale `in_sync`.
+/// A head that cannot be read loses its live reading — no stale
+/// `in_sync`; the surviving legs' superblocks stand in for it (#48).
 pub async fn refresh(state: &Arc<AppState>) {
-    let due: Vec<(String, String, String, crate::engine::Engine)> = {
+    type Due = (DistVolume, Option<crate::engine::Engine>, Vec<(crate::engine::Engine, String)>);
+    let due: Vec<Due> = {
         let fed = state.fed.read().await;
+        let healthy = |node: &str| fed.nodes.get(node).filter(|n| n.status.healthy);
         fed.volumes
             .values()
             .filter(|v| matches!(v.assembly, AssemblyState::Assembled | AssemblyState::Degraded))
-            .filter_map(|v| {
-                let head = v.head.clone()?;
-                let array = v.array_id.clone()?;
-                let n = fed.nodes.get(&head).filter(|n| n.status.healthy)?;
-                Some((v.name.clone(), head, array, state.engine_for(n)))
+            .filter(|v| v.head.is_some() && v.array_id.is_some())
+            .map(|v| {
+                let head = v.head.as_deref().and_then(healthy).map(|n| state.engine_for(n));
+                let legs = v
+                    .legs
+                    .iter()
+                    .chain(v.replacing.as_ref().map(|r| &r.leg))
+                    .filter(|l| l.state == LegState::Created)
+                    .filter_map(|l| Some((state.engine_for(healthy(&l.node)?), l.volume_id.clone()?)))
+                    .collect();
+                (v.clone(), head, legs)
             })
             .collect()
     };
     let mut readings = std::collections::BTreeMap::new();
-    for (name, head, array, engine) in due {
-        if let Ok(a) = engine.get_array(&array).await {
-            readings.insert(name, parse_array(&head, &array, &a));
+    let mut live = state.head_live.read().await.clone();
+    live.retain(|name, _| due.iter().any(|(v, _, _)| &v.name == name));
+    for (vol, head_engine, legs) in due {
+        let (Some(head), Some(array)) = (vol.head.clone(), vol.array_id.clone()) else { continue };
+        let read = match &head_engine {
+            Some(e) => e.get_array(&array).await.ok(),
+            None => None,
+        };
+        if let Some(a) = read {
+            let r = parse_array(&head, &array, &a);
+            live.insert(vol.name.clone(), r.clone());
+            readings.insert(vol.name.clone(), r);
+            continue;
+        }
+        let mut sbs = Vec::new();
+        for (engine, id) in legs {
+            if let Ok(Some(v)) = engine.leg_superblock(&id).await {
+                sbs.extend(parse_superblock(&v));
+            }
+        }
+        if let Some(r) = from_superblocks(&vol, live.get(&vol.name), &sbs, SystemTime::now()) {
+            readings.insert(vol.name.clone(), r);
         }
     }
+    *state.head_live.write().await = live;
     *state.heads.write().await = readings;
 }
 
@@ -1097,5 +1292,106 @@ mod tests {
         assert_eq!(r.rate(BandwidthClass::Unthrottled), 0);
         assert!(r.rate(BandwidthClass::Low) < r.rate(BandwidthClass::Normal));
         assert!(r.rate(BandwidthClass::Normal) < r.rate(BandwidthClass::High));
+    }
+
+    fn sb(member: &str, events: u64, slots: &[(&str, &str, u64)]) -> LegSuperblock {
+        LegSuperblock {
+            array_uuid: "arr".into(),
+            member_uuid: member.into(),
+            events,
+            data_size: 1000,
+            slots: slots
+                .iter()
+                .map(|(m, st, rb)| SlotRecord { member_uuid: m.to_string(), state: st.to_string(), rebuilt_to: *rb })
+                .collect(),
+        }
+    }
+
+    fn live(events: u64, b_state: &str, rebuilt: Option<u64>) -> ArrayReading {
+        let mut r = reading(b_state, rebuilt);
+        r.events = Some(events);
+        r
+    }
+
+    fn sync_of(v: &DistVolume, r: &ArrayReading, node: &str) -> SyncState {
+        replicas(v, Some(r)).into_iter().find(|x| x.node == node).unwrap().sync
+    }
+
+    #[test]
+    fn parse_a_leg_superblock() {
+        let s = parse_superblock(&serde_json::json!({
+            "array_uuid": "ARR", "member_uuid": "mb", "slot": 1, "level": "raid1",
+            "events": 42, "update_time": 1, "data_size": 1000,
+            "slots": [{"slot": 0, "member_uuid": "ma", "state": "active", "rebuilt_to": 0},
+                      {"slot": 1, "member_uuid": "mb", "state": "rebuilding", "rebuilt_to": 250}]
+        }))
+        .unwrap();
+        assert_eq!(s, sb("mb", 42, &[("ma", "active", 0), ("mb", "rebuilding", 250)]));
+        assert!(parse_superblock(&serde_json::json!({"code": "no_superblock"})).is_none());
+    }
+
+    /// The head is gone: the slave's superblock, as new as the last live
+    /// reading and agreeing with it, says it is in sync (#48).
+    #[test]
+    fn head_lost_slave_in_sync_from_its_superblock() {
+        let mut v = vol();
+        v.legs[0].state = LegState::Lost;
+        v.assembly = AssemblyState::Degraded;
+        let last = live(10, "active", None);
+        let b = sb("mb", 10, &[("ma", "active", 0), ("mb", "active", 0)]);
+        let r = from_superblocks(&v, Some(&last), &[b], SystemTime::now()).unwrap();
+        assert_eq!(r.source, SyncSource::Superblock);
+        assert_eq!(r.head_read_at, Some(last.read_at));
+        assert_eq!(sync_of(&v, &r, "b"), SyncState::InSync);
+        assert_eq!(sync_of(&v, &r, "a"), SyncState::Detached);
+        assert_eq!(health(&v, &replicas(&v, Some(&r))), Health::Degraded);
+        let view = view(&v, Some(&r));
+        assert_eq!(view["sync_source"], "superblock");
+        // No live reading since a restart: the superblock alone.
+        let r = from_superblocks(&v, None, &[sb("mb", 10, &[("mb", "active", 0)])], SystemTime::now()).unwrap();
+        assert_eq!(sync_of(&v, &r, "b"), SyncState::InSync);
+    }
+
+    #[test]
+    fn older_or_contradicted_superblocks_are_not_in_sync() {
+        let v = vol();
+        let both = [("ma", "active", 0), ("mb", "active", 0)];
+        // Older than the last live reading.
+        let r = from_superblocks(&v, Some(&live(10, "active", None)), &[sb("mb", 9, &both)], SystemTime::now());
+        assert_eq!(sync_of(&v, &r.unwrap(), "b"), SyncState::Detached);
+        // The last reading had it rebuilding at the same count: resyncing.
+        let r = from_superblocks(&v, Some(&live(10, "rebuilding", Some(250))), &[sb("mb", 10, &both)], SystemTime::now());
+        assert_eq!(
+            sync_of(&v, &r.unwrap(), "b"),
+            SyncState::Resyncing { progress_pct: 25.0, lag_bytes: 750 }
+        );
+        // …but a newer superblock (the rebuild finished after it) wins.
+        let r = from_superblocks(&v, Some(&live(10, "rebuilding", Some(250))), &[sb("mb", 11, &both)], SystemTime::now());
+        assert_eq!(sync_of(&v, &r.unwrap(), "b"), SyncState::InSync);
+        // Another array's superblock is no evidence at all.
+        let mut other = sb("mb", 10, &both);
+        other.array_uuid = "zzz".into();
+        assert!(from_superblocks(&v, None, &[other], SystemTime::now()).is_none());
+    }
+
+    #[test]
+    fn newest_superblocks_must_all_agree() {
+        let mut v = vol();
+        v.legs.push(leg("c", "mc"));
+        v.legs[0].state = LegState::Lost;
+        // c (newest) recorded b failed; b's own superblock still says active.
+        let b = sb("mb", 12, &[("ma", "active", 0), ("mb", "active", 0), ("mc", "active", 0)]);
+        let c = sb("mc", 12, &[("ma", "active", 0), ("mb", "failed", 0), ("mc", "active", 0)]);
+        let r = from_superblocks(&v, None, &[b.clone(), c.clone()], SystemTime::now()).unwrap();
+        assert_eq!(sync_of(&v, &r, "b"), SyncState::Detached);
+        assert_eq!(sync_of(&v, &r, "c"), SyncState::InSync);
+        // b behind c: stale, whatever it says of itself.
+        let b_old = sb("mb", 11, &b.slots.iter().map(|s| (s.member_uuid.as_str(), "active", 0u64)).collect::<Vec<_>>());
+        let r = from_superblocks(&v, None, &[b_old, sb("mc", 12, &[("mc", "active", 0)])], SystemTime::now()).unwrap();
+        assert_eq!(sync_of(&v, &r, "b"), SyncState::Detached);
+        // A newest superblock that no longer lists c: removed.
+        let r = from_superblocks(&v, None, &[sb("mb", 12, &[("mb", "active", 0)]), sb("mc", 12, &[("mc", "active", 0)])], SystemTime::now()).unwrap();
+        assert_eq!(sync_of(&v, &r, "b"), SyncState::Detached);
+        assert_eq!(sync_of(&v, &r, "c"), SyncState::Detached);
     }
 }

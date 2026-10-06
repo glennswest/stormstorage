@@ -3,8 +3,9 @@
 //! epoch, promote onto a surviving leg's node after the head is lost (the
 //! array put back together from the legs' superblocks, the served volume
 //! that came with it served again), the former head cleaned up only once
-//! it no longer holds the array, dual-attach windows, and prestage with a
-//! bandwidth class.
+//! it no longer holds the array, dual-attach windows, prestage with a
+//! bandwidth class, and sync from the slave's superblock once the head is
+//! lost (#48).
 //!
 //! The mocks keep the rules stormblock v19.4 enforces (src/mgmt/api/{v1,
 //! arrays,volumes}.rs): /v1 fence is a CAS on the volume's epoch (412 +
@@ -52,6 +53,9 @@ struct Mock {
     drives: BTreeMap<String, String>,
     arrays: BTreeMap<String, Vec<Member>>,
     rates: BTreeMap<String, u64>,
+    /// /v1 volume id → the RAID superblock read from it (stormblock#309);
+    /// unset = 404, as on an engine without the route.
+    sbs: BTreeMap<String, Value>,
     log: Vec<String>,
 }
 
@@ -136,6 +140,13 @@ async fn v1_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+async fn v1_superblock(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
+    match s.m.lock().unwrap().sbs.get(&id) {
+        Some(v) => (StatusCode::OK, Json(v.clone())),
+        None => (StatusCode::NOT_FOUND, Json(json!({"code": "no_superblock"}))),
+    }
+}
+
 async fn add_drive(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
     let mut m = s.m.lock().unwrap();
     m.next += 1;
@@ -159,7 +170,7 @@ fn array_json(id: &str, members: &[Member]) -> Value {
             json!({"index": i, "uuid": x.uuid, "state": x.state, "device_path": x.path, "rebuilt_bytes": x.rebuilt})
         })
         .collect();
-    json!({"id": id, "member_data_bytes": 1000, "status": {"state": "clean"}, "members": ms})
+    json!({"id": id, "member_data_bytes": 1000, "events": 7, "status": {"state": "clean"}, "members": ms})
 }
 
 async fn create_array(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
@@ -311,6 +322,7 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
         .route("/v1/volumes/{id}/attach", post(v1_attach))
         .route("/v1/volumes/{id}/detach", post(v1_detach))
         .route("/v1/volumes/{id}/fence", post(v1_fence))
+        .route("/v1/volumes/{id}/raid-superblock", get(v1_superblock))
         .route("/api/v1/drives", post(add_drive))
         .route("/api/v1/drives/{p}", delete(close_drive))
         .route("/api/v1/arrays", post(create_array).get(list_arrays))
@@ -426,6 +438,67 @@ async fn sync_state_comes_from_the_head_array() {
     stormstorage::head::refresh(&state).await;
     let r = get_json(format!("{api}/api/v1/volumes/s/replicas")).await;
     assert_eq!(r["health"], "faulted");
+}
+
+/// #48: the head is lost, so its array cannot be read; the slave's own
+/// superblock, read on the slave's engine, says whether it was in sync.
+#[tokio::test]
+async fn head_lost_sync_from_the_slave_superblock() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, other, array) = create_mirror(&api, "h").await;
+    stormstorage::head::refresh(&state).await;
+    let r = get_json(format!("{api}/api/v1/volumes/h/replicas")).await;
+    assert_eq!((r["health"].as_str(), r["sync_source"].as_str()), (Some("healthy"), Some("head")), "{r}");
+
+    let (slave_vol, members) = {
+        let fed = state.fed.read().await;
+        let v = &fed.volumes["h"];
+        let leg = v.legs.iter().find(|l| l.node == other).unwrap();
+        let members: Vec<String> = v.legs.iter().map(|l| l.member_uuid.clone().unwrap()).collect();
+        (leg.volume_id.clone().unwrap(), (leg.member_uuid.clone().unwrap(), members))
+    };
+    let sb = |events: u64| {
+        let slots: Vec<Value> = members.1.iter().enumerate()
+            .map(|(i, m)| json!({"slot": i, "member_uuid": m, "state": "active", "rebuilt_to": 0}))
+            .collect();
+        json!({"array_uuid": array, "member_uuid": members.0, "slot": 1, "level": "raid1",
+               "events": events, "data_size": 1000, "slots": slots})
+    };
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = false;
+
+    // The engine has no superblock route (404): no evidence, detached.
+    stormstorage::head::refresh(&state).await;
+    let r = get_json(format!("{api}/api/v1/volumes/h/replicas")).await;
+    assert_eq!(r["health"], "faulted", "{r}");
+
+    // As new as the last live reading (events 7) and active there: in sync.
+    mocks[&other].lock().unwrap().sbs.insert(slave_vol.clone(), sb(7));
+    stormstorage::head::refresh(&state).await;
+    let r = get_json(format!("{api}/api/v1/volumes/h/replicas")).await;
+    assert_eq!(r["sync_source"], "superblock", "{r}");
+    assert!(r["head_read_at"].is_object() || r["head_read_at"].is_string(), "{r}");
+    let reps = r["replicas"].as_array().unwrap();
+    let sync = |n: &str| reps.iter().find(|x| x["node"] == n).unwrap()["sync"]["state"].clone();
+    assert_eq!(sync(&other), "in_sync", "{r}");
+    assert_eq!(sync(&head), "detached");
+    assert_eq!(r["health"], "degraded");
+    let v = get_json(format!("{api}/api/v1/volumes/h")).await;
+    assert_eq!(v["sync_source"], "superblock");
+    let feed = stormstorage::components::collect(&state).await;
+    let c = feed.iter().find(|c| c.id == "volume:h").unwrap();
+    assert!(c.metrics.iter().any(|m| m.label == "sync from"), "{:?}", c.metrics);
+
+    // Older than what the head last said: stale, detached.
+    mocks[&other].lock().unwrap().sbs.insert(slave_vol.clone(), sb(6));
+    stormstorage::head::refresh(&state).await;
+    let r = get_json(format!("{api}/api/v1/volumes/h/replicas")).await;
+    assert_eq!(r["health"], "faulted", "{r}");
+
+    // The head answers again: the live reading is back.
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = true;
+    stormstorage::head::refresh(&state).await;
+    let r = get_json(format!("{api}/api/v1/volumes/h/replicas")).await;
+    assert_eq!((r["health"].as_str(), r["sync_source"].as_str()), (Some("healthy"), Some("head")), "{r}");
 }
 
 #[tokio::test]

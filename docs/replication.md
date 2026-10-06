@@ -52,19 +52,61 @@ parses it unchanged:
 | `rebuilding` | `{"state": "resyncing", "progress_pct": rebuilt / member_data × 100, "lag_bytes": member_data − rebuilt}` |
 | anything else, a `lost` or `failed` leg, a pending assembly | `{"state": "detached"}` |
 
-**No reading means `detached`.** That covers a head not read yet, a head
-that does not answer, or a reading of a different head or array. A
-consumer that waits for `in_sync` before a failover is never told a copy
-is in sync without evidence. A single-leg volume is one master, `in_sync`.
+**No evidence means `detached`.** That covers a head not read yet, a
+reading of a different head or array, or a head that does not answer when
+the legs give nothing either (below). A consumer that waits for `in_sync`
+before a failover is never told a copy is in sync without evidence. A
+single-leg volume is one master, `in_sync`.
+
+### When the head does not answer (#48)
+
+Failover exists for a lost head, so the evidence has to survive the head.
+When the head's array cannot be read (its node is unhealthy, or the read
+fails), stormstorage reads the RAID superblock the head wrote into each
+surviving leg, on the leg's **own** engine:
+`GET /v1/volumes/{leg}/raid-superblock` (stormblock#309: array uuid, the
+leg's member uuid, the event count, and every slot's member and state).
+A 404 (no superblock, or an engine without the route) is no evidence.
+
+A leg reads `in_sync` from superblocks only when **all** of these hold:
+
+1. its superblock is of this volume's array;
+2. its event count is the newest among the legs read;
+3. every superblock at that count records it `active` (one that records
+   it `failed`, or no longer lists it, makes it `detached`);
+4. its count is not below the last **live** reading of the head (kept in
+   memory per volume while the head is away);
+5. unless its count is newer than that reading, the reading had it
+   `active` too. A rebuild the reading saw still running stays
+   `resyncing`, from the reading's progress.
+
+A member `rebuilding` at the newest count is `resyncing`, from the
+superblock's `rebuilt_to`. Everything else is `detached`, and the head's
+own leg is `detached`, since its node does not answer. The answer says
+where it came from: `sync_source` is `head` (live) or `superblock`, beside
+`sync_read_at`. A superblock answer also carries `head_read_at`, the last
+live reading. The feed shows `sync from: leg superblocks`. The reading
+that brings a lost head leg back (#26) only ever uses the head's own
+answer.
+
+**What it cannot see.** If the head dropped a slave *after* its last live
+reading and then died, the only record of that drop may be on the head's
+own leg. With three or more legs, the other survivors carry the failure
+mark, and rule 3 catches it. With two legs, nothing reachable does: the
+slave's superblock still says `active` at the count the head last showed.
+That window is at most one poll interval (`poll.interval_secs`) before
+the head stopped answering. The same superblocks are what `promote`
+assembles from, so both see the same thing.
 
 `health` follows `/v1`: `healthy` when at least `replicas` copies are in
 sync, `faulted` when none is, `degraded` otherwise.
 
 `GET /api/v1/volumes/{name}/replicas` returns the volume in this shape:
 `{id, name, size_bytes, epoch, fenced, health, replicas[], bandwidth_class,
-head, dual_attach, sync_read_at, rebuild_bytes_per_sec}`. The full volume
-record (`GET /api/v1/volumes[/{name}]`) carries the same list as
-`replica_sync`, plus `health` and `sync_read_at`. Its `replicas` field is
+head, dual_attach, sync_read_at, sync_source, head_read_at,
+rebuild_bytes_per_sec}`. The full volume record (`GET
+/api/v1/volumes[/{name}]`) carries the same list as `replica_sync`, plus
+`health`, `sync_read_at` and `sync_source`. Its `replicas` field is
 the copy count, as before. The feed shows `in sync n/m`, a `resync node
 pct%` metric and the epoch when it has moved.
 

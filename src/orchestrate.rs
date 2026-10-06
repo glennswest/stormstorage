@@ -993,7 +993,9 @@ async fn rejoin_heads(state: &Arc<AppState>) {
         // This poll's reading of the head, else read it here — a failed
         // read in the poll could be a 404, which is a finding.
         let polled = state.heads.read().await.get(&name).cloned();
-        let reading = match polled.filter(|r| r.head == head && r.array_id == array_id) {
+        let reading = match polled.filter(|r| {
+            r.source == crate::head::SyncSource::Head && r.head == head && r.array_id == array_id
+        }) {
             Some(r) => Some(r),
             None => match engine.find_array(&array_id).await {
                 Ok(v) => v.map(|v| crate::head::parse_array(&head, &array_id, &v)),

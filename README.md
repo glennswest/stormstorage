@@ -226,7 +226,10 @@ stormview components feed on **:9093**.
   volumes (owner, stormblock#179 option b). Each poll reads the head's
   array: every leg is a replica `{node, role, sync}` in `/v1`'s exact
   JSON (`in_sync`, `resyncing {progress_pct, lag_bytes}`, `detached`; no
-  reading = `detached`). A per-volume `epoch` with a CAS `fence` that also
+  evidence = `detached`). When the head does not answer, sync comes from
+  the RAID superblocks in the surviving legs, read on their own engines
+  (`sync_source: superblock`, #48, stormblock#309; docs/replication.md has
+  the rules). A per-volume `epoch` with a CAS `fence` that also
   fences every leg's `/v1` epoch. `promote` moves the head onto a
   surviving leg's node and re-imports the same array from the legs'
   superblocks. `prestage` replaces a slave at the volume's
@@ -392,8 +395,8 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
 | POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?}`. Places, creates the legs and assembles. Returns the volume record. |
-| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`. `GET /api/v1/volumes` lists the same. |
-| GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, replicas[{node, role, sync}], bandwidth_class, head, dual_attach, sync_read_at, rebuild_bytes_per_sec}`. |
+| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`). `GET /api/v1/volumes` lists the same. |
+| GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, replicas[{node, role, sync}], bandwidth_class, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
 | POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |
 | POST | `/api/v1/volumes/{name}/prestage` | `{node?, from?, bandwidth_class?}` → `{replacing, to, bandwidth_class}`. Replaces a slave leg; 409 for the head as `node` or `from`. |

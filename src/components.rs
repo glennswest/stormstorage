@@ -321,6 +321,10 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
         });
         let tone = if in_sync >= v.replicas as usize { "ok" } else { "warn" };
         metrics.push(Metric::new("in sync", format!("{in_sync}/{}", reps.len())).tone(tone));
+        // The head did not answer: sync from the legs' superblocks (#48).
+        if reading.is_some_and(|r| r.source == crate::head::SyncSource::Superblock) {
+            metrics.push(Metric::new("sync from", "leg superblocks").tone("warn"));
+        }
         if let Some((node, pct)) = resync {
             metrics.push(Metric::new("resync", format!("{node} {pct:.1}%")).tone("warn"));
         }
