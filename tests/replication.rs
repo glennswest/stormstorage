@@ -286,13 +286,21 @@ async fn engine_volumes(State(s): State<S>) -> Json<Value> {
     Json(json!({"items": items}))
 }
 
-async fn any_attach(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
+async fn any_attach(State(s): State<S>, Path(id): Path<String>, body: axum::body::Bytes) -> (StatusCode, Json<Value>) {
     let mut m = s.m.lock().unwrap();
     if !m.adopted.contains_key(&id) && !m.volumes.contains_key(&id) {
         return (StatusCode::NOT_FOUND, Json(json!({})));
     }
-    m.log.push(format!("attach-any {id}"));
+    let b: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let node = m.node.clone();
+    // A named consumer host (#51): served from that host's own subsystem.
+    if let Some(h) = b["host_nqn"].as_str() {
+        m.log.push(format!("attach-any {id} host={h}"));
+        let mut c = coords(&node, 77);
+        c["nqn"] = json!(format!("nqn.2024.io.stormblock:{node}:host:{h}"));
+        return (StatusCode::OK, Json(c));
+    }
+    m.log.push(format!("attach-any {id}"));
     (StatusCode::OK, Json(coords(&node, 77)))
 }
 
@@ -585,6 +593,35 @@ async fn fence_then_promote_after_the_head_is_lost() {
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
     let m = mocks[&target].lock().unwrap();
     assert!(m.log.contains(&format!("detach-any {served}")) && m.log.contains(&format!("delete-any {served}")), "{:?}", m.log);
+}
+
+/// #51: a consumer host served before a promote is served again by the
+/// new head, from its own subsystem there, through the adopted volume's
+/// engine id; the record says its coordinates changed.
+#[tokio::test]
+async fn promote_reserves_the_consumer_hosts() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, target, _array) = create_mirror(&api, "q").await;
+    let (st, h) = call(format!("{api}/api/v1/volumes/q/export/hosts"), json!({"host_nqn": "nqn.c1"})).await;
+    assert_eq!(st, 200, "{h}");
+    assert_eq!(h["coordinates"]["nqn"], format!("nqn.2024.io.stormblock:{head}:host:nqn.c1"));
+    let served = state.fed.read().await.volumes["q"].export.volume_id.clone().unwrap();
+    assert!(mocks[&head].lock().unwrap().log.contains(&format!("attach-any {served} host=nqn.c1")));
+
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = false;
+    let (st, _) = call(format!("{api}/api/v1/volumes/q/fence"), json!({"expected_epoch": 1})).await;
+    assert_eq!(st, 200);
+    let (st, v) = call(format!("{api}/api/v1/volumes/q/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
+    assert_eq!(st, 200, "{v}");
+    let ex = &v["export"];
+    assert_eq!(ex["state"], "published", "{v}");
+    assert_eq!(ex["hosts"][0]["host_nqn"], "nqn.c1");
+    assert_eq!(ex["hosts"][0]["coordinates"]["nqn"], format!("nqn.2024.io.stormblock:{target}:host:nqn.c1"), "{v}");
+    assert_eq!(ex["hosts"][0]["coordinates_changed"], true);
+    assert_eq!(ex["coordinates_changed"], true);
+    let log = mocks[&target].lock().unwrap().log.clone();
+    assert!(log.contains(&format!("attach-any {served} host=nqn.c1")), "{log:?}");
+    assert!(!log.contains(&format!("attach-any {served}")), "no shared attach once hosts are named: {log:?}");
 }
 
 #[tokio::test]
