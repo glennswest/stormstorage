@@ -489,7 +489,7 @@ question → asked on #40, `needs-owner`.
 Done: the fix commit + b1d39bc docs; sc-build passes (export 8/8). #40 waits
 on the owner's answer (recreate empty, or refuse).
 
-### A served volume gone from its engine (#40, P2) — in progress 2026-10-06
+### A served volume gone from its engine (#40, P2) — DONE 2026-10-06
 Owner (2026-10-06, master's recommendation accepted): never hand out an
 empty replacement. Plan: when publish's attach of a *recorded* served
 volume (v1 attach, adopted attach_any, per-host attach, or the local-id
@@ -501,8 +501,9 @@ gone; its data is not recreated") and an Error event; recovery and plain
 it on; a single-leg volume's leg is the data, so recreate is refused there.
 Engine 404 is typed (`engine::HttpStatus`) so it survives wrapping.
 Tests in tests/export.rs (+ a per-host case in tests/hosts.rs).
+Done: sc-build passes (export 9/9, hosts 3/3); build failure #55 fixed.
 
-### Engine token for peers (#12, P2) — in progress 2026-10-06
+### Engine token for peers (#12, P2) — DONE 2026-10-06
 Default-path half done by #42 (ef3af98: family order incl.
 `/run/stormblock/engine/api_token`). Peer half, by stormblock's own rule
 (`mgmt::auth::token_for`, #107): a *shared* token — `$STORMBLOCK_API_TOKEN`
@@ -512,9 +513,11 @@ hostname, or an IP held here: a UDP bind to it succeeds). New per-node
 `[[nodes]] token_file`. Order per node: `api_token`, `token_file`, shared,
 minted-if-local. The refusal log says which applied. Unit tests of the
 choice; tests/token.rs: a remote peer is not sent the minted token.
+Done: c944a27; sc-build passes (67 unit, token 4/4).
 
 ### Other open
-- [ ] #12 engine token default path and peer calls; #14 re-head; #15
+- [x] #12 engine token default path and peer calls (done 2026-10-06).
+- [ ] #14 re-head; #15
       reassemble after head engine restart; #35 forward announcements
       to stormfs.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
