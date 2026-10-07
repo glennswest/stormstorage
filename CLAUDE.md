@@ -643,7 +643,7 @@ usual rules; otherwise the plain plan. Responses carry
 `prefer_node_honored`. Pure `placement::plan_preferring` + unit tests;
 tests/replication.rs: created with prefer_node → that node is head.
 
-### Extent size on create (#59, P3) — in progress 2026-10-07
+### Extent size on create (#59, P3) — DONE 2026-10-07
 stormblock#156: `/v1` create takes `extent_size_bytes` (absent = the node
 chooses). Plan: optional `extent_size_bytes` on `POST /api/v1/volumes`
 (400 unless a power of two ≥ 4096), sent on every leg's `/v1` create and
@@ -654,6 +654,8 @@ engine answers 500, not 400 — stormblock#323). The served
 `<name>-mirror` is pinned to the array: its extents are the array slab's
 slots, which the engine chooses and ignores the field for (stormblock#324).
 Shown in the volume JSON and `/replicas`. Test: tests/replication.rs.
+Done: c7d2a3e; sc-build passes on a build VM (e107551: 78 unit,
+replication 11/11). Golden waits on stormcentral#521.
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
