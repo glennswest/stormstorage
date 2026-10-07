@@ -658,6 +658,8 @@ Done: c7d2a3e; sc-build passes on a build VM (e107551: 78 unit,
 replication 11/11). Golden waits on stormcentral#521.
 
 ### Other open
+- [ ] Golden for #59 (c7d2a3e and later): `component build stormstorage`
+      once stormcentral#521 lands (it still went to dev.g8.lo on 2026-10-07).
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
 - [x] #14 re-head — opt-in, off by default (done 2026-10-06).
