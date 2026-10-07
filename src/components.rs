@@ -641,6 +641,7 @@ mod tests {
             fenced: false,
             bandwidth_class: Default::default(),
             extent_size_bytes: None,
+            rate_pending: false,
             dual_attach: None,
             migration: None,
         };

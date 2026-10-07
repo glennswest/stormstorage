@@ -11,7 +11,7 @@ use crate::placement::{self, Candidate};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
@@ -174,6 +174,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes/{name}/fence", post(fence_volume))
         .route("/api/v1/volumes/{name}/promote", post(promote_volume))
         .route("/api/v1/volumes/{name}/prestage", post(prestage_volume))
+        .route("/api/v1/volumes/{name}/bandwidth-class", put(put_bandwidth_class))
         .route("/api/v1/volumes/{name}/dual-attach", post(open_dual_attach))
         .route("/api/v1/volumes/{name}/dual-attach/close", post(close_dual_attach))
         .route("/api/v1/stale-heads", get(list_stale_heads))
@@ -667,6 +668,7 @@ async fn create_volume(
         fenced: false,
         bandwidth_class: req.bandwidth_class.unwrap_or_default(),
         extent_size_bytes: req.extent_size_bytes,
+        rate_pending: false,
         dual_attach: None,
         migration: None,
     };
@@ -861,6 +863,23 @@ async fn prestage_volume(
 ) -> Response {
     let b = body.map(|b| b.0).unwrap_or_default();
     match crate::head::prestage(&s, &name, b.node, b.from, b.bandwidth_class).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+#[derive(Deserialize)]
+struct BandwidthClassBody {
+    bandwidth_class: crate::model::BandwidthClass,
+}
+
+/// Change a volume's bandwidth class after create (#60).
+async fn put_bandwidth_class(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(b): Json<BandwidthClassBody>,
+) -> Response {
+    match crate::head::set_bandwidth_class(&s, &name, b.bandwidth_class).await {
         Ok(v) => Json(v).into_response(),
         Err(r) => refusal(r),
     }

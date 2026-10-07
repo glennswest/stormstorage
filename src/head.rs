@@ -1070,6 +1070,148 @@ pub async fn prestage(
     Ok(serde_json::json!({ "replacing": from, "to": to, "bandwidth_class": class }))
 }
 
+/// Where a volume's rebuild cap stands after an attempt to apply it (#60).
+#[derive(Debug, Clone, Serialize)]
+pub struct RateApplied {
+    pub bytes_per_sec: u64,
+    /// On the head's array now.
+    pub applied: bool,
+    /// Kept as `rate_pending` and retried each poll.
+    pub pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Put the volume's bandwidth class on its head's array as the rebuild cap
+/// (#60). A volume with no array has nothing to cap; an unreachable head or
+/// a failed call leaves `rate_pending` set for the reconciler.
+pub async fn apply_rate(state: &Arc<AppState>, name: &str) -> Option<RateApplied> {
+    let (class, head_engine, array_id, head_ok) = {
+        let fed = state.fed.read().await;
+        let vol = fed.volumes.get(name)?;
+        let head = vol.head.as_ref().and_then(|h| fed.nodes.get(h));
+        (
+            vol.bandwidth_class,
+            head.map(|n| state.engine_for(n)),
+            vol.array_id.clone(),
+            head.is_some_and(|n| n.status.healthy),
+        )
+    };
+    let bytes = state.config.recovery.rate(class);
+    let (applied, message) = match (&head_engine, &array_id) {
+        (Some(e), Some(a)) if head_ok => match e.set_rebuild_rate(a, bytes).await {
+            Ok(()) => (true, None),
+            Err(e) => (false, Some(format!("{e:#}"))),
+        },
+        (Some(_), Some(_)) => (false, Some("head not reachable; applied when it answers".to_string())),
+        _ => {
+            // No array (single leg, or not assembled yet): assembly applies
+            // the class when it builds one.
+            let mut fed = state.fed.write().await;
+            if let Some(v) = fed.volumes.get_mut(name) {
+                v.rate_pending = false;
+            }
+            return Some(RateApplied {
+                bytes_per_sec: bytes,
+                applied: false,
+                pending: false,
+                message: Some("no array yet; applied when one is assembled".into()),
+            });
+        }
+    };
+    let changed = {
+        let mut fed = state.fed.write().await;
+        match fed.volumes.get_mut(name) {
+            Some(v) if v.rate_pending == applied => {
+                v.rate_pending = !applied;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        state.persist().await;
+    }
+    Some(RateApplied { bytes_per_sec: bytes, applied, pending: !applied, message })
+}
+
+/// `PUT /api/v1/volumes/{name}/bandwidth-class {bandwidth_class}` (#60,
+/// stormblock-csi#31's ControllerModifyVolume): record the class, so later
+/// prestages, re-legs and promotes use it, and put its cap on the head's
+/// array at once. Idempotent: the same class applies the cap again.
+pub async fn set_bandwidth_class(
+    state: &Arc<AppState>,
+    name: &str,
+    class: BandwidthClass,
+) -> Result<serde_json::Value, Refusal> {
+    let before = {
+        let mut fed = state.fed.write().await;
+        let vol = fed
+            .volumes
+            .get_mut(name)
+            .ok_or_else(|| Refusal::NotFound(format!("volume {name:?}")))?;
+        let before = vol.bandwidth_class;
+        if before != class {
+            vol.bandwidth_class = class;
+            fed.revision += 1;
+        }
+        before
+    };
+    if before != class {
+        crate::replicate::push_to_peers(state.clone());
+        state.persist().await;
+    }
+    let r = apply_rate(state, name).await;
+    if before != class {
+        let how = match &r {
+            Some(r) if r.applied => format!("rebuild cap {} B/s on the head's array", r.bytes_per_sec),
+            Some(r) => r.message.clone().unwrap_or_default(),
+            None => String::new(),
+        };
+        event(
+            state,
+            name,
+            Severity::Info,
+            format!("{name}: bandwidth class {} → {} ({how})", class_name(before), class_name(class)),
+        )
+        .await;
+    }
+    let mut v = view_of(state, name).await;
+    v["rebuild_cap"] = serde_json::to_value(&r).unwrap_or_default();
+    Ok(v)
+}
+
+fn class_name(c: BandwidthClass) -> String {
+    serde_json::to_value(c).ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default()
+}
+
+/// Retry rebuild caps that did not reach a head (#60), for heads that
+/// answer again.
+pub async fn retry_pending_rates(state: &Arc<AppState>) {
+    let names: Vec<String> = {
+        let fed = state.fed.read().await;
+        fed.volumes
+            .values()
+            .filter(|v| v.rate_pending)
+            .filter(|v| v.head.as_ref().and_then(|h| fed.nodes.get(h)).is_some_and(|n| n.status.healthy))
+            .map(|v| v.name.clone())
+            .collect()
+    };
+    for name in names {
+        if let Some(r) = apply_rate(state, &name).await {
+            if r.applied {
+                event(
+                    state,
+                    &name,
+                    Severity::Info,
+                    format!("{name}: rebuild cap {} B/s applied on the head's array", r.bytes_per_sec),
+                )
+                .await;
+            }
+        }
+    }
+}
+
 fn ms(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -1308,6 +1450,7 @@ mod tests {
             fenced: false,
             bandwidth_class: BandwidthClass::Normal,
             extent_size_bytes: None,
+            rate_pending: false,
             dual_attach: None,
             migration: None,
         }

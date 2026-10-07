@@ -393,6 +393,10 @@ pub struct DistVolume {
     /// None = each node chooses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent_size_bytes: Option<u64>,
+    /// The bandwidth class's rebuild cap is not on the head's array yet
+    /// (#60: the head did not answer when it changed); retried each poll.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rate_pending: bool,
     #[serde(default)]
     pub dual_attach: Option<DualAttach>,
     /// A move of every leg to another pool in flight (#32).

@@ -987,3 +987,63 @@ async fn extent_size_reaches_every_leg_and_its_replacements() {
         assert!(!m.lock().unwrap().volumes.values().any(|v| v.0 == "y"), "a leg of y was left");
     }
 }
+
+async fn put(url: String, body: Value) -> (u16, Value) {
+    let r = reqwest::Client::new().put(url).json(&body).send().await.unwrap();
+    let st = r.status().as_u16();
+    (st, r.json().await.unwrap_or(Value::Null))
+}
+
+/// #60: a volume's bandwidth class changes after create. It is recorded,
+/// its cap goes on the head's array at once, the same class again is a
+/// no-op that applies the cap again, and a head that does not answer gets
+/// the cap once it does.
+#[tokio::test]
+async fn bandwidth_class_changes_after_create() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, _other, array) = create_mirror(&api, "bw").await;
+    let rc = state.config.recovery.clone();
+
+    let (st, v) = put(format!("{api}/api/v1/volumes/bw/bandwidth-class"), json!({"bandwidth_class": "high"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["bandwidth_class"], "high", "{v}");
+    assert_eq!(v["rebuild_cap"]["applied"], true, "{v}");
+    assert_eq!(v["rebuild_cap"]["bytes_per_sec"], rc.rate_high);
+    assert_eq!(mocks[&head].lock().unwrap().rates[&array], rc.rate_high);
+    assert_eq!(state.fed.read().await.volumes["bw"].bandwidth_class, stormstorage::model::BandwidthClass::High);
+
+    // Idempotent.
+    let rev = state.fed.read().await.revision;
+    let (st, v) = put(format!("{api}/api/v1/volumes/bw/bandwidth-class"), json!({"bandwidth_class": "high"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["rebuild_cap"]["applied"], true);
+    assert_eq!(state.fed.read().await.revision, rev, "no change, no revision");
+
+    // Head down: recorded, pending; applied once it answers.
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = false;
+    let (st, v) = put(format!("{api}/api/v1/volumes/bw/bandwidth-class"), json!({"bandwidth_class": "low"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["bandwidth_class"], "low");
+    assert_eq!(v["rebuild_cap"]["applied"], false, "{v}");
+    assert_eq!(v["rebuild_cap"]["pending"], true);
+    assert!(state.fed.read().await.volumes["bw"].rate_pending);
+    assert_eq!(mocks[&head].lock().unwrap().rates[&array], rc.rate_high, "not touched while down");
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = true;
+    stormstorage::orchestrate::reconcile(&state).await;
+    assert_eq!(mocks[&head].lock().unwrap().rates[&array], rc.rate_low);
+    assert!(!state.fed.read().await.volumes["bw"].rate_pending);
+
+    // Refusals.
+    let (st, _) = put(format!("{api}/api/v1/volumes/nope/bandwidth-class"), json!({"bandwidth_class": "low"})).await;
+    assert_eq!(st, 404);
+    let (st, _) = put(format!("{api}/api/v1/volumes/bw/bandwidth-class"), json!({"bandwidth_class": "turbo"})).await;
+    assert!(st == 400 || st == 422, "{st}");
+
+    // A single leg has no array: recorded, nothing to cap.
+    let (st, _) = call(format!("{api}/api/v1/volumes"), json!({"name": "one", "size_bytes": 1u64 << 30, "replicas": 1})).await;
+    assert_eq!(st, 200);
+    let (st, v) = put(format!("{api}/api/v1/volumes/one/bandwidth-class"), json!({"bandwidth_class": "unthrottled"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["bandwidth_class"], "unthrottled");
+    assert_eq!(v["rebuild_cap"]["pending"], false);
+}

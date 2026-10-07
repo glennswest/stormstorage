@@ -914,6 +914,9 @@ pub async fn reconcile(state: &Arc<AppState>) {
     rehead_lost(state, now).await;
     crate::migrate::run(state, now).await;
     crate::rebalance::run(state, now).await;
+    if state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+        crate::head::retry_pending_rates(state).await;
+    }
     // Host withdrawals an engine has not taken yet (#51).
     let pending: std::collections::BTreeSet<String> = {
         let fed = state.fed.read().await;
@@ -2108,6 +2111,7 @@ mod tests {
             fenced: false,
             bandwidth_class: Default::default(),
             extent_size_bytes: None,
+            rate_pending: false,
             dual_attach: None,
             migration: None,
         }
