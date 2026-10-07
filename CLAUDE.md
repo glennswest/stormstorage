@@ -633,7 +633,7 @@ same-head only; keep refusing encrypted/qos. Nothing built yet.
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
 - [x] #14 re-head — opt-in, off by default (done 2026-10-06).
-- [ ] #35 forward announcements to stormfs.
+- [ ] #35 forward announcements to stormfs — waits on the owner (2026-10-06): does stormfs keep its own registry (stormfs#64, unanswered; stormfs has no session)?
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
       `token_file` is now under `[local]` (checked with `component export`).
