@@ -28,7 +28,7 @@ drive and runs a RAID1 across them (`/api/v1/arrays`). Consumers attach
 | slave replica | every other leg, and a replacement leg in flight (role `slave`) |
 | `sync` | the head array's member state for that leg's drive |
 | `prestage {node}` | replace a slave leg (the leg-move sequence) |
-| `bandwidth_class` | the head array's rebuild rate cap |
+| `bandwidth_class` | the head array's rebuild rate cap; changed with `PUT …/bandwidth-class` (#60) |
 | `epoch` / `fence` | `DistVolume.epoch`, CAS; carried down to each leg's `/v1` epoch |
 | `promote {target_node}` | move the head onto the target's leg node |
 | `dual-attach` window | a bounded window on the volume; commit = fence + promote |
@@ -280,10 +280,18 @@ promote only) is a 409. Returns `{replacing, to, bandwidth_class}`.
 Progress is in `replicas[].sync` and the events.
 
 `bandwidth_class` (`low | normal | high | unthrottled`, default `normal`)
-is stored on the volume, and set at create or by a prestage. It is
-applied as the head array's rebuild cap (`PUT
-/api/v1/arrays/{id}/rebuild {max_bytes_per_sec}`) at assembly, promote
-and prestage. The rates are `[recovery] rate_low` (50 MiB/s),
+is stored on the volume, and set at create, by a prestage, or on its own
+with `PUT /api/v1/volumes/{name}/bandwidth-class {bandwidth_class}` (#60,
+stormblock-csi#31's ControllerModifyVolume). It is applied as the head
+array's rebuild cap (`PUT /api/v1/arrays/{id}/rebuild
+{max_bytes_per_sec}`) at assembly, promote and prestage, and at once by
+that PUT. The PUT is idempotent (the same class applies the cap again)
+and answers with the volume plus `rebuild_cap {bytes_per_sec, applied,
+pending, message?}`. If the head does not answer, or the call fails, the
+class is still recorded, `rate_pending` is set on the volume, and the
+reconciler applies the cap once the head is healthy. A volume with no
+array (a single leg, or assembly pending) has nothing to cap; assembly
+applies the class when it builds the array. The rates are `[recovery] rate_low` (50 MiB/s),
 `rate_normal` (200 MiB/s) and `rate_high` (1 GiB/s); `unthrottled` is 0
 (no cap). The cap is per array and applies to every rebuild on it.
 

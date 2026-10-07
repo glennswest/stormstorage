@@ -475,6 +475,7 @@ GET  /api/v1/volumes/{name}/replicas  /v1 replica shape: epoch, health, replicas
 POST /api/v1/volumes/{name}/fence     {expected_epoch} CAS → {epoch}; fences every leg
 POST /api/v1/volumes/{name}/promote   {target_node, fenced_epoch} — move the head
 POST /api/v1/volumes/{name}/prestage  {node?, from?, bandwidth_class?} — replace a slave
+PUT  /api/v1/volumes/{name}/bandwidth-class  {bandwidth_class} — change the rebuild cap class (#60)
 POST /api/v1/volumes/{name}/dual-attach        {target_node, ttl_secs}
 POST /api/v1/volumes/{name}/dual-attach/close  {epoch, outcome: commit|abort}
 GET  /api/v1/stale-heads              former heads to clean up
