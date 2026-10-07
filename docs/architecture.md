@@ -358,6 +358,10 @@ capacity ≥ size ∩ tier match), rung, replica count.
    (the head) when it fits, and the rest are placed over the other
    domains; otherwise steps 1–4 as they are.
 
+Placement does not look at extent sizes: an `extent_size_bytes` on create
+(#59) goes to every leg's `/v1` create, and a node without a pool of that
+size fails the create, which is rolled back.
+
 A leg move's automatic target uses the same function over healthy nodes
 that carry no leg and sit in a domain distinct from every staying leg.
 

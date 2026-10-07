@@ -103,7 +103,7 @@ sync, `faulted` when none is, `degraded` otherwise.
 
 `GET /api/v1/volumes/{name}/replicas` returns the volume in this shape:
 `{id, name, size_bytes, epoch, fenced, health, replicas[], bandwidth_class,
-head, dual_attach, sync_read_at, sync_source, head_read_at,
+extent_size_bytes, head, dual_attach, sync_read_at, sync_source, head_read_at,
 rebuild_bytes_per_sec}`. The full volume record (`GET
 /api/v1/volumes[/{name}]`) carries the same list as `replica_sync`, plus
 `health`, `sync_read_at` and `sync_source`. Its `replicas` field is
@@ -121,7 +121,9 @@ side: a mirrored volume is created here (`POST /api/v1/volumes` with
 `replicas: 2`), not by `/v1` create. So a stormblock-csi that wants
 mirrored volumes, failover and moves talks to stormstorage for them:
 
-- create: `POST /api/v1/volumes {name, size_bytes, replicas, bandwidth_class?}`
+- create: `POST /api/v1/volumes {name, size_bytes, replicas, bandwidth_class?, extent_size_bytes?}`
+  (`extent_size_bytes`: the StorageClass's `extentSize`, on every leg and
+  every replacement leg, #59)
 - state: `GET /api/v1/volumes/{name}/replicas`
 - prestage, fence, promote, dual-attach: the routes below, which take the
   `/v1` bodies and return the `/v1` error envelope.
