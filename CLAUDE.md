@@ -387,7 +387,7 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       replica A or C / both).
 
 ### Phase 5: HA
-- [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34)
+- [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34) — waits on the owner (2026-10-06): fleet fastetcd / StormKV / apiserver?
 
 ### Live migration of a VM's disks (#44, P3) — waits on stormblock#295
 Owner (rustkube-node#159): RAID to the destination, let it catch up, then
