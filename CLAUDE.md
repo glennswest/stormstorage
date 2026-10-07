@@ -631,6 +631,15 @@ same slab only; no engine-to-engine copy. Group snapshots: one engine only.
 Asked on #49 (needs-owner): clone COW-on-source-array vs full copy; groups
 same-head only; keep refusing encrypted/qos. Nothing built yet.
 
+### Head-node preference on create (#50, P3) — in progress 2026-10-06
+`prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
+node is a fitting candidate (healthy, pool/tier, room), it is the first
+pick — the first leg is the head (or, single copy, the only leg, local to
+the consumer) — and the rest are placed over the other domains by the
+usual rules; otherwise the plain plan. Responses carry
+`prefer_node_honored`. Pure `placement::plan_preferring` + unit tests;
+tests/replication.rs: created with prefer_node → that node is head.
+
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
