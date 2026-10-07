@@ -352,7 +352,7 @@ stormblock self-registered, or adopted) was polled bare.
 ### Phase 3: Rebalance + tier migration
 - [x] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30) — done 2026-10-06
 - [x] Placement by live IO load, not only free ratio (#31) — done 2026-10-06
-- [ ] Cross-cluster tier migration (pool → pool) (#32) — in progress 2026-10-06 (below)
+- [x] Cross-cluster tier migration (pool → pool) (#32) — done 2026-10-06 (head leg waits on stormblock#296)
 
 ### Phase 4: Replication on the RAID head (#33) — code done 2026-10-05; live run waits
 Re-scoped by the owner on stormblock#179 (option b, 2026-10-05): cross-node
@@ -602,7 +602,7 @@ proposal (dry run). Tests: planner units; tests via mock engines optional.
 Done: 6013bf7 (+ 3ae0d9a docs); sc-build passes (75 unit). Never moves a
 head's own leg. Not run against live engines (stormcentral#131).
 
-### Tier migration pool → pool (#32, P3) — in progress 2026-10-06
+### Tier migration pool → pool (#32, P3) — DONE 2026-10-06
 `POST /api/v1/volumes/{name}/migrate {pool}` records `migration {to_pool,
 from_pool, started_at, state, message}` (assembled volumes only; not
 fenced/replacing/windowed; destination must fit: `placement::plan` over
@@ -616,9 +616,8 @@ waiting_handover`. All legs in the destination → `pool` = to, migration
 cleared, event. `DELETE …/migrate` cancels (moves done stay). Rebalance
 skips migrating volumes. Pure `next_step`; unit tests + tests/replication.rs
 (4 nodes, two pools).
-Status 2026-10-06 21:45: code + tests + docs pushed (9e2d28f); sc-build not run
-yet — three tries got no slot (exit 75, all 6 busy with higher-priority
-builds). Next: sc-build, fix if needed, golden, close #32.
+Done: sc-build passes on 2bd672c (77 unit, replication 9/9) after four
+no-slot tries. The head's own leg waits on stormblock#296.
 
 ### Routes stormblock-csi needs (#49, P2) — waits on the owner (2026-10-06)
 Engine today: `/v1` leg expand yes, but no RAID1/slab grow → filed
