@@ -4,6 +4,7 @@
 <!-- New unreleased changes go here -->
 
 ### 2026-10-07
+- **docs:** Builds run on a fresh build VM; dev.g8.lo was retired on 2026-10-07 (README build section, CLAUDE.md).
 - **feat:** An optional extent size on create (#59, stormblock#156, for stormblock-csi#37's StorageClass `extentSize`). `extent_size_bytes` on `POST /api/v1/volumes` must be a power of two of 4096 or more (else 400, before any engine is called). It is sent on every leg's `/v1` create and kept on the volume (`extent_size_bytes` in the volume record and `/replicas`), so a replacement leg made by a move, re-leg, prestage, rebalance or tier migration is carved at the same size. Absent, nothing is sent and each node chooses, as before. A node with no pool of that size fails the create with its own message (the sizes it has), and the legs already made are deleted, so extent sizes never mix across legs. The served `<name>-mirror` is carved on the head's array and gets the array slab's slot size, which the engine chooses. Test: `tests/replication.rs` (every leg and the prestaged replacement get the size, the mirror does not; a bad size is a 400; a node without the pool fails the create with its sizes and nothing is left).
 
 ### 2026-10-06

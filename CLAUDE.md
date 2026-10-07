@@ -17,9 +17,12 @@ Never in the data path. Everything node↔node and client↔node is NVMe-TCP.
 ## Build and ship
 
 Build and test with **`sc-build`** from this checkout, after `git push`.
-It builds the pushed commit in a scratch directory on `dev.g8.lo` as an
-unprivileged user and deletes it afterwards. There is no checkout on dev,
-and nothing runs as root.
+It builds the pushed commit on a fresh build VM as an unprivileged user and
+deletes it afterwards. Nothing persists and nothing runs as root.
+dev.g8.lo was retired on 2026-10-07 (owner); until stormcentral's golden
+switches plain `sc-build` to VMs, use `SC_BUILD_VM=1 sc-build …`.
+`component build`/`stage` wait on stormcentral#521. Older notes that say
+"on dev" are history.
 
 ```
 git push && sc-build                 # cargo build && cargo test

@@ -613,17 +613,17 @@ assembly fails with that message.
 
 ## Building
 
-Builds and tests run on the build box, never on the session VM, and never
-as root. Push first, then run from the checkout:
+Builds and tests run on a fresh build VM, never on the session VM, and
+never as root. Push first, then run from the checkout:
 
 ```bash
 git push
-sc-build                        # cargo build && cargo test on dev.g8.lo
+sc-build                        # cargo build && cargo test on a build VM
 sc-build 'cargo clippy --all-targets'
 ```
 
-`sc-build` builds the pushed commit in a scratch directory on
-`dev.g8.lo` and deletes it afterwards. A failure files a `build-failure`
+`sc-build` builds the pushed commit on a fresh build VM and deletes it
+afterwards (the old build box, `dev.g8.lo`, was retired on 2026-10-07). A failure files a `build-failure`
 issue on this repo.
 
 Note that `stormview` is a git dependency, and `Cargo.lock` pins the
