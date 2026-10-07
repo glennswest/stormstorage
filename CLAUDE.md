@@ -655,7 +655,8 @@ engine answers 500, not 400 — stormblock#323). The served
 slots, which the engine chooses and ignores the field for (stormblock#324).
 Shown in the volume JSON and `/replicas`. Test: tests/replication.rs.
 Done: c7d2a3e; sc-build passes on a build VM (e107551: 78 unit,
-replication 11/11). Golden waits on stormcentral#521.
+replication 11/11). Golden golden-stormstorage-0768c8488a1c
+(stormcos#312).
 
 ### Change a volume's bandwidth class (#60, P3) — DONE 2026-10-07
 For stormblock-csi#31 (ControllerModifyVolume). `PUT
@@ -669,11 +670,12 @@ the reconciler (recovery-active instance) once the head is healthy. No
 array (single leg / pending assembly) → recorded only; assembly applies
 it. Auth: a mutation. Test: tests/replication.rs.
 Done: edc7fbc (+ 88375e3 test fix, #62); sc-build passes on a build VM
-(78 unit, replication 12/12). Golden waits on stormcentral#521.
+(78 unit, replication 12/12). Golden golden-stormstorage-0768c8488a1c
+(stormcos#312).
 
 ### Other open
-- [ ] Golden for #59 and #60 (c7d2a3e and later): `component build stormstorage`
-      once stormcentral#521 lands (it still went to dev.g8.lo on 2026-10-07).
+- [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
+      request stormcos#312 (2026-10-07).
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
 - [x] #14 re-head — opt-in, off by default (done 2026-10-06).
