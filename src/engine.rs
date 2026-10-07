@@ -247,14 +247,26 @@ impl Engine {
     /// `slaves: 0`: a leg is a standalone volume — cross-node redundancy is
     /// stormstorage's job (legs across nodes), not the engine's replica
     /// machinery; an SNO node has no peers to host a slave anyway.
-    pub async fn create_volume(&self, name: &str, size_bytes: u64) -> anyhow::Result<Value> {
+    /// `extent_size_bytes` (stormblock#156): sent only when asked, so an
+    /// absent value leaves the choice to the node; a size the node has no
+    /// pool for fails with its message (the sizes it has).
+    pub async fn create_volume(
+        &self,
+        name: &str,
+        size_bytes: u64,
+        extent_size_bytes: Option<u64>,
+    ) -> anyhow::Result<Value> {
+        let mut body = serde_json::json!({
+            "name": name,
+            "size_bytes": size_bytes,
+            "replica_tier": { "slaves": 0 },
+        });
+        if let Some(e) = extent_size_bytes {
+            body["extent_size_bytes"] = serde_json::json!(e);
+        }
         let resp = self
             .req(reqwest::Method::POST, "/v1/volumes")
-            .json(&serde_json::json!({
-                "name": name,
-                "size_bytes": size_bytes,
-                "replica_tier": { "slaves": 0 },
-            }))
+            .json(&body)
             .send()
             .await?;
         let status = resp.status();
@@ -273,6 +285,8 @@ impl Engine {
     /// POST /v1/volumes pinned to an array on this engine (stormblock#150,
     /// v19.0.0): every extent on the array's dedicated slab, so the array's
     /// redundancy is the volume's. Name-idempotent like any /v1 create.
+    /// No extent size: a pinned volume's extents are its array slab's
+    /// slots, which the engine chooses (#59).
     pub async fn create_pinned_volume(
         &self,
         name: &str,
@@ -290,6 +304,12 @@ impl Engine {
         )
         .await
         .map_err(|e| anyhow::anyhow!("create {name} on array {array_id}: {e:#}"))
+    }
+
+    /// What stormblock#156 accepts as an extent size: a power of two of
+    /// 4 KiB or more.
+    pub fn valid_extent_size(bytes: u64) -> bool {
+        bytes >= 4096 && bytes.is_power_of_two()
     }
 
     /// The engine's own node name for a /v1 volume — read-write attach is

@@ -387,6 +387,12 @@ pub struct DistVolume {
     pub fenced: bool,
     #[serde(default)]
     pub bandwidth_class: BandwidthClass,
+    /// Extent size of every leg, bytes (#59, stormblock#156): a
+    /// StorageClass's `extentSize`. Kept so a replacement leg (move,
+    /// re-leg, prestage, rebalance, migration) is carved at the same size.
+    /// None = each node chooses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent_size_bytes: Option<u64>,
     #[serde(default)]
     pub dual_attach: Option<DualAttach>,
     /// A move of every leg to another pool in flight (#32).

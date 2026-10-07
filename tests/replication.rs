@@ -56,6 +56,8 @@ struct Mock {
     /// /v1 volume id → the RAID superblock read from it (stormblock#309);
     /// unset = 404, as on an engine without the route.
     sbs: BTreeMap<String, Value>,
+    /// Extent sizes this node has pools for (stormblock#156); empty = any.
+    extent_sizes: Vec<u64>,
     log: Vec<String>,
 }
 
@@ -76,11 +78,19 @@ fn coords(node: &str, nsid: u32) -> Value {
            "addresses": [{"traddr": "0.0.0.0", "trsvcid": 4420}]})
 }
 
-async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
+async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
     let mut m = s.m.lock().unwrap();
     let name = b["name"].as_str().unwrap().to_string();
     let pin = b["placement"]["array_id"].as_str().map(|x| x.to_string());
     let node = m.node.clone();
+    let extent = b.get("extent_size_bytes").and_then(|x| x.as_u64());
+    m.log.push(format!("create {name} extent={extent:?}"));
+    if let Some(e) = extent {
+        if pin.is_none() && !m.extent_sizes.is_empty() && !m.extent_sizes.contains(&e) {
+            let msg = format!("backing volume create failed: no data slab with {e}-byte slots (this node has {:?})", m.extent_sizes);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"code": "internal", "message": msg})));
+        }
+    }
     let existing = m.volumes.iter().find(|(_, v)| v.0 == name).map(|(id, _)| id.clone());
     let id = existing.unwrap_or_else(|| {
         m.next += 1;
@@ -91,7 +101,7 @@ async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
         }
         id
     });
-    Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]}))
+    (StatusCode::OK, Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]})))
 }
 
 async fn v1_get(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
@@ -907,4 +917,73 @@ async fn prestage_replaces_the_slave_at_its_bandwidth_class() {
     assert!(v.replacing.is_none());
     let nodes: Vec<&str> = v.legs.iter().map(|l| l.node.as_str()).collect();
     assert!(nodes.contains(&third.as_str()) && !nodes.contains(&slave.as_str()), "{nodes:?}");
+}
+
+/// #59: `extent_size_bytes` goes to every leg's /v1 create, is kept on the
+/// record, and a replacement leg (prestage) is carved at the same size; the
+/// served mirror (pinned to the array) is not given one. A node with no pool
+/// of that size fails the create with its message, and no leg is left.
+#[tokio::test]
+async fn extent_size_reaches_every_leg_and_its_replacements() {
+    let (api, state, mocks) = setup(&["node-a", "node-b", "node-c"]).await;
+    const MIB8: u64 = 8 << 20;
+    let (st, v) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "x", "size_bytes": 1u64 << 30, "replicas": 2, "extent_size_bytes": MIB8}),
+    )
+    .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["extent_size_bytes"], MIB8);
+    assert_eq!(v["assembly"], "assembled", "{v}");
+    let head = v["head"].as_str().unwrap().to_string();
+    let legs: Vec<String> = v["legs"].as_array().unwrap().iter().map(|l| l["node"].as_str().unwrap().to_string()).collect();
+    for n in &legs {
+        let log = mocks[n].lock().unwrap().log.clone();
+        assert!(log.contains(&format!("create x extent=Some({MIB8})")), "{n}: {log:?}");
+    }
+    let hl = mocks[&head].lock().unwrap().log.clone();
+    assert!(hl.contains(&"create x-mirror extent=None".to_string()), "{hl:?}");
+    let r = get_json(format!("{api}/api/v1/volumes/x/replicas")).await;
+    assert_eq!(r["extent_size_bytes"], MIB8);
+
+    // A replacement leg is carved at the same size.
+    let third = ["node-a", "node-b", "node-c"].into_iter().find(|n| !legs.iter().any(|l| l == n)).unwrap();
+    let (st, p) = call(format!("{api}/api/v1/volumes/x/prestage"), json!({})).await;
+    assert_eq!(st, 200, "{p}");
+    assert_eq!(p["to"], third);
+    let tl = mocks[third].lock().unwrap().log.clone();
+    assert!(tl.contains(&format!("create x extent=Some({MIB8})")), "{tl:?}");
+    for _ in 0..40 {
+        if state.fed.read().await.volumes["x"].replacing.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // Not a size stormblock takes: refused here, no engine called.
+    let (st, e) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "bad", "size_bytes": 1u64 << 30, "extent_size_bytes": 3000}),
+    )
+    .await;
+    assert_eq!(st, 400, "{e}");
+    assert!(mocks.values().all(|m| !m.lock().unwrap().log.iter().any(|l| l.starts_with("create bad "))));
+
+    // One node has no 8 MiB pool: the create fails with that node's sizes,
+    // and the leg made elsewhere is rolled back.
+    for (n, m) in &mocks {
+        m.lock().unwrap().extent_sizes = if n == "node-c" { vec![1 << 20] } else { vec![1 << 20, MIB8] };
+    }
+    let (st, e) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "y", "size_bytes": 1u64 << 30, "replicas": 3, "extent_size_bytes": MIB8}),
+    )
+    .await;
+    assert_eq!(st, 502, "{e}");
+    let msg = e["error"].as_str().unwrap();
+    assert!(msg.contains("node-c") && msg.contains("1048576"), "{msg}");
+    assert!(!state.fed.read().await.volumes.contains_key("y"));
+    for m in mocks.values() {
+        assert!(!m.lock().unwrap().volumes.values().any(|v| v.0 == "y"), "a leg of y was left");
+    }
 }

@@ -516,6 +516,10 @@ struct CreateVolumeRequest {
     /// subsystem; none = the shared subsystem, as before.
     #[serde(default)]
     hosts: Vec<HostRequest>,
+    /// Extent size of every leg, bytes (#59, stormblock#156): a
+    /// StorageClass's `extentSize`. Absent = each node chooses.
+    #[serde(default)]
+    extent_size_bytes: Option<u64>,
 }
 
 /// A consumer host to serve a volume to (#51).
@@ -550,6 +554,13 @@ async fn create_volume(
         return Err(ApiError::bad_request("name and size_bytes required"));
     }
     let hosts = host_records(&req.hosts)?;
+    if let Some(e) = req.extent_size_bytes {
+        if !crate::engine::Engine::valid_extent_size(e) {
+            return Err(ApiError::bad_request(format!(
+                "extent_size_bytes {e}: a power of two of 4096 or more"
+            )));
+        }
+    }
     if req.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
         // The head names the consumer volume `<name>-mirror`; a leg of that
         // name would be answered as the consumer volume (name-idempotent).
@@ -596,7 +607,7 @@ async fn create_volume(
                 .ok_or_else(|| ApiError::not_found(format!("node {node_name:?}")))?;
             s.engine_for(node)
         };
-        match engine.create_volume(&req.name, req.size_bytes).await {
+        match engine.create_volume(&req.name, req.size_bytes, req.extent_size_bytes).await {
             Ok(v) => legs.push(Leg {
                 node: node_name.clone(),
                 volume_id: v.get("id").and_then(|i| i.as_str()).map(|x| x.to_string()),
@@ -655,6 +666,7 @@ async fn create_volume(
         epoch: 1,
         fenced: false,
         bandwidth_class: req.bandwidth_class.unwrap_or_default(),
+        extent_size_bytes: req.extent_size_bytes,
         dual_attach: None,
         migration: None,
     };
@@ -781,6 +793,7 @@ async fn volume_replicas(State(s): State<Arc<AppState>>, Path(name): Path<String
         "health": crate::head::health(v, &reps),
         "replicas": reps,
         "bandwidth_class": v.bandwidth_class,
+        "extent_size_bytes": v.extent_size_bytes,
         "head": v.head,
         "dual_attach": v.dual_attach,
         "sync_read_at": reading.map(|r| r.read_at),

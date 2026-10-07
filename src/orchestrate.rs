@@ -483,7 +483,7 @@ async fn build_replacement(
     // New leg: volume, export, head drive, member. Undo what was done if a
     // later step fails, so a failed attempt leaves nothing behind.
     let created = target_engine
-        .create_volume(&vol.name, vol.size_bytes)
+        .create_volume(&vol.name, vol.size_bytes, vol.extent_size_bytes)
         .await
         .map_err(|e| anyhow::anyhow!("{target}: create leg: {e:#}"))?;
     let vid = created
@@ -2107,6 +2107,7 @@ mod tests {
             epoch: 1,
             fenced: false,
             bandwidth_class: Default::default(),
+            extent_size_bytes: None,
             dual_attach: None,
             migration: None,
         }

@@ -250,6 +250,7 @@ mod tests {
             epoch: 1,
             fenced: false,
             bandwidth_class: Default::default(),
+            extent_size_bytes: None,
             dual_attach: None,
             migration: None,
         }
