@@ -796,6 +796,40 @@ async fn tier_migration_moves_legs_into_the_destination_pool() {
     assert_eq!(st, 409, "{e}");
 }
 
+/// #50: a preferred node becomes the head (the first leg); one that is not
+/// a candidate is ignored and the answer says so.
+#[tokio::test]
+async fn a_preferred_node_becomes_the_head() {
+    let (api, _state, _mocks) = setup(&["node-a", "node-b", "node-c"]).await;
+    for want in ["node-b", "node-c"] {
+        let name = format!("p-{want}");
+        let (st, v) = call(
+            format!("{api}/api/v1/volumes"),
+            json!({"name": name, "size_bytes": 1u64 << 30, "replicas": 2, "prefer_node": want}),
+        )
+        .await;
+        assert_eq!(st, 200, "{v}");
+        assert_eq!(v["head"], want, "{v}");
+        assert_eq!(v["legs"][0]["node"], want);
+        assert_eq!(v["prefer_node_honored"], true);
+    }
+    let (st, v) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "p-none", "size_bytes": 1u64 << 30, "replicas": 2, "prefer_node": "node-z"}),
+    )
+    .await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["prefer_node_honored"], false);
+    let (st, p) = call(
+        format!("{api}/api/v1/placement/plan"),
+        json!({"size_bytes": 1u64 << 30, "replicas": 1, "prefer_node": "node-c"}),
+    )
+    .await;
+    assert_eq!(st, 200, "{p}");
+    assert_eq!(p["legs"], json!(["node-c"]));
+    assert_eq!(p["prefer_node_honored"], true);
+}
+
 #[tokio::test]
 async fn dual_attach_windows() {
     let (api, state, _mocks) = setup(&["node-a", "node-b"]).await;

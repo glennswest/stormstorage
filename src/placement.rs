@@ -130,6 +130,44 @@ pub fn plan(
         .collect())
 }
 
+/// [`plan`] with a soft preference for the first pick (#50): `prefer`
+/// leads when it is a fitting candidate (it has room for the volume), and
+/// the remaining legs are placed over the other domains by the usual rules.
+/// The first pick is the volume's head (or, for one copy, its only leg).
+/// Falls back to the plain plan when `prefer` does not fit or the rest
+/// cannot be placed beside it. Returns the picks and whether `prefer` led.
+pub fn plan_preferring(
+    candidates: &[Candidate],
+    rungs: &[String],
+    rung: &str,
+    replicas: u32,
+    size_bytes: u64,
+    io_weight: f64,
+    prefer: Option<&str>,
+) -> Result<(Vec<String>, bool), String> {
+    if let Some(p) = prefer.and_then(|p| candidates.iter().find(|c| c.name == p)) {
+        if p.free_bytes >= size_bytes && replicas >= 1 {
+            let d = domain_at(&p.labels, rungs, rung);
+            let rest: Vec<Candidate> = candidates
+                .iter()
+                .filter(|c| domain_at(&c.labels, rungs, rung) != d)
+                .cloned()
+                .collect();
+            let others = if replicas == 1 {
+                Ok(Vec::new())
+            } else {
+                plan(&rest, rungs, rung, replicas - 1, size_bytes, io_weight)
+            };
+            if let Ok(others) = others {
+                let mut picks = vec![p.name.clone()];
+                picks.extend(others);
+                return Ok((picks, true));
+            }
+        }
+    }
+    plan(candidates, rungs, rung, replicas, size_bytes, io_weight).map(|p| (p, false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,5 +282,30 @@ mod tests {
         // No readings anywhere: exactly the free-ratio order.
         let c = vec![hot("x", 40, None), hot("y", 60, None)];
         assert_eq!(plan(&c, &rungs(), "node", 2, 1, 0.3).unwrap(), vec!["y".to_string(), "x".to_string()]);
+    }
+
+    /// #50: a fitting preferred node leads; otherwise the plain plan.
+    #[test]
+    fn a_preferred_node_leads_when_it_fits() {
+        let c = vec![
+            cand("a", &[("rack", "r1"), ("node", "a")], 90, 100),
+            cand("b", &[("rack", "r1"), ("node", "b")], 20, 100),
+            cand("c", &[("rack", "r2"), ("node", "c")], 60, 100),
+        ];
+        // b is not the emptiest of r1, but it is asked for: it leads, and
+        // the second leg comes from another rack.
+        assert_eq!(
+            plan_preferring(&c, &rungs(), "rack", 2, 10, 0.3, Some("b")).unwrap(),
+            (vec!["b".to_string(), "c".to_string()], true)
+        );
+        // One copy: the leg is there.
+        assert_eq!(plan_preferring(&c, &rungs(), "rack", 1, 10, 0.3, Some("b")).unwrap(), (vec!["b".to_string()], true));
+        // No room on it, or not a candidate: the plain plan.
+        assert_eq!(
+            plan_preferring(&c, &rungs(), "rack", 2, 30, 0.3, Some("b")).unwrap(),
+            (plan(&c, &rungs(), "rack", 2, 30, 0.3).unwrap(), false)
+        );
+        assert!(!plan_preferring(&c, &rungs(), "rack", 2, 10, 0.3, Some("zz")).unwrap().1);
+        assert!(!plan_preferring(&c, &rungs(), "rack", 2, 10, 0.3, None).unwrap().1);
     }
 }

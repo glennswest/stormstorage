@@ -412,6 +412,9 @@ struct PlanRequest {
     rung: Option<String>,
     #[serde(default)]
     tier: Option<String>,
+    /// Soft: put the first leg — the head — on this node when it fits (#50).
+    #[serde(default)]
+    prefer_node: Option<String>,
 }
 
 struct ResolvedPlan {
@@ -474,16 +477,20 @@ async fn plan_dry_run(
     Json(req): Json<PlanRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let rp = resolve_plan(&s, &req).await?;
-    let picks = placement::plan(
+    let (picks, honored) = placement::plan_preferring(
         &rp.candidates,
         &s.config.federation.rungs,
         &rp.rung,
         rp.replicas,
         req.size_bytes,
         s.config.placement.io_weight,
+        req.prefer_node.as_deref(),
     )
     .map_err(ApiError::conflict)?;
-    Ok(Json(json!({ "replicas": rp.replicas, "rung": rp.rung, "legs": picks })))
+    Ok(Json(json!({
+        "replicas": rp.replicas, "rung": rp.rung, "legs": picks,
+        "prefer_node_honored": req.prefer_node.as_ref().map(|_| honored),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -501,6 +508,10 @@ struct CreateVolumeRequest {
     /// Resync rate class for later legs (#33).
     #[serde(default)]
     bandwidth_class: Option<crate::model::BandwidthClass>,
+    /// Soft: put the first leg — the head, or the only leg — on this node
+    /// when it fits the pool and has room (#50, WaitForFirstConsumer).
+    #[serde(default)]
+    prefer_node: Option<String>,
     /// Consumer hosts to serve it to (#51/#53), each from its own
     /// subsystem; none = the shared subsystem, as before.
     #[serde(default)]
@@ -559,15 +570,17 @@ async fn create_volume(
         replicas: req.replicas,
         rung: req.rung.clone(),
         tier: req.tier.clone(),
+        prefer_node: req.prefer_node.clone(),
     };
     let rp = resolve_plan(&s, &plan_req).await?;
-    let picks = placement::plan(
+    let (picks, honored) = placement::plan_preferring(
         &rp.candidates,
         &s.config.federation.rungs,
         &rp.rung,
         rp.replicas,
         req.size_bytes,
         s.config.placement.io_weight,
+        req.prefer_node.as_deref(),
     )
     .map_err(ApiError::conflict)?;
 
@@ -656,11 +669,15 @@ async fn create_volume(
         Severity::Info,
         "volume",
         format!(
-            "{}: created, {} leg(s) across rung {:?} on [{}]",
+            "{}: created, {} leg(s) across rung {:?} on [{}]{}",
             req.name,
             rp.replicas,
             rp.rung,
-            picks.join(", ")
+            picks.join(", "),
+            match (&req.prefer_node, honored) {
+                (Some(p), false) => format!(" — preferred node {p} not used (unhealthy, outside the pool or tier, or no room)"),
+                _ => String::new(),
+            }
         ),
     );
     s.persist().await;
@@ -693,10 +710,15 @@ async fn create_volume(
     if assembled {
         let _ = crate::orchestrate::publish(&s, &req.name).await;
     }
-    let response = {
+    let mut response = {
         let fed = s.fed.read().await;
         serde_json::to_value(fed.volumes.get(&req.name)).unwrap_or_default()
     };
+    if req.prefer_node.is_some() {
+        if let Some(o) = response.as_object_mut() {
+            o.insert("prefer_node_honored".into(), json!(honored));
+        }
+    }
     Ok(Json(response))
 }
 
