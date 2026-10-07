@@ -616,6 +616,9 @@ waiting_handover`. All legs in the destination → `pool` = to, migration
 cleared, event. `DELETE …/migrate` cancels (moves done stay). Rebalance
 skips migrating volumes. Pure `next_step`; unit tests + tests/replication.rs
 (4 nodes, two pools).
+Status 2026-10-06 21:45: code + tests + docs pushed (9e2d28f); sc-build not run
+yet — three tries got no slot (exit 75, all 6 busy with higher-priority
+builds). Next: sc-build, fix if needed, golden, close #32.
 
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
