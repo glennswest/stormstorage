@@ -90,18 +90,21 @@ keeps the rungs distinct.
       durable intent (volumes + registered nodes); poll status stays
       local per peer. Live-verified: create on peer A → visible on B <2s
 
-### Open: CSI relationship (Glenn, 2026-08-26) — #36
+### CSI relationship (Glenn, 2026-08-26) — #36 settled 2026-10-06
 stormblock is the default-everywhere storage. **PVCs on stormcos are the
 built-in `stormblock` driver**: the kubelet clones the sealed blank of the
 claim's size class on the pod's node and attaches it over ublk, with no CSI
 (stormblock CLAUDE.md, rustkube `docs/storage.md`). CSI (stormblock-csi) is
 the compatibility path for third-party drivers and *foreign* Kubernetes:
-still wanted, not primary. To look at (#36): stormblock-csi targets a
-single engine's /v1 today; for a foreign multi-node cluster it could
-target stormstorage (fleet placement, mirrored volumes, #2's export)
-instead. Needs an analysis pass over stormblock-csi before changing
-anything. Replicated claims across servers (rustkube-node#68) go through
-re-leg (#1).
+still wanted, not primary. **Settled** (owner decisions on stormblock-csi#29
+and #32, 2026-10-06; shipped in stormblock-csi v0.4.0): its controller and
+operator talk to **stormstorage only** (create, replicas/sync state,
+fence/promote/prestage/dual-attach, attach from `export`); the CSI volume id
+is the stormstorage name; the node plugin uses its own engine for local
+replicas = 1. Follow-ups here: #48 (done), #51 (done), #49 (snapshots,
+expand, clones; needs-owner), #50 (WaitForFirstConsumer head preference),
+#56 (one elected cluster stormstorage for multi-node, with stormcos#354).
+Replicated claims across servers (rustkube-node#68) go through re-leg (#1).
 
 ### Phase 2: Leg wiring — DONE (v0.3.0, 2026-08-28)
 stormblock now attaches `nvme-tcp://host:port/<nqn>?nsid=N` as a drive via

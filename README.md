@@ -752,6 +752,9 @@ done. The open work:
   from a live head stormblock#296;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #34–#36: HA
-  state, forwarding announcements to stormfs, and the stormblock-csi
-  analysis.
+- #34, #35: HA state, forwarding announcements to stormfs (both wait on
+  owner decisions);
+- stormblock-csi (#36, settled): its controller talks to stormstorage
+  only (stormblock-csi v0.4.0). What it still needs from here is #49
+  (snapshots, expand, clones), #50 (a head preference) and #56 (one
+  elected cluster instance for multi-node).

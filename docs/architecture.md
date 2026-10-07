@@ -406,6 +406,33 @@ is exactly what consumers get:
   *forward* announcements to a stormfs metadata endpoint if stormfs
   keeps its own).
 
+### stormblock-csi (#36)
+
+PVCs on stormcos are the built-in `stormblock` driver (the kubelet clones a
+blank and attaches it over ublk, with no CSI). stormblock-csi is the
+compatibility path for foreign and third-party Kubernetes. **It targets
+stormstorage, not one engine** (owner decisions on stormblock-csi#29 and
+#32, 2026-10-06, shipped in stormblock-csi v0.4.0):
+
+- Its controller and operator talk to stormstorage only: `POST
+  /api/v1/volumes {replicas, bandwidth_class}`, sync state from
+  `…/replicas` (#33, #48), fence, promote, prestage and dual-attach, and
+  attach from the volume's `export`, per host (#51). The CSI volume id is
+  the stormstorage volume name.
+- The node plugin uses its own node's engine (`127.0.0.1:9090`) for local
+  single-replica volumes, and connects over NVMe/TCP to what stormstorage
+  serves.
+- The reason: stormstorage owns the replica state (the head's array, its
+  legs, the epoch). A driver keeping its own copy against one engine's
+  `/v1` is why a slave never reached `in_sync` there.
+
+What it still needs from here: #49 (snapshots, expand, clones,
+`encrypted`/`qos_class`; waits on owner decisions and stormblock#318/#319),
+#50 (a head-node preference for WaitForFirstConsumer), and #56 (one
+elected cluster stormstorage that a multi-node foreign cluster points at,
+with stormcos#354). Single-node clusters point the driver at the node's
+own stormstorage (`$(HOST_IP):9093`).
+
 ### Redundancy of stormstorage itself
 
 Control plane only — if stormstorage is down, data keeps flowing
