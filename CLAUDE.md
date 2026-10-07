@@ -620,6 +620,15 @@ Status 2026-10-06 21:45: code + tests + docs pushed (9e2d28f); sc-build not run
 yet — three tries got no slot (exit 75, all 6 busy with higher-priority
 builds). Next: sc-build, fix if needed, golden, close #32.
 
+### Routes stormblock-csi needs (#49, P2) — waits on the owner (2026-10-06)
+Engine today: `/v1` leg expand yes, but no RAID1/slab grow → filed
+stormblock#318 (expand waits on it). Snapshots: `/v1` + engine-local on the
+head's array (one crash-consistent point) — buildable. Clone: COW on the
+same slab only; no engine-to-engine copy. Group snapshots: one engine only.
+`encrypted`/`qos_class`: `/v1` only records them → filed stormblock#319.
+Asked on #49 (needs-owner): clone COW-on-source-array vs full copy; groups
+same-head only; keep refusing encrypted/qos. Nothing built yet.
+
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
