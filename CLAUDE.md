@@ -657,6 +657,18 @@ Shown in the volume JSON and `/replicas`. Test: tests/replication.rs.
 Done: c7d2a3e; sc-build passes on a build VM (e107551: 78 unit,
 replication 11/11). Golden waits on stormcentral#521.
 
+### Change a volume's bandwidth class (#60, P3) — in progress 2026-10-07
+For stormblock-csi#31 (ControllerModifyVolume). `PUT
+/api/v1/volumes/{name}/bandwidth-class {bandwidth_class}`: recorded
+(revision, replicated, event on a change; later prestage/re-leg/promote
+use it), its cap put on the head's array at once (`PUT
+/api/v1/arrays/{id}/rebuild`), idempotent, answered with the volume plus
+`rebuild_cap {bytes_per_sec, applied, pending, message}`. Head not
+answering or the call failing → `rate_pending` on the record, retried by
+the reconciler (recovery-active instance) once the head is healthy. No
+array (single leg / pending assembly) → recorded only; assembly applies
+it. Auth: a mutation. Test: tests/replication.rs.
+
 ### Other open
 - [ ] Golden for #59 (c7d2a3e and later): `component build stormstorage`
       once stormcentral#521 lands (it still went to dev.g8.lo on 2026-10-07).
