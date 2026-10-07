@@ -647,9 +647,9 @@ chooses). Plan: optional `extent_size_bytes` on `POST /api/v1/volumes`
 kept on `DistVolume`, so move/re-leg/prestage/rebalance/migration carve
 replacement legs at the same size. A node without a pool of that size
 fails the create with its message and the legs made are rolled back (the
-engine answers 500, not 400 — filed on stormblock). The served
+engine answers 500, not 400 — stormblock#323). The served
 `<name>-mirror` is pinned to the array: its extents are the array slab's
-slots, which the engine chooses and ignores the field for (filed).
+slots, which the engine chooses and ignores the field for (stormblock#324).
 Shown in the volume JSON and `/replicas`. Test: tests/replication.rs.
 
 ### Other open
