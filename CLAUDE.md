@@ -102,7 +102,7 @@ operator talk to **stormstorage only** (create, replicas/sync state,
 fence/promote/prestage/dual-attach, attach from `export`); the CSI volume id
 is the stormstorage name; the node plugin uses its own engine for local
 replicas = 1. Follow-ups here: #48 (done), #51 (done), #49 (snapshots,
-expand, clones; needs-owner), #50 (WaitForFirstConsumer head preference),
+expand, clones; needs-owner), #50 (head preference, done),
 #56 (one elected cluster stormstorage for multi-node, with stormcos#354).
 Replicated claims across servers (rustkube-node#68) go through re-leg (#1).
 

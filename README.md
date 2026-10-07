@@ -122,6 +122,15 @@ stormview components feed on **:9093**.
   alone, as before. Ties go to the lower name, so the result is
   deterministic. If there are not enough domains, the request fails with
   an explanation.
+  **A preferred head (#50):** `prefer_node` on create (and on the dry
+  run) puts the first leg on that node when it fits (healthy, in the pool
+  or tier, room for the leg). The first leg is the head, or a single
+  copy's only leg, so a consumer on that node is served locally; this is
+  what stormblock-csi sends for WaitForFirstConsumer. The other legs go to
+  other domains by the usual rules. If the node does not fit, or the rest
+  cannot be placed beside it, the plain placement is used. The answer
+  carries `prefer_node_honored`, and the create event says why the node
+  was not used.
 - **Tier migration (#32).** `POST /api/v1/volumes/{name}/migrate {pool}`
   moves every leg of an assembled volume into another pool, for example
   from the 3.5" cluster's pool to the 2.5" one. It is refused (409) when
@@ -541,7 +550,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, hosts?: [{host_nqn, dhchap?}]}` (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume record. |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, hosts?: [{host_nqn, dhchap?}]}` (`prefer_node`: soft head placement, #50; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume record. |
 | GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`). `GET /api/v1/volumes` lists the same. |
 | GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, replicas[{node, role, sync}], bandwidth_class, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
@@ -756,5 +765,5 @@ done. The open work:
   owner decisions);
 - stormblock-csi (#36, settled): its controller talks to stormstorage
   only (stormblock-csi v0.4.0). What it still needs from here is #49
-  (snapshots, expand, clones), #50 (a head preference) and #56 (one
-  elected cluster instance for multi-node).
+  (snapshots, expand, clones) and #56 (one elected cluster instance for
+  multi-node).

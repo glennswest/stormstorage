@@ -354,6 +354,9 @@ capacity ≥ size ∩ tier match), rung, replica count.
    the free ratio's. A node that reports no capacity has a free ratio of
    0 but stays eligible.
 4. Deterministic given equal inputs (testable); ties broken by name.
+5. *Implemented, #50:* an optional `prefer_node` takes the first pick
+   (the head) when it fits, and the rest are placed over the other
+   domains; otherwise steps 1–4 as they are.
 
 A leg move's automatic target uses the same function over healthy nodes
 that carry no leg and sit in a domain distinct from every staying leg.
@@ -427,8 +430,8 @@ stormstorage, not one engine** (owner decisions on stormblock-csi#29 and
   `/v1` is why a slave never reached `in_sync` there.
 
 What it still needs from here: #49 (snapshots, expand, clones,
-`encrypted`/`qos_class`; waits on owner decisions and stormblock#318/#319),
-#50 (a head-node preference for WaitForFirstConsumer), and #56 (one
+`encrypted`/`qos_class`; waits on owner decisions and stormblock#318/#319)
+and #56 (one
 elected cluster stormstorage that a multi-node foreign cluster points at,
 with stormcos#354). Single-node clusters point the driver at the node's
 own stormstorage (`$(HOST_IP):9093`).
