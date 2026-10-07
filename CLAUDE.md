@@ -640,6 +640,18 @@ usual rules; otherwise the plain plan. Responses carry
 `prefer_node_honored`. Pure `placement::plan_preferring` + unit tests;
 tests/replication.rs: created with prefer_node → that node is head.
 
+### Extent size on create (#59, P3) — in progress 2026-10-07
+stormblock#156: `/v1` create takes `extent_size_bytes` (absent = the node
+chooses). Plan: optional `extent_size_bytes` on `POST /api/v1/volumes`
+(400 unless a power of two ≥ 4096), sent on every leg's `/v1` create and
+kept on `DistVolume`, so move/re-leg/prestage/rebalance/migration carve
+replacement legs at the same size. A node without a pool of that size
+fails the create with its message and the legs made are rolled back (the
+engine answers 500, not 400 — filed on stormblock). The served
+`<name>-mirror` is pinned to the array: its extents are the array slab's
+slots, which the engine chooses and ignores the field for (filed).
+Shown in the volume JSON and `/replicas`. Test: tests/replication.rs.
+
 ### Other open
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
