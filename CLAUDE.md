@@ -772,7 +772,7 @@ Done: edc7fbc (+ 88375e3 test fix, #62); sc-build passes on a build VM
 (78 unit, replication 12/12). Golden golden-stormstorage-0768c8488a1c
 (stormcos#312).
 
-### Pin git dependencies to a rev (#64, stormcentral#571) — in progress 2026-10-10
+### Pin git dependencies to a rev (#64, stormcentral#571) — DONE 2026-10-10
 Golden builds refuse a git dependency not pinned to a `rev`. stormview goes
 from `branch = "main"` to `rev = "81ef1d28…"` (the commit Cargo.lock already
 had, so nothing compiled changes); Cargo.lock's source reads
@@ -788,7 +788,8 @@ denying rustc warnings and clippy `all` in both crates (9f09efe). sc-build
 `--locked` build + test + `clippy --all-targets -D warnings` passes. #67
 closed with it. Golden golden-stormstorage-c2663e2fa2c2 (release request
 stormcos#428); its SBOM step (stormcentral#571) took the pinned stormview.
-Left for #64 when it comes back: close it with that.
+Closed 2026-10-10: golden golden-stormstorage-89bdc8b2c158 (36a7961,
+stormcos#428) passed the SBOM step (206 crates) with stormview pinned.
 
 ### Nothing O(capacity) on a create/enrol/install path (#65, stormblock#363) — DONE 2026-10-10
 Review. stormstorage never touches data; what it asks of an engine:

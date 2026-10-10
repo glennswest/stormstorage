@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#64)
+- **chore:** #64 closed: the golden build's SBOM check (stormcentral#571) accepts the stormview pin (golden-stormstorage-89bdc8b2c158).
+
 ### 2026-10-10 (#34)
 - **feat:** HA: state in a fleet fastetcd and several instances (#34; owner decision (a), 2026-10-09). `[store] backend = "etcd"` with `endpoints`, `prefix`, `ca_file`/`cert_file`/`key_file`, `lease_ttl_secs`, `instance`, `advertise_url`.
   - Talks etcd's v3 JSON gateway (fastetcd serves it on the client port): no gRPC client, no new dependency.
