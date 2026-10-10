@@ -66,7 +66,16 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let listen = config.listen_addr.clone();
-    let state = Arc::new(AppState::new(config, fed, state_path));
+    let state = Arc::new(AppState::try_new(config, fed, state_path)?);
+    if let Some(store) = &state.store {
+        tracing::info!(
+            instance = %store.instance,
+            advertise_url = %store.advertise_url,
+            endpoints = ?state.config.store.endpoints,
+            "state in the fleet etcd; electing a leader (#34)"
+        );
+        tokio::spawn(stormstorage::store::run(state.clone()));
+    }
 
     tokio::spawn(stormstorage::registry::run(state.clone()));
 

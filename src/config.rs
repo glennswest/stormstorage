@@ -18,8 +18,96 @@ pub struct Config {
     pub legs: LegsConfig,
     pub kubernetes: KubeConfig,
     pub placement: PlacementConfig,
+    pub store: StoreConfig,
     pub nodes: Vec<NodeConfig>,
     pub pools: Vec<PoolConfig>,
+}
+
+/// Where the durable state lives (#34). `file` (the default) is
+/// `<data_dir>/state.json` on this instance alone; `etcd` is a fleet
+/// fastetcd shared by every instance, which also elects the one leader
+/// that writes it and runs the reconciler. See src/store.rs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoreConfig {
+    pub backend: StoreBackend,
+    /// Client URLs of the etcd members (`https://host:2379`); the JSON
+    /// gateway on that port is what stormstorage talks.
+    pub endpoints: Vec<String>,
+    /// Every key stormstorage writes starts with this.
+    pub prefix: String,
+    /// CA that signed the members' certificates (https endpoints).
+    pub ca_file: Option<String>,
+    /// Client certificate and key (mutual TLS; the CN is the etcd user).
+    pub cert_file: Option<String>,
+    pub key_file: Option<String>,
+    /// The leader's lease: an instance that stops renewing loses the
+    /// leadership this long after its last renewal.
+    pub lease_ttl_secs: u64,
+    /// This instance's name in the leader key; unset = the hostname.
+    pub instance: Option<String>,
+    /// Where the other instances reach this one's API when it leads:
+    /// followers forward writes here. Unset = `http://<hostname>:<port>`.
+    pub advertise_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StoreBackend {
+    #[default]
+    File,
+    Etcd,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            backend: StoreBackend::File,
+            endpoints: Vec::new(),
+            prefix: "/stormstorage/".into(),
+            ca_file: None,
+            cert_file: None,
+            key_file: None,
+            lease_ttl_secs: 15,
+            instance: None,
+            advertise_url: None,
+        }
+    }
+}
+
+impl StoreConfig {
+    pub fn is_etcd(&self) -> bool {
+        self.backend == StoreBackend::Etcd
+    }
+
+    fn validate(&self, has_peers: bool) -> anyhow::Result<()> {
+        if !self.is_etcd() {
+            return Ok(());
+        }
+        if self.endpoints.is_empty() {
+            anyhow::bail!("store.endpoints: backend = \"etcd\" needs at least one endpoint");
+        }
+        for e in &self.endpoints {
+            if !(e.starts_with("http://") || e.starts_with("https://")) {
+                anyhow::bail!("store.endpoints {e:?}: must be an http:// or https:// URL");
+            }
+        }
+        if has_peers {
+            anyhow::bail!(
+                "[store] backend = \"etcd\" and [replication] peers are exclusive: the store replaces peer replication"
+            );
+        }
+        if self.prefix.is_empty() || !self.prefix.ends_with('/') {
+            anyhow::bail!("store.prefix {:?}: must be non-empty and end with /", self.prefix);
+        }
+        if self.lease_ttl_secs < 3 {
+            anyhow::bail!("store.lease_ttl_secs must be at least 3");
+        }
+        if self.cert_file.is_some() != self.key_file.is_some() {
+            anyhow::bail!("store.cert_file and store.key_file go together");
+        }
+        Ok(())
+    }
 }
 
 /// Re-legging a distributed volume when a node carrying a leg is lost
@@ -31,7 +119,8 @@ pub struct RecoveryConfig {
     /// and the volume degraded, and a move is left to the operator.
     /// Unset: on for a lone instance, off when `[replication] peers` is
     /// set — every peer sees the same loss, so exactly one of them must
-    /// be told to act (`enabled = true` there).
+    /// be told to act (`enabled = true` there). With `[store] backend =
+    /// "etcd"` the elected leader acts (unless this is `false`).
     pub enabled: Option<bool>,
     /// After a failed re-leg attempt (no target, engine error, rebuild
     /// that never converged), wait this long before the next one.
@@ -365,6 +454,7 @@ impl Default for Config {
             legs: LegsConfig::default(),
             kubernetes: KubeConfig::default(),
             placement: PlacementConfig::default(),
+            store: StoreConfig::default(),
             nodes: Vec::new(),
             pools: Vec::new(),
         }
@@ -631,6 +721,7 @@ impl Config {
             }
         }
         self.legs.validate()?;
+        self.store.validate(!self.replication.peers.is_empty())?;
         if self.poll.interval_secs == 0 {
             anyhow::bail!("poll.interval_secs must be non-zero");
         }
@@ -645,7 +736,7 @@ impl Config {
 fn unknown_top_level_keys(text: &str) -> Vec<String> {
     const KNOWN: &[&str] = &[
         "listen_addr", "data_dir", "federation", "poll", "api", "replication",
-        "local", "recovery", "legs", "kubernetes", "placement", "nodes", "pools",
+        "local", "recovery", "legs", "kubernetes", "placement", "store", "nodes", "pools",
     ];
     match text.parse::<toml::Table>() {
         Ok(t) => t.keys().filter(|k| !KNOWN.contains(&k.as_str())).cloned().collect(),

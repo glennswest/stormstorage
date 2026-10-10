@@ -189,7 +189,7 @@ async fn event(state: &Arc<AppState>, name: &str, sev: Severity, msg: String) {
 /// One step for every migrating, idle volume (after each poll), on the
 /// instance that acts on recovery.
 pub async fn run(state: &Arc<AppState>, now: SystemTime) {
-    if !state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+    if !state.recovery_active() {
         return;
     }
     let due: Vec<(String, Step, MigrationState, Option<String>, String)> = {

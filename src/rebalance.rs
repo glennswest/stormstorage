@@ -155,7 +155,7 @@ pub fn plan(
 /// Run what [`plan`] proposes (after each poll), on the instance that acts
 /// on recovery. A move that cannot start waits `recovery.cooldown_secs`.
 pub async fn run(state: &Arc<AppState>, now: SystemTime) {
-    if !state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+    if !state.recovery_active() {
         return;
     }
     if state.config.pools.iter().all(|p| p.high_watermark.is_none()) {

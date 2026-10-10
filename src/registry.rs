@@ -62,7 +62,11 @@ pub async fn poll_once(state: &Arc<AppState>) {
                         format!("{name}: engine reachable ({url})"),
                     );
                     // It may have restarted: re-attach what it serves (#2).
-                    crate::orchestrate::republish_on(state, &name).await;
+                    // A follower of a fleet store leaves that to the
+                    // leader (#34).
+                    if state.leads() {
+                        crate::orchestrate::republish_on(state, &name).await;
+                    }
                 }
             }
             Err(e) => {
@@ -97,7 +101,10 @@ pub async fn poll_once(state: &Arc<AppState>) {
     }
     crate::kube::refresh(state).await;
     crate::head::refresh(state).await;
-    crate::orchestrate::reconcile(state).await;
+    // Durable intent changes only on the leader of a fleet store (#34).
+    if state.leads() {
+        crate::orchestrate::reconcile(state).await;
+    }
     // Forget inventory of nodes no longer known.
     {
         let fed = state.fed.read().await;
@@ -232,7 +239,7 @@ async fn refresh_inventory(state: &Arc<AppState>, name: &str, engine: &Engine) {
 }
 
 /// This machine's hostname (the node's, under `share uts`).
-fn hostname() -> Option<String> {
+pub(crate) fn hostname() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
         .or_else(|| std::env::var("HOSTNAME").ok())

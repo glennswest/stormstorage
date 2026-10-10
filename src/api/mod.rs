@@ -48,11 +48,24 @@ pub struct AppState {
     /// Conditions already reported once (keys), so a poll does not repeat
     /// the same error event.
     pub noted: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// The fleet store and this instance's role in it, with `[store]
+    /// backend = "etcd"` (#34).
+    pub store: Option<Arc<crate::store::Store>>,
 }
 
 impl AppState {
+    /// [`Self::try_new`] for a config whose store needs no files (tests).
     pub fn new(config: Config, fed: FedState, state_path: Option<PathBuf>) -> Self {
-        Self {
+        Self::try_new(config, fed, state_path).expect("store config")
+    }
+
+    pub fn try_new(config: Config, fed: FedState, state_path: Option<PathBuf>) -> anyhow::Result<Self> {
+        let store = if config.store.is_etcd() {
+            Some(Arc::new(crate::store::Store::new(&config.store, &config.listen_addr)?))
+        } else {
+            None
+        };
+        Ok(Self {
             config,
             fed: RwLock::new(fed),
             events: RwLock::new(EventLog::new(4096)),
@@ -64,12 +77,43 @@ impl AppState {
             heads: Default::default(),
             head_live: Default::default(),
             noted: Default::default(),
-        }
+            store,
+        })
     }
 }
 
 impl AppState {
+    /// Save the state: to state.json, and, when this instance leads a
+    /// fleet store, what changed to the store (#34).
     pub async fn persist(&self) {
+        self.persist_file().await;
+        if let Some(store) = &self.store {
+            if let Err(e) = store.sync(self).await {
+                tracing::error!("store write failed: {e:#}");
+            }
+        }
+    }
+
+    /// Whether this instance acts on durable intent: always, unless a
+    /// fleet store elected another instance (#34).
+    pub fn leads(&self) -> bool {
+        match &self.store {
+            Some(s) => s.is_leader(),
+            None => true,
+        }
+    }
+
+    /// Whether this instance replaces lost legs, re-heads, rebalances and
+    /// runs the other recovery work itself.
+    pub fn recovery_active(&self) -> bool {
+        match &self.store {
+            Some(s) => self.config.recovery.enabled.unwrap_or(true) && s.is_leader(),
+            None => self.config.recovery.active(!self.config.replication.peers.is_empty()),
+        }
+    }
+
+    /// state.json alone (a follower's is a cache of the store).
+    pub async fn persist_file(&self) {
         let Some(path) = &self.state_path else {
             return;
         };
@@ -199,7 +243,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/summary", get(summary))
         .route("/api/v1/storage/register", post(register_node))
         .route("/api/v1/storage/deregister", post(deregister_node))
+        .route("/api/v1/store", get(store_status))
         .layer(axum::middleware::from_fn_with_state(state.clone(), auth::require_token))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), crate::store::forward_writes))
         .with_state(state)
 }
 
@@ -207,8 +253,30 @@ async fn ui_index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok", "version": crate::VERSION }))
+async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let mut h = json!({ "status": "ok", "version": crate::VERSION });
+    if let Some(store) = &s.store {
+        let st = store.status();
+        h["store"] = json!({ "backend": "etcd", "role": st.role, "leader": st.leader });
+    }
+    Json(h)
+}
+
+/// The fleet store and this instance's role in it (#34).
+async fn store_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    match &s.store {
+        None => Json(json!({ "backend": "file", "path": s.state_path, "leads": true })),
+        Some(store) => Json(json!({
+            "backend": "etcd",
+            "endpoints": s.config.store.endpoints,
+            "prefix": store.prefix,
+            "instance": store.instance,
+            "advertise_url": store.advertise_url,
+            "lease_ttl_secs": store.ttl,
+            "leads": store.is_leader(),
+            "status": store.status(),
+        })),
+    }
 }
 
 async fn components_feed(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -244,11 +312,18 @@ async fn ws_components(
 async fn receive_replication(
     State(s): State<Arc<AppState>>,
     Json(payload): Json<crate::replicate::Payload>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // The fleet store replaces peer replication (#34): a push would
+    // overwrite it.
+    if s.store.is_some() {
+        return Err(ApiError::conflict(
+            "this instance keeps its state in the fleet etcd ([store] backend = \"etcd\"); peer replication is off",
+        ));
+    }
     let incoming = payload.revision;
     let applied = crate::replicate::apply(&s, payload).await;
     let local = s.fed.read().await.revision;
-    Json(json!({ "applied": applied, "incoming": incoming, "revision": local }))
+    Ok(Json(json!({ "applied": applied, "incoming": incoming, "revision": local })))
 }
 
 async fn replication_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {

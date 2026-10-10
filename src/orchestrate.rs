@@ -847,10 +847,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
     let (plan, changed) = {
         let mut fed = state.fed.write().await;
         let before = fed.revision;
-        let active = state
-            .config
-            .recovery
-            .active(!state.config.replication.peers.is_empty());
+        let active = state.recovery_active();
         let plan = plan_recovery(&mut fed, active, now, &|n| {
             busy(state, n)
         });
@@ -921,7 +918,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
     crate::migrate::run(state, now).await;
     crate::rebalance::run(state, now).await;
     crate::backup::run(state, now).await;
-    if state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+    if state.recovery_active() {
         crate::head::retry_pending_rates(state).await;
     }
     // Host withdrawals an engine has not taken yet (#51).
@@ -1101,7 +1098,7 @@ pub fn rehead_plan(
 /// on: fence at the current epoch, then promote the in-sync leg's node.
 async fn rehead_lost(state: &Arc<AppState>, now: SystemTime) {
     let rc = &state.config.recovery;
-    if !rc.rehead || !rc.active(!state.config.replication.peers.is_empty()) {
+    if !rc.rehead || !state.recovery_active() {
         return;
     }
     let plan = {
@@ -1191,7 +1188,7 @@ pub fn reassemble_candidates(
 /// forgot it (#15). Only on the instance that acts on recovery; a failure
 /// waits `recovery.cooldown_secs`.
 async fn reassemble_heads(state: &Arc<AppState>, now: SystemTime) {
-    if !state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+    if !state.recovery_active() {
         return;
     }
     let due = {

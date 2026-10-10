@@ -75,7 +75,7 @@ pub fn prune(points: &[BackupPoint], keep: u32) -> Vec<BackupPoint> {
 /// acts on recovery. Each step does at most one thing per volume and
 /// records it, so a restart resumes where it was.
 pub async fn run(state: &Arc<AppState>, now: SystemTime) {
-    if !state.config.recovery.active(!state.config.replication.peers.is_empty()) {
+    if !state.recovery_active() {
         return;
     }
     let names: Vec<String> = {
