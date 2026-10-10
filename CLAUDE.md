@@ -719,7 +719,7 @@ Engine-side issues filed: stormblock#395 (allocation-aware rebuild),
 format inline under the lock, ≤64 MiB zero-fill through every leg).
 Golden golden-stormstorage-d3deff6c8547 (release request stormcos#428).
 
-### RAID profile on create (#68, P1, for nextnfs-operator#17) — in progress 2026-10-10
+### RAID profile on create (#68, P1, for nextnfs-operator#17) — DONE 2026-10-10
 `raid: none | mirror | parity1 | parity2` on `POST /api/v1/volumes` (and the
 `placement/plan` dry run). none = 1 leg (replicas must be 1 if given);
 mirror = today's RAID1 (replicas default max(2, pool's), < 2 → 400);
@@ -727,6 +727,7 @@ parity1/parity2 → 501 naming #72 (needs a parity engine on the head and
 replace-member for parity arrays; stormblock#374). Absent = today's
 behaviour. The volume view gains `raid {level, members[{node, role, sync}],
 health, rebuilding}` (level from the leg count). Tests: tests/replication.rs.
+Done: 7b6de5f; sc-build passes (replication 16/16, clippy clean). Parity: #72.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
