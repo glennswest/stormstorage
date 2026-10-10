@@ -1140,5 +1140,9 @@ async fn a_stalled_rebuild_is_undone() {
     let v = move_slave(&api, &state, &slave).await;
     assert!(v.replacing.is_none());
     assert!(v.legs.iter().any(|l| l.node == slave), "kept on {slave}");
-    assert!(mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("remove member")));
+    // The new leg is undone: its volume on the target is deleted.
+    let third = mocks.keys().find(|n| **n != head && **n != slave).unwrap();
+    let m = mocks[third].lock().unwrap();
+    assert!(m.log.iter().any(|l| l.starts_with("create r ")), "{:?}", m.log);
+    assert!(m.log.iter().any(|l| l.starts_with("delete ")), "{:?}", m.log);
 }
