@@ -663,6 +663,7 @@ snapshots and create-with-source.
 Done: 799c77b (+ docs); sc-build passes (replication 20/20: snapshots and
 clones, group snapshots one node only, hint refusal, a clone through a
 promote; clippy clean). Expand → #73, proposed after stormblock#318.
+Golden golden-stormstorage-3feae051c784 (stormcos#428).
 
 ### Head-node preference on create (#50, P3) — in progress 2026-10-06
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
