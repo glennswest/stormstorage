@@ -68,6 +68,11 @@ struct Mock {
     snaps: BTreeMap<String, String>,
     /// /v1 group snapshot id → member engine volume ids (#49).
     groups: BTreeMap<String, Vec<String>>,
+    /// Some(n): the ship route exists (stormblock#400) and a job reads
+    /// `copying` n times before `done`; None = 404, as today (#46).
+    ship: Option<u32>,
+    /// Ship job id → reads left before `done`.
+    jobs: BTreeMap<String, u32>,
     log: Vec<String>,
 }
 
@@ -168,6 +173,37 @@ async fn v1_snapshot_delete(State(s): State<S>, Path(id): Path<String>) -> Statu
     }
     m.log.push(format!("delete snapshot {id}"));
     StatusCode::OK
+}
+
+async fn v1_ship(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    let Some(reads) = m.ship else {
+        return (StatusCode::NOT_FOUND, Json(json!({"code": "not_found"})));
+    };
+    if find_engine_volume(&m, &id).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({"message": format!("snapshot {id}")})));
+    }
+    let base = b["base"].as_str().unwrap_or("-").to_string();
+    if base != "-" && find_engine_volume(&m, &base).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({"message": format!("base {base}")})));
+    }
+    m.log.push(format!("ship {id} base={base} to={} rate={}", b["target_uri"].as_str().unwrap(), b["max_bytes_per_sec"]));
+    m.next += 1;
+    let jid = format!("job-{}", m.next);
+    m.jobs.insert(jid.clone(), reads);
+    (StatusCode::ACCEPTED, Json(json!({"id": jid, "state": "copying", "bytes_total": 100, "bytes_done": 0})))
+}
+
+async fn v1_ship_job(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    let Some(left) = m.jobs.get_mut(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({})));
+    };
+    if *left > 0 {
+        *left -= 1;
+        return (StatusCode::OK, Json(json!({"id": id, "state": "copying", "bytes_total": 100, "bytes_done": 50})));
+    }
+    (StatusCode::OK, Json(json!({"id": id, "state": "done", "bytes_total": 100, "bytes_done": 100})))
 }
 
 async fn v1_group(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
@@ -463,6 +499,8 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
         .route("/v1/volumes/{id}/raid-superblock", get(v1_superblock))
         .route("/v1/snapshots", post(v1_snapshot))
         .route("/v1/snapshots/{id}", delete(v1_snapshot_delete))
+        .route("/v1/snapshots/{id}/ship", post(v1_ship))
+        .route("/v1/ship-jobs/{id}", get(v1_ship_job))
         .route("/v1/group-snapshots", post(v1_group))
         .route("/v1/group-snapshots/{id}", delete(v1_group_delete))
         .route("/api/v1/drives", post(add_drive))
@@ -1480,4 +1518,135 @@ async fn a_clone_follows_its_parent_through_a_promote() {
     let m = mocks[&target].lock().unwrap();
     assert!(!m.log.iter().any(|l| l.starts_with("clone pc")), "not made again: {:?}", m.log);
     assert!(m.log.iter().any(|l| l.starts_with("attach-any ")), "{:?}", m.log);
+}
+
+async fn put_backup(url: String, body: Value) -> (u16, Value) {
+    let r = reqwest::Client::new().put(url).json(&body).send().await.unwrap();
+    let st = r.status().as_u16();
+    (st, r.json().await.unwrap_or(Value::Null))
+}
+
+/// Run the backup step until nothing changes at `at` (each step does one
+/// thing; a finished cycle waits for the next interval).
+async fn backup_until_settled(state: &Arc<AppState>, at: std::time::SystemTime) {
+    for _ in 0..12 {
+        stormstorage::backup::run(state, at).await;
+    }
+}
+
+/// #46 (owner: B, point-in-time backups): a volume's backup goes to a node
+/// holding none of its legs. Each interval the served mirror is
+/// snapshotted on the head and shipped there (the first in full, later
+/// ones against the last shipped snapshot); a finished ship becomes a point
+/// on the backup node, `keep` of them kept, and the old base goes.
+/// A point restores into a new volume on the backup node.
+#[tokio::test]
+async fn backups_ship_points_in_time_and_restore() {
+    let (api, state, mocks) = setup(&["node-a", "node-b", "node-c"]).await;
+    let (head, slave, _) = create_mirror(&api, "bv").await;
+    let spare = ["node-a", "node-b", "node-c"].into_iter().find(|n| *n != head && *n != slave).unwrap().to_string();
+    for m in mocks.values() {
+        m.lock().unwrap().ship = Some(1);
+    }
+    let (st, e) = put_backup(format!("{api}/api/v1/volumes/bv/backup"), json!({"interval_secs": 10})).await;
+    assert_eq!(st, 400, "{e}");
+    let (st, b) = put_backup(format!("{api}/api/v1/volumes/bv/backup"), json!({"interval_secs": 60, "keep": 2})).await;
+    assert_eq!(st, 200, "{b}");
+
+    let t0 = std::time::SystemTime::now();
+    backup_until_settled(&state, t0).await;
+    let b = get_json(format!("{api}/api/v1/volumes/bv/backup")).await;
+    assert_eq!(b["node"], spare.as_str(), "never a node with a leg: {b}");
+    assert_eq!(b["state"], "idle", "{b}");
+    assert_eq!(b["points"].as_array().unwrap().len(), 1, "{b}");
+    assert_eq!(b["attached_for"], head.as_str());
+    let first_base = b["base"]["engine_name"].as_str().unwrap().to_string();
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert!(m.log.iter().any(|l| l.starts_with("snapshot bv-ship-") && l.ends_with(" of bv-mirror")), "{:?}", m.log);
+        assert!(m.log.iter().any(|l| l.starts_with("ship bv-ship-") && l.contains(" base=- ")), "first in full: {:?}", m.log);
+        let r = mocks[&spare].lock().unwrap();
+        assert!(r.log.iter().any(|l| l.starts_with("create bv-backup")), "{:?}", r.log);
+        let host = format!("host=nqn.2026-10.lo.storm:stormstorage:{head}");
+        assert!(r.log.iter().any(|l| l.starts_with("attach ") && l.contains(&host)), "{:?}", r.log);
+        assert!(r.log.iter().any(|l| l.starts_with("snapshot bv-bk-") && l.ends_with(" of bv-backup")), "{:?}", r.log);
+    }
+    // Not due yet: nothing new.
+    backup_until_settled(&state, t0 + Duration::from_secs(30)).await;
+    assert_eq!(get_json(format!("{api}/api/v1/volumes/bv/backup")).await["points"].as_array().unwrap().len(), 1);
+    // Two more intervals: incremental against the last base; two kept.
+    backup_until_settled(&state, t0 + Duration::from_secs(61)).await;
+    backup_until_settled(&state, t0 + Duration::from_secs(122)).await;
+    let b = get_json(format!("{api}/api/v1/volumes/bv/backup")).await;
+    let points: Vec<&str> = b["points"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(points.len(), 2, "{b}");
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert!(m.log.iter().any(|l| l.contains(&format!(" base={first_base} "))), "incremental: {:?}", m.log);
+        assert!(m.log.iter().filter(|l| l.starts_with("delete snapshot")).count() >= 2, "old bases go: {:?}", m.log);
+        assert!(m.log.iter().any(|l| l.ends_with(&format!("rate={}", 200u64 << 20))), "{:?}", m.log);
+        let r = mocks[&spare].lock().unwrap();
+        assert_eq!(r.log.iter().filter(|l| l.starts_with("delete snapshot")).count(), 1, "the oldest point: {:?}", r.log);
+    }
+
+    // Restore a point: a new single-leg volume on the backup node, served.
+    let (st, rv) = call(format!("{api}/api/v1/volumes/bv/backup/points/{}/restore", points[0]), json!({"name": "rv"})).await;
+    assert_eq!(st, 200, "{rv}");
+    assert_eq!(rv["assembly"], "single_leg", "{rv}");
+    assert_eq!(rv["legs"][0]["node"], spare.as_str());
+    assert_eq!(rv["export"]["state"], "published", "{rv}");
+    assert!(mocks[&spare].lock().unwrap().log.contains(&format!("clone rv from {}", points[0])));
+
+    // Deleting the volume keeps its points; the name is held until purged.
+    let (st, e) = delete_status(format!("{api}/api/v1/volumes/bv")).await;
+    assert_eq!(st, 200, "{e}");
+    let b = get_json(format!("{api}/api/v1/volumes/bv/backup")).await;
+    assert_eq!((b["source_deleted"].as_bool(), b["points"].as_array().unwrap().len()), (Some(true), 2), "{b}");
+    assert!(b["policy"].is_null() && b["base"].is_null(), "{b}");
+    let (st, _) = call(format!("{api}/api/v1/volumes"), json!({"name": "bv", "size_bytes": 1u64 << 30})).await;
+    assert_eq!(st, 409, "a new bv would inherit the old one's backups");
+    let (st, rv2) = call(format!("{api}/api/v1/volumes/bv/backup/points/{}/restore", points[1]), json!({"name": "rv2"})).await;
+    assert_eq!(st, 200, "undo the delete: {rv2}");
+    let (st, _) = delete_status(format!("{api}/api/v1/volumes/bv/backup?purge=true")).await;
+    assert_eq!(st, 200);
+    assert!(state.fed.read().await.backups.is_empty());
+    assert!(mocks[&spare].lock().unwrap().log.iter().any(|l| l.starts_with("delete ") && l.contains("-vol-")), "backup volume deleted");
+    let (st, _) = call(format!("{api}/api/v1/volumes"), json!({"name": "bv", "size_bytes": 1u64 << 30})).await;
+    assert_eq!(st, 200);
+}
+
+/// #46: until the engine can ship (stormblock#400), a cycle ends
+/// `waiting_engine`, the snapshot it took is dropped, and it is retried at
+/// the next interval. A clone is not backed up on its own.
+#[tokio::test]
+async fn backups_wait_for_the_engine_and_refuse_clones() {
+    let (api, state, mocks) = setup(&["node-a", "node-b", "node-c"]).await;
+    let (head, _, _) = create_mirror(&api, "wv").await;
+    let (st, b) = put_backup(format!("{api}/api/v1/volumes/wv/backup"), json!({})).await;
+    assert_eq!(st, 200, "{b}");
+    assert_eq!((b["policy"]["interval_secs"].as_u64(), b["policy"]["keep"].as_u64()), (Some(3600), Some(7)));
+    backup_until_settled(&state, std::time::SystemTime::now()).await;
+    let b = get_json(format!("{api}/api/v1/volumes/wv/backup")).await;
+    assert_eq!(b["state"], "waiting_engine", "{b}");
+    assert!(b["message"].as_str().unwrap().contains("stormblock#400"), "{b}");
+    assert_eq!(b["points"], json!([]));
+    let m = mocks[&head].lock().unwrap();
+    assert_eq!(m.log.iter().filter(|l| l.starts_with("snapshot wv-ship-")).count(), 1, "one try per interval: {:?}", m.log);
+    assert!(m.log.iter().any(|l| l.starts_with("delete snapshot")), "the snapshot it took is dropped: {:?}", m.log);
+    drop(m);
+
+    let (st, _) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "wc", "size_bytes": 1u64 << 30, "source": {"kind": "volume", "id": "wv"}}),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, e) = put_backup(format!("{api}/api/v1/volumes/wc/backup"), json!({})).await;
+    assert_eq!(st, 409, "{e}");
+    let (st, _) = put_backup(format!("{api}/api/v1/volumes/wv/backup"), json!({"pool": "nope"})).await;
+    assert_eq!(st, 404);
+    // Stop: the record stays, no policy.
+    let (st, _) = delete_status(format!("{api}/api/v1/volumes/wv/backup")).await;
+    assert_eq!(st, 200);
+    assert!(state.fed.read().await.backups["wv"].policy.is_none());
 }
