@@ -140,6 +140,19 @@ stormview components feed on **:9093**.
   the legs already made are deleted, so extent sizes never mix across
   legs. The served `<name>-mirror` is carved on the head's array, whose
   slot size the engine chooses; it is not given one.
+
+  **RAID profile (#68):** `raid` on create (and on the dry run) is one of:
+  - `none`: one leg; a `replicas` other than 1 is a 400.
+  - `mirror`: RAID1 over legs in distinct domains, as above; `replicas`
+    defaults to the pool's, at least 2, and 1 is a 400.
+  - `parity1` or `parity2`: refused with 501 `not_implemented` until
+    #72 (it needs a parity engine on the head and replace-member for
+    parity arrays), and nothing is created.
+
+  Absent, `replicas` alone decides, as before. Every volume view carries
+  `raid {level, members[{node, role, sync}], health, rebuilding}`, the
+  level following from the leg count; `/replicas` carries `raid` (the
+  level).
 - **Tier migration (#32).** `POST /api/v1/volumes/{name}/migrate {pool}`
   moves every leg of an assembled volume into another pool, for example
   from the 3.5" cluster's pool to the 2.5" one. It is refused (409) when
@@ -563,9 +576,9 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, hosts?: [{host_nqn, dhchap?}]}` (`prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume record. |
-| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `extent_size_bytes` (when asked at create), `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`). `GET /api/v1/volumes` lists the same. |
-| GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, replicas[{node, role, sync}], bandwidth_class, extent_size_bytes, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, hosts?: [{host_nqn, dhchap?}]}` (`raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
+| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `extent_size_bytes` (when asked at create), `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`), and `raid {level, members, health, rebuilding}` (#68). `GET /api/v1/volumes` lists the same. |
+| GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, raid, replicas[{node, role, sync}], bandwidth_class, extent_size_bytes, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
 | POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |
 | PUT | `/api/v1/volumes/{name}/bandwidth-class` | `{bandwidth_class}` (`low`, `normal`, `high`, `unthrottled`) → the volume plus `rebuild_cap {bytes_per_sec, applied, pending, message?}` (#60). Records the class, which later prestages, re-legs and promotes use, and puts its cap on the head's array at once. Idempotent. With the head unreachable it is recorded with `rate_pending` and applied when the head answers. |

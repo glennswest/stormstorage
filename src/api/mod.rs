@@ -135,6 +135,9 @@ impl ApiError {
     fn conflict(m: impl Into<String>) -> Self {
         Self { status: StatusCode::CONFLICT, code: "conflict", message: m.into() }
     }
+    fn not_implemented(m: impl Into<String>) -> Self {
+        Self { status: StatusCode::NOT_IMPLEMENTED, code: "not_implemented", message: m.into() }
+    }
     fn upstream(m: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_GATEWAY, code: "engine", message: m.into() }
     }
@@ -416,6 +419,9 @@ struct PlanRequest {
     /// Soft: put the first leg — the head — on this node when it fits (#50).
     #[serde(default)]
     prefer_node: Option<String>,
+    /// RAID profile (#68): sets the leg count with `replicas`.
+    #[serde(default)]
+    raid: Option<crate::model::RaidProfile>,
 }
 
 struct ResolvedPlan {
@@ -433,11 +439,15 @@ async fn resolve_plan(s: &AppState, req: &PlanRequest) -> Result<ResolvedPlan, A
         ),
         None => None,
     };
-    let replicas = req
-        .replicas
-        .or(pool.map(|p| p.replicas))
-        .unwrap_or(1)
-        .max(1);
+    let replicas = match req.raid {
+        Some(r) => r.replicas(req.replicas, pool.map(|p| p.replicas)).map_err(|m| match r {
+            crate::model::RaidProfile::Parity1 | crate::model::RaidProfile::Parity2 => {
+                ApiError::not_implemented(m)
+            }
+            _ => ApiError::bad_request(m),
+        })?,
+        None => req.replicas.or(pool.map(|p| p.replicas)).unwrap_or(1).max(1),
+    };
     let rung = req
         .rung
         .clone()
@@ -489,7 +499,7 @@ async fn plan_dry_run(
     )
     .map_err(ApiError::conflict)?;
     Ok(Json(json!({
-        "replicas": rp.replicas, "rung": rp.rung, "legs": picks,
+        "replicas": rp.replicas, "rung": rp.rung, "legs": picks, "raid": req.raid,
         "prefer_node_honored": req.prefer_node.as_ref().map(|_| honored),
     })))
 }
@@ -521,6 +531,10 @@ struct CreateVolumeRequest {
     /// StorageClass's `extentSize`. Absent = each node chooses.
     #[serde(default)]
     extent_size_bytes: Option<u64>,
+    /// RAID profile (#68): `none` (one leg), `mirror` (RAID1, ≥ 2 legs);
+    /// `parity1`/`parity2` answer 501 until #72. Absent = `replicas`.
+    #[serde(default)]
+    raid: Option<crate::model::RaidProfile>,
 }
 
 /// A consumer host to serve a volume to (#51).
@@ -583,6 +597,7 @@ async fn create_volume(
         rung: req.rung.clone(),
         tier: req.tier.clone(),
         prefer_node: req.prefer_node.clone(),
+        raid: req.raid,
     };
     let rp = resolve_plan(&s, &plan_req).await?;
     let (picks, honored) = placement::plan_preferring(
@@ -724,9 +739,13 @@ async fn create_volume(
     if assembled {
         let _ = crate::orchestrate::publish(&s, &req.name).await;
     }
+    // The same view as GET (health, `raid` {level, members}, #68).
     let mut response = {
         let fed = s.fed.read().await;
-        serde_json::to_value(fed.volumes.get(&req.name)).unwrap_or_default()
+        match fed.volumes.get(&req.name) {
+            Some(v) => crate::head::view(v, s.heads.read().await.get(&req.name)),
+            None => serde_json::Value::Null,
+        }
     };
     if req.prefer_node.is_some() {
         if let Some(o) = response.as_object_mut() {
@@ -793,6 +812,7 @@ async fn volume_replicas(State(s): State<Arc<AppState>>, Path(name): Path<String
         "epoch": v.epoch,
         "fenced": v.fenced,
         "health": crate::head::health(v, &reps),
+        "raid": crate::model::RaidProfile::of(v),
         "replicas": reps,
         "bandwidth_class": v.bandwidth_class,
         "extent_size_bytes": v.extent_size_bytes,

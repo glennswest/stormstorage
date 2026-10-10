@@ -370,7 +370,18 @@ pub fn view(vol: &DistVolume, reading: Option<&ArrayReading>) -> serde_json::Val
     let reps = replicas(vol, reading);
     let mut v = serde_json::to_value(vol).unwrap_or_default();
     if let Some(o) = v.as_object_mut() {
-        o.insert("health".into(), serde_json::to_value(health(vol, &reps)).unwrap_or_default());
+        let h = health(vol, &reps);
+        o.insert("health".into(), serde_json::to_value(h).unwrap_or_default());
+        // The RAID summary a consumer shows (#68): level, members, health.
+        o.insert(
+            "raid".into(),
+            serde_json::json!({
+                "level": crate::model::RaidProfile::of(vol),
+                "members": &reps,
+                "health": h,
+                "rebuilding": reps.iter().any(|r| matches!(r.sync, SyncState::Resyncing { .. })),
+            }),
+        );
         o.insert("replica_sync".into(), serde_json::to_value(&reps).unwrap_or_default());
         o.insert(
             "sync_read_at".into(),

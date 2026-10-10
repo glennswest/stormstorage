@@ -1146,3 +1146,54 @@ async fn a_stalled_rebuild_is_undone() {
     assert!(m.log.iter().any(|l| l.starts_with("create r ")), "{:?}", m.log);
     assert!(m.log.iter().any(|l| l.starts_with("delete ")), "{:?}", m.log);
 }
+
+/// #68: `raid` on create. `mirror` is RAID1 over two legs by default and
+/// the volume reports its level, members and health; `none` is one leg;
+/// a replica count that contradicts the profile is a 400; parity is a 501
+/// (#72) that creates nothing. The dry run takes it too.
+#[tokio::test]
+async fn create_takes_a_raid_profile() {
+    let (api, _state, mocks) = setup(&["node-a", "node-b", "node-c"]).await;
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": "m", "size_bytes": 1u64 << 30, "raid": "mirror"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["legs"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v["assembly"], "assembled", "{v}");
+    assert_eq!(v["raid"]["level"], "mirror", "{v}");
+    assert_eq!(v["raid"]["members"].as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(v["raid"]["rebuilding"], false, "{v}");
+    let g = get_json(format!("{api}/api/v1/volumes/m")).await;
+    assert_eq!(g["raid"]["level"], "mirror", "{g}");
+    assert!(g["raid"]["health"].is_string(), "{g}");
+    let r = get_json(format!("{api}/api/v1/volumes/m/replicas")).await;
+    assert_eq!(r["raid"], "mirror", "{r}");
+
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": "n", "size_bytes": 1u64 << 30, "raid": "none"})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["legs"].as_array().unwrap().len(), 1, "{v}");
+    assert_eq!(v["raid"]["level"], "none", "{v}");
+
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": "m3", "size_bytes": 1u64 << 30, "raid": "mirror", "replicas": 3})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["legs"].as_array().unwrap().len(), 3, "{v}");
+
+    let creates = |mocks: &Mocks| -> usize {
+        mocks.values().map(|m| m.lock().unwrap().log.iter().filter(|l| l.starts_with("create ")).count()).sum()
+    };
+    let before = creates(&mocks);
+    for (body, want) in [
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "raid": "none", "replicas": 2}), 400),
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "raid": "mirror", "replicas": 1}), 400),
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "raid": "parity1"}), 501),
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "raid": "parity2"}), 501),
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "raid": "raid10"}), 422),
+    ] {
+        let (st, v) = call(format!("{api}/api/v1/volumes"), body.clone()).await;
+        assert_eq!(st, want, "{body} → {v}");
+    }
+    assert_eq!(creates(&mocks), before, "a refused profile created no leg");
+
+    let (st, p) = call(format!("{api}/api/v1/placement/plan"), json!({"size_bytes": 1u64 << 30, "raid": "mirror"})).await;
+    assert_eq!(st, 200, "{p}");
+    assert_eq!(p["replicas"], 2, "{p}");
+    assert_eq!(p["raid"], "mirror", "{p}");
+}

@@ -3,6 +3,14 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#68)
+- **feat:** A RAID profile on create (#68, for nextnfs-operator#17's shared NFS PVCs). `raid` on `POST /api/v1/volumes` and the `placement/plan` dry run takes:
+  - `none`: one leg (a `replicas` other than 1 is a 400);
+  - `mirror`: today's RAID1, with `replicas` defaulting to the pool's and at least 2 (1 is a 400);
+  - `parity1` or `parity2`: answered 501 `not_implemented`, naming #72, and nothing is created.
+
+  Absent, `replicas` decides as before. Every volume view, including the create answer (now the same view as `GET`), carries `raid {level, members[{node, role, sync}], health, rebuilding}`, and `/replicas` carries `raid` (the level). Test: `tests/replication.rs` `create_takes_a_raid_profile`.
+
 ### 2026-10-10 (#65)
 - **fix:** A leg replacement (move, re-leg, prestage, rebalance, tier migration) is abandoned only when the new member's rebuild makes **no progress** (no change of its state or `rebuilt_bytes`) for `recovery.rebuild_timeout_secs`, not after that much wall clock. The engine's RAID1 rebuild copies the whole leg, so before this a leg over ~700 GiB at the normal cap (200 MiB/s) could never move: it was undone after an hour and the copy redone after the cooldown, again and again (#65).
 - **fix:** The volume's rebuild cap is put on the head's array right before a member is added, and again every minute while the rebuild runs. The engine keeps the cap in memory only and starts the rebuild inside add-member, so the copy began unthrottled, and an engine restart left it unthrottled (#65).

@@ -548,3 +548,47 @@ mod tests {
         assert_eq!(l["cluster"], "n1");
     }
 }
+
+/// RAID profile asked for on create (#68). `mirror` is RAID1 across legs on
+/// distinct domains; the parity profiles are refused until #72.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RaidProfile {
+    None,
+    Mirror,
+    Parity1,
+    Parity2,
+}
+
+impl RaidProfile {
+    /// The profile a volume has: one leg is `none`, more is `mirror` (the
+    /// only multi-leg layout built today).
+    pub fn of(vol: &DistVolume) -> Self {
+        if vol.replicas.max(vol.legs.len() as u32) > 1 {
+            RaidProfile::Mirror
+        } else {
+            RaidProfile::None
+        }
+    }
+
+    /// The leg count for this profile, from what was asked and the pool's
+    /// default. Err = a 400 (or, for parity, the 501 text).
+    pub fn replicas(self, asked: Option<u32>, pool_default: Option<u32>) -> Result<u32, String> {
+        match self {
+            RaidProfile::None => match asked {
+                None | Some(1) => Ok(1),
+                Some(n) => Err(format!("raid \"none\" is one leg; replicas {n} asks for a mirror")),
+            },
+            RaidProfile::Mirror => match asked {
+                Some(n) if n < 2 => Err(format!("raid \"mirror\" needs at least 2 replicas, not {n}")),
+                Some(n) => Ok(n),
+                None => Ok(pool_default.unwrap_or(2).max(2)),
+            },
+            RaidProfile::Parity1 | RaidProfile::Parity2 => Err(
+                "parity volumes are not built yet (stormstorage#72: a parity engine on the head and \
+                 replace-member for parity arrays come first); use \"mirror\" or \"none\""
+                    .into(),
+            ),
+        }
+    }
+}
