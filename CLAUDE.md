@@ -673,6 +673,12 @@ Done: edc7fbc (+ 88375e3 test fix, #62); sc-build passes on a build VM
 (78 unit, replication 12/12). Golden golden-stormstorage-0768c8488a1c
 (stormcos#312).
 
+### Pin git dependencies to a rev (#64, stormcentral#571) — in progress 2026-10-10
+Golden builds refuse a git dependency not pinned to a `rev`. stormview goes
+from `branch = "main"` to `rev = "81ef1d28…"` (the commit Cargo.lock already
+had, so nothing compiled changes); Cargo.lock's source reads
+`?rev=<sha>#<sha>`. Moving stormview forward is now a deliberate rev bump.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
