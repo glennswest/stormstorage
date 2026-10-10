@@ -393,8 +393,39 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       (2026-10-06), waits on the owner's choice (point-in-time B / async
       replica A or C / both).
 
-### Phase 5: HA
-- [ ] State to StormKV/fastetcd; multiple stormstorage instances (#34) — waits on the owner (2026-10-06): fleet fastetcd / StormKV / apiserver?
+### Phase 5: HA — fleet fastetcd (#34) — in progress 2026-10-10
+Owner (2026-10-09, master's recommendation): **(a) a fleet fastetcd**
+(multi-member, across the storage nodes); `[replication] peers` stay the
+fallback for a fleet without one. Deployment of that fastetcd: filed on
+stormcluster. Plan:
+- `[store] backend = "file" | "etcd"` (file = today), `endpoints`,
+  `prefix` (`/stormstorage/`), `ca_file`/`cert_file`/`key_file` (client
+  cert, CN is the etcd user), `lease_ttl_secs` (15), `instance` (default
+  hostname), `advertise_url` (default `http://<hostname>:9093`). etcd and
+  `[replication] peers` are exclusive (validate).
+- Talks etcd's v3 JSON gateway (`/v3/kv/*`, `/v3/lease/*`), which fastetcd
+  serves on the client port: reqwest only, no gRPC/protoc. `src/store.rs`.
+- Keys: `<prefix>leader` (lease-bound, {instance, url}), `meta`
+  ({revision, by, at}, written in every txn), `volumes/<n>`,
+  `snapshots/<n>`, `group_snapshots/<n>`, `backups/<n>`, `nodes/<n>`
+  (registered configs), `orphans`, `stale_heads`.
+- Election: lease grant + txn `create_revision(leader) == 0` → put with
+  lease; keepalive every ttl/3; a failed keepalive = leadership lost.
+- Only the leader writes: `persist()` diffs the durable records against
+  what was last written/loaded and sends one txn guarded by
+  `create_revision(leader) == mine` (chunks ≤ 100 ops). A deposed leader's
+  write fails the compare.
+- First leader with an empty store imports its state.json; a new leader
+  loads the store first. Followers reload when `meta`'s mod_revision moves.
+- Followers proxy every non-GET API call to the leader's `advertise_url`
+  (headers + body kept, `x-stormstorage-forwarded` stops loops; no leader
+  → 503 `no_leader`). Followers poll engines (status stays local) but run
+  no reconcile/republish; `recovery.active` = leader (and not
+  `enabled = false`).
+- `GET /api/v1/store` status; health carries the role.
+- Tests: unit (keys, diff, chunking); tests/store.rs against a mock etcd
+  gateway (two instances: one leader, follower proxies, follower loads,
+  failover when the lease goes).
 
 ### Live migration of a VM's disks (#44, P3) — waits on stormblock#295
 Owner (rustkube-node#159): RAID to the destination, let it catch up, then
