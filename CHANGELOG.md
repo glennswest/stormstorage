@@ -7,6 +7,7 @@
 - **build:** stormview is pinned to a `rev` (81ef1d2, the commit Cargo.lock already compiled) instead of `branch = "main"` (#64, stormcentral#571: golden builds refuse unpinned git dependencies). Cargo.lock's source reads `?rev=<sha>#<sha>`. Moving stormview forward is now a deliberate rev bump. README and CLAUDE.md say so.
 - **fix(test):** The test crate's three `iter().any(|x| *x == …)` checks are `contains` (clippy `manual_contains` under `-D warnings`, #67).
 - **fix:** `placement::plan` drops six explicit derefs clippy's `explicit_auto_deref` refuses under `-D warnings` (#69).
+- **fix(test):** `tests/export.rs` releases two mock-engine `MutexGuard`s before the next await (clippy `await_holding_lock`, #69).
 
 ### 2026-10-07
 - **fix(test):** The #60 test helper no longer shadows axum's `put` (#62).

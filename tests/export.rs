@@ -305,11 +305,13 @@ async fn assembled_volume_is_served_from_the_array_and_revoked_first() {
     // Delete: the served volume goes before the array (else a 409).
     let r = reqwest::Client::new().delete(format!("{api}/api/v1/volumes/mir")).send().await.unwrap();
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
-    let m = mocks[&head].lock().unwrap();
-    let pos = |needle: &str| m.log.iter().position(|l| l == needle).unwrap_or_else(|| panic!("{needle} in {:?}", m.log));
-    assert!(pos(&format!("detach {served}")) < pos(&format!("delete {served}")));
-    assert!(pos(&format!("delete {served}")) < pos(&format!("delete array {array}")));
-    assert!(m.volumes.is_empty() && m.arrays.is_empty(), "{:?}", m.log);
+    {
+        let m = mocks[&head].lock().unwrap();
+        let pos = |needle: &str| m.log.iter().position(|l| l == needle).unwrap_or_else(|| panic!("{needle} in {:?}", m.log));
+        assert!(pos(&format!("detach {served}")) < pos(&format!("delete {served}")));
+        assert!(pos(&format!("delete {served}")) < pos(&format!("delete array {array}")));
+        assert!(m.volumes.is_empty() && m.arrays.is_empty(), "{:?}", m.log);
+    }
     assert!(state.fed.read().await.volumes.is_empty());
 }
 
@@ -604,9 +606,10 @@ async fn a_served_volume_gone_from_its_engine_is_not_recreated_unasked() {
     assert_ne!(ex["volume_id"], served.as_str());
     assert_eq!(ex["coordinates_changed"], true);
     assert!(ex.get("gone").is_none() || ex["gone"] == false, "{ex}");
-    let m = mocks[&head].lock().unwrap();
-    assert!(m.log.iter().any(|l| l.starts_with("create gv-mirror")), "{:?}", m.log);
-    drop(m);
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert!(m.log.iter().any(|l| l.starts_with("create gv-mirror")), "{:?}", m.log);
+    }
     // A recreate is refused when nothing is gone.
     let r = http_post(format!("{api}/api/v1/volumes/gv/export"), json!({"recreate": true})).send().await.unwrap();
     assert_eq!(r.status().as_u16(), 409);
