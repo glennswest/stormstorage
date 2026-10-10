@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10
+- **build:** stormview is pinned to a `rev` (81ef1d2, the commit Cargo.lock already compiled) instead of `branch = "main"` (#64, stormcentral#571: golden builds refuse unpinned git dependencies). Cargo.lock's source reads `?rev=<sha>#<sha>`. Moving stormview forward is now a deliberate rev bump. README and CLAUDE.md say so.
+
 ### 2026-10-07
 - **fix(test):** The #60 test helper no longer shadows axum's `put` (#62).
 - **feat:** A volume's bandwidth class can change after create (#60, for stormblock-csi#31's ControllerModifyVolume). `PUT /api/v1/volumes/{name}/bandwidth-class {bandwidth_class}` records the class, so later prestages, re-legs and promotes use it, and puts its rebuild cap on the head's array at once (`PUT /api/v1/arrays/{id}/rebuild`). It is idempotent (the same class applies the cap again, with no new revision) and answers with the volume plus `rebuild_cap {bytes_per_sec, applied, pending, message?}`. A change is an event and is replicated to peers. If the head does not answer, or the call fails, the class is still recorded and the volume carries `rate_pending`; after each poll, the instance that acts on recovery applies the cap once the head is healthy. A volume with no array (a single leg, or assembly pending) is only recorded, since assembly applies the class. It needs the API token like every mutation. Test: `tests/replication.rs` (applied at once; idempotent; head down → recorded and pending, then applied by one reconcile when it answers; 404 for an unknown volume; an unknown class refused; a single leg recorded with nothing pending).

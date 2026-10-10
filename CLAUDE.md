@@ -36,7 +36,8 @@ shipped config) is in stormcentral's database: `stormcentral component
 export` / `component edit stormstorage --set key=value` (#37). When an issue's work is complete, request the
 golden once with
 `stormcentral component build stormstorage --url http://stormcentral.g8.lo`.
-`Cargo.lock` pins stormview; bump it with `cargo update -p stormview`.
+stormview is pinned by `rev` in Cargo.toml (#64; golden builds refuse
+unpinned git deps); bump the `rev`, then `cargo update -p stormview`.
 
 ## Layering (do not blur it)
 

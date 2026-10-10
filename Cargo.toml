@@ -15,7 +15,7 @@ default-members = [".", "test"]
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
-stormview = { git = "https://github.com/glennswest/stormview", branch = "main" }
+stormview = { git = "https://github.com/glennswest/stormview", rev = "81ef1d2875d9c8247cb1b41fd7db2985bdf2ce60" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

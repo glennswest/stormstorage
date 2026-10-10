@@ -627,9 +627,10 @@ sc-build 'cargo clippy --all-targets'
 afterwards (the old build box, `dev.g8.lo`, was retired on 2026-10-07). A failure files a `build-failure`
 issue on this repo.
 
-Note that `stormview` is a git dependency, and `Cargo.lock` pins the
-exact commit that gets compiled. A fix in stormview does not reach this
-binary until `cargo update -p stormview` is committed here.
+Note that `stormview` is a git dependency pinned to a `rev` in
+`Cargo.toml` (golden builds refuse an unpinned git dependency,
+stormcentral#571). A fix in stormview reaches this binary only when that
+`rev` is bumped (and `Cargo.lock` with it) and committed here.
 
 ### Live test: re-leg on node loss
 
