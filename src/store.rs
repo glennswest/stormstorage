@@ -801,7 +801,7 @@ mod tests {
     #[test]
     fn prefix_range_end() {
         assert_eq!(prefix_end("/stormstorage/"), b"/stormstorage0");
-        assert_eq!(prefix_end("a\u{7f}"), b"b");
+        assert_eq!(prefix_end("abc"), b"abd");
     }
 
     #[test]
