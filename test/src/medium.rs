@@ -41,10 +41,10 @@ async fn leg_on_engine(api: &Api, env: &Env) -> Outcome {
     let name = env.vol("leg");
     let v = api.create(&name, SIZE, 1).await?;
     let node = v["legs"][0]["node"].as_str().unwrap_or_default().to_string();
-    let seen = api.wait_engine(&node, INVENTORY_WAIT, |n| n.iter().any(|x| *x == name)).await;
+    let seen = api.wait_engine(&node, INVENTORY_WAIT, |n| n.contains(&name)).await;
     api.remove(&name).await?;
     ensure(seen?, format!("{name} never appeared on {node}'s engine within {INVENTORY_WAIT}s"))?;
-    let gone = api.wait_engine(&node, INVENTORY_WAIT, |n| !n.iter().any(|x| *x == name)).await?;
+    let gone = api.wait_engine(&node, INVENTORY_WAIT, |n| !n.contains(&name)).await?;
     ensure(gone, format!("{name} still on {node}'s engine {INVENTORY_WAIT}s after delete"))?;
     Ok(format!("{name} created on {node}'s engine and gone after delete"))
 }
@@ -172,7 +172,7 @@ async fn raid1(api: &Api, env: &Env) -> Outcome {
         ensure(v["export"]["state"] == "published", format!("export: {}", v["export"]))?;
         ensure(v["export"]["node"] == head.as_str(), "not served from the head")?;
         let served = format!("{name}-mirror");
-        let seen = api.wait_engine(&head, INVENTORY_WAIT, |n| n.iter().any(|x| *x == served)).await?;
+        let seen = api.wait_engine(&head, INVENTORY_WAIT, |n| n.contains(&served)).await?;
         ensure(seen, format!("{served} not on {head}'s engine"))?;
         Ok::<_, Why>(format!("RAID1 on {head} across {nodes:?}, served as {served}"))
     }
