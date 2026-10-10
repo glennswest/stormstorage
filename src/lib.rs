@@ -4,6 +4,7 @@
 //! Never in the data path. See README.md and docs/architecture.md.
 
 pub mod api;
+pub mod backup;
 pub mod components;
 pub mod config;
 pub mod engine;

@@ -47,6 +47,9 @@ fn name_free(fed: &crate::model::FedState, name: &str) -> Result<(), ApiError> {
     if fed.snapshots.contains_key(name) {
         return Err(ApiError::conflict(format!("{name:?} is a snapshot")));
     }
+    if fed.backups.get(name).is_some_and(|b| b.source_deleted) {
+        return Err(ApiError::conflict(format!("{name:?} names a deleted volume's backups (#46)")));
+    }
     Ok(())
 }
 

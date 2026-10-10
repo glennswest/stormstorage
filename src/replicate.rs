@@ -40,6 +40,9 @@ pub struct Payload {
     pub snapshots: BTreeMap<String, crate::model::Snapshot>,
     #[serde(default)]
     pub group_snapshots: BTreeMap<String, crate::model::GroupSnapshot>,
+    /// Point-in-time backups (#46).
+    #[serde(default)]
+    pub backups: BTreeMap<String, crate::model::Backup>,
 }
 
 pub async fn build_payload(state: &Arc<AppState>) -> Payload {
@@ -57,6 +60,7 @@ pub async fn build_payload(state: &Arc<AppState>) -> Payload {
         stale_heads: fed.stale_heads.clone(),
         snapshots: fed.snapshots.clone(),
         group_snapshots: fed.group_snapshots.clone(),
+        backups: fed.backups.clone(),
     }
 }
 
@@ -71,6 +75,7 @@ pub async fn apply(state: &Arc<AppState>, payload: Payload) -> bool {
     fed.stale_heads = payload.stale_heads;
     fed.snapshots = payload.snapshots;
     fed.group_snapshots = payload.group_snapshots;
+    fed.backups = payload.backups;
     for nc in payload.registered {
         match fed.nodes.get_mut(&nc.name) {
             Some(n) => {

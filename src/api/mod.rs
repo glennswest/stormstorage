@@ -2,6 +2,7 @@
 //! stormblock-compatible self-registration endpoints.
 
 pub mod auth;
+mod backups;
 mod snapshots;
 
 use crate::config::{Config, NodeConfig, PoolConfig};
@@ -185,6 +186,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/snapshots/{id}", get(snapshots::get_snapshot).delete(snapshots::delete_snapshot))
         .route("/api/v1/group-snapshots", post(snapshots::create_group).get(snapshots::list_groups))
         .route("/api/v1/group-snapshots/{id}", get(snapshots::get_group).delete(snapshots::delete_group))
+        .route("/api/v1/backups", get(backups::list_backups))
+        .route(
+            "/api/v1/volumes/{name}/backup",
+            get(backups::get_backup).put(backups::put_policy).delete(backups::stop),
+        )
+        .route("/api/v1/volumes/{name}/backup/points/{point}", delete(backups::delete_point))
+        .route("/api/v1/volumes/{name}/backup/points/{point}/restore", post(backups::restore))
         .route("/api/v1/stale-heads", get(list_stale_heads))
         .route("/api/v1/orphans", get(list_orphans))
         .route("/api/v1/events", get(list_events))
@@ -630,6 +638,15 @@ async fn create_volume(
         if fed.snapshots.contains_key(&req.name) {
             return Err(ApiError::conflict(format!("{:?} is a snapshot", req.name)));
         }
+        // A deleted volume's backups keep its name until restored from or
+        // purged (#46): a new volume must not inherit them.
+        if fed.backups.get(&req.name).is_some_and(|b| b.source_deleted) {
+            return Err(ApiError::conflict(format!(
+                "{:?}: backups of a deleted volume of that name exist — restore from them or purge them \
+                 (DELETE /api/v1/volumes/{}/backup?purge=true)",
+                req.name, req.name
+            )));
+        }
     }
     let plan_req = PlanRequest {
         pool: req.pool.clone(),
@@ -1015,6 +1032,8 @@ async fn delete_volume(
         }
         vol
     };
+    // Its backups outlive it (#46); the base snapshot on its array goes.
+    backups::on_volume_delete(&s, &name).await?;
     // Stop serving first (#2): consumers lose the volume before any leg
     // does, and the head's array cannot go while a volume is pinned to it.
     if let Err(e) = crate::orchestrate::revoke(&s, &vol).await {

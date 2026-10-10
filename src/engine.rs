@@ -891,6 +891,46 @@ impl Engine {
         .await
     }
 
+    /// POST /v1/snapshots/{id}/ship (stormblock#400, #46): copy the
+    /// snapshot's extents changed since `base` (all allocated ones without
+    /// it) to the remote volume at `target_uri`, as a background job.
+    /// Returns the job. A 404 from an engine without the route is typed
+    /// (`is_not_found`).
+    pub async fn ship_snapshot(
+        &self,
+        snapshot: &str,
+        target_uri: &str,
+        base: Option<&str>,
+        max_bytes_per_sec: u64,
+    ) -> anyhow::Result<Value> {
+        let path = format!("/v1/snapshots/{snapshot}/ship");
+        let mut body = serde_json::json!({ "target_uri": target_uri, "max_bytes_per_sec": max_bytes_per_sec });
+        if let Some(b) = base {
+            body["base"] = serde_json::json!(b);
+        }
+        let resp = self.req(reqwest::Method::POST, &path).json(&body).send().await?;
+        check_refused(&resp, &path)?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+            return Err(HttpStatus { status: reqwest::StatusCode::NOT_FOUND, path, message: "no ship route (stormblock#400)".into() }.into());
+        }
+        Self::read_post(&path, resp).await
+    }
+
+    /// GET /v1/ship-jobs/{id}; None = the engine has no such job.
+    pub async fn ship_job(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        let path = format!("/v1/ship-jobs/{id}");
+        let resp = self.get(&path).send().await?;
+        check_refused(&resp, &path)?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!("{path}: {}", resp.status());
+        }
+        Ok(Some(resp.json().await?))
+    }
+
     /// DELETE `path` (/v1 snapshot or group snapshot); 404 = gone.
     pub async fn delete_v1(&self, path: &str) -> anyhow::Result<()> {
         let resp = self.req(reqwest::Method::DELETE, path).send().await?;

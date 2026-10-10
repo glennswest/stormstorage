@@ -514,6 +514,10 @@ pub struct FedState {
     /// Group snapshots by name (#49).
     #[serde(default)]
     pub group_snapshots: BTreeMap<String, GroupSnapshot>,
+    /// Point-in-time backups by volume name (#46). Kept after the volume
+    /// is deleted: undoing a delete is what they are for.
+    #[serde(default)]
+    pub backups: BTreeMap<String, Backup>,
 }
 
 impl FedState {
@@ -685,4 +689,112 @@ impl RaidProfile {
             ),
         }
     }
+}
+
+/// How a volume is backed up (#46): where the backup lives and how often a
+/// point in time is shipped there.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupPolicy {
+    /// The backup node is picked from this pool's nodes…
+    #[serde(default)]
+    pub pool: Option<String>,
+    /// …or these tier's (the backup rung)…
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// …or is this node.
+    #[serde(default)]
+    pub node: Option<String>,
+    pub interval_secs: u64,
+    /// Points in time kept on the backup node.
+    pub keep: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupState {
+    #[default]
+    Idle,
+    /// A ship job is copying changed extents to the backup volume.
+    Shipping,
+    /// The serving node's engine has no ship route yet (stormblock#400).
+    WaitingEngine,
+    /// The last attempt failed (`message`); retried at `next_at_ms`.
+    Failed,
+}
+
+/// A snapshot taken on the serving node to ship from (#46).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipSnapshot {
+    pub node: String,
+    /// Its engine volume name: how a later ship names it as `base`, also on
+    /// a head the array moved to.
+    pub engine_name: String,
+    #[serde(default)]
+    pub engine_id: Option<String>,
+    pub taken_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShipJob {
+    pub id: String,
+    pub snapshot: ShipSnapshot,
+    #[serde(default)]
+    pub bytes_total: u64,
+    #[serde(default)]
+    pub bytes_done: u64,
+}
+
+/// A point in time on the backup node: a snapshot of the backup volume
+/// taken once a ship completed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupPoint {
+    pub name: String,
+    /// When its source snapshot was taken on the serving node.
+    pub taken_at_ms: i64,
+    #[serde(default)]
+    pub engine_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Backup {
+    pub volume: String,
+    pub size_bytes: u64,
+    /// None: stopped (the volume was deleted, or the backup turned off);
+    /// the points stay until purged.
+    #[serde(default)]
+    pub policy: Option<BackupPolicy>,
+    /// The backup node.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// `<volume>-backup`, a thin /v1 volume on `node`.
+    #[serde(default)]
+    pub target_volume_id: Option<String>,
+    #[serde(default)]
+    pub target_master: Option<String>,
+    /// Its attach, served to `attached_for`'s host NQN.
+    #[serde(default)]
+    pub target_attach: Option<crate::engine::AttachedLeg>,
+    #[serde(default)]
+    pub attached_for: Option<String>,
+    /// The last shipped snapshot, the next ship's `base`.
+    #[serde(default)]
+    pub base: Option<ShipSnapshot>,
+    #[serde(default)]
+    pub job: Option<ShipJob>,
+    #[serde(default)]
+    pub points: Vec<BackupPoint>,
+    #[serde(default)]
+    pub state: BackupState,
+    #[serde(default)]
+    pub message: Option<String>,
+    /// The next ship is due at this time (ms since the epoch).
+    #[serde(default)]
+    pub next_at_ms: i64,
+    #[serde(default)]
+    pub source_deleted: bool,
+}
+
+/// The backup volume's engine name for `volume` (#46).
+pub fn backup_target_name(volume: &str) -> String {
+    format!("{volume}-backup")
 }
