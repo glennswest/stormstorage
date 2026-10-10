@@ -728,6 +728,7 @@ replace-member for parity arrays; stormblock#374). Absent = today's
 behaviour. The volume view gains `raid {level, members[{node, role, sync}],
 health, rebuilding}` (level from the leg count). Tests: tests/replication.rs.
 Done: 7b6de5f; sc-build passes (replication 16/16, clippy clean). Parity: #72.
+Golden golden-stormstorage-330e7eac0722 (stormcos#428).
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
