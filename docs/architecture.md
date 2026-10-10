@@ -460,7 +460,11 @@ applies only newer revisions. Poll status deliberately does not replicate
 cannot ping-pong overwrites. This is honest async last-writer-wins for
 state that is also rebuildable from the engines. It stays the fallback for
 a fleet without a fleet etcd.
-State persists per-instance in `<data_dir>/state.json` (atomic writes).
+State persists per-instance in `<data_dir>/state.json`: temp file + fsync +
+rename + directory fsync, the replaced file kept as `state.json.prev`. A
+file that does not parse at startup is kept as `state.json.bad-<secs>` and
+the state starts from `.prev` or empty, with an Error event and a
+`state_recovered` health condition: never a crash loop (#81).
 
 **HA: a fleet fastetcd (implemented, #34; owner decision 2026-10-09).**
 Every stormcos node is an SNO cluster with its own fastetcd, so nothing

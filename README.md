@@ -411,7 +411,15 @@ stormview components feed on **:9093**.
   change. A peer applies a payload only if its revision is newer. Poll
   status is not replicated: each peer polls the engines itself.
 - **Persistence.** State is written to `<data_dir>/state.json`. With no
-  `data_dir`, state lives only in memory and a warning is logged.
+  `data_dir`, state lives only in memory and a warning is logged. Writes
+  survive a power cut (#81): a temp file, fsynced, renamed over the state,
+  the directory fsynced; the replaced file is kept as `state.json.prev`
+  (the last good copy). A state file that does not parse at startup (empty
+  or truncated) never stops the process: it is kept as
+  `state.json.bad-<unix secs>`, the state starts from `state.json.prev` if
+  that parses, else empty, and an Error event (kind `state`) and the
+  `state_recovered` condition in `/api/v1/health` and `/api/v1/store` say
+  so until the next restart.
 - **HA: state in a fleet fastetcd (#34).** With `[store] backend = "etcd"`
   every instance of a fleet shares one etcd (a fleet fastetcd across the
   storage nodes, stormcluster#55), spoken to over etcd's v3 JSON gateway
@@ -659,7 +667,7 @@ with a token set, their Delete/Publish actions get 401.
 | Method | Path | What |
 |---|---|---|
 | GET | `/`, `/ui`, `/ui/` | Embedded UI. |
-| GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. |
+| GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. After a state file was recovered at startup (#81) it adds `conditions: [{type: "state_recovered", severity, message, error, kept_as, started_from (previous/empty), at}]`; status stays `ok` (the process serves). |
 | GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered` or `local`). |
 | GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume as the engine reports it (with `placement`, `kind`, `in_use`, `attachments`, `consumer` when the engine sends them) plus `slabs` and `placed_by` (`engine`, else `slots`, `parent`, `role`, `unknown`); each slab with its `drive`; `fetched_at`, `error`. |
 | GET | `/api/v1/topology` | Rungs, plus each node's label chain, tier and health. |
@@ -697,7 +705,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
 | POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans, stale_heads}`. Applied only if newer. 409 with `[store] backend = "etcd"`. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
-| GET | `/api/v1/store` | Where state lives (#34). `file`: `{backend, path, leads: true}`. `etcd`: `{backend, endpoints, prefix, instance, advertise_url, lease_ttl_secs, leads, status: {role (starting/leader/follower), leader {instance, url}, lease_id, leader_revision, meta_revision, last_load, last_write, writes, loads, last_error}}`. `/api/v1/health` adds `store {backend, role, leader}`. |
+| GET | `/api/v1/store` | Where state lives (#34). `file`: `{backend, path, leads: true, conditions}`. `etcd`: `{backend, endpoints, prefix, instance, advertise_url, lease_ttl_secs, leads, status: {role (starting/leader/follower), leader {instance, url}, lease_id, leader_revision, meta_revision, last_load, last_write, writes, loads, last_error}}`. `/api/v1/health` adds `store {backend, role, leader}`. |
 | POST | `/api/v1/storage/register` | stormblock heartbeat, `{node_addr, hostname, volumes[]}`. |
 | POST | `/api/v1/storage/deregister` | `{node_addr}`. |
 

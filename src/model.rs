@@ -545,6 +545,8 @@ impl FedState {
             .collect()
     }
 
+    /// Strict read: a file that does not parse is an error. Startup uses
+    /// [`load_state`], which recovers instead.
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(s) => Ok(serde_json::from_str(&s)?),
@@ -553,13 +555,39 @@ impl FedState {
         }
     }
 
+    /// Atomic and durable (#81): a uniquely named temp file, fsynced, then
+    /// renamed over the state, and the directory fsynced. The file being
+    /// replaced is kept first as `<path>.prev`, the last good copy.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+        if let Some(dir) = dir {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = PathBuf::from(format!("{}.tmp", path.display()));
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = PathBuf::from(format!("{}.tmp.{}.{n}", path.display(), std::process::id()));
+        let written = (|| -> anyhow::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&serde_json::to_vec_pretty(self)?)?;
+            f.sync_all()?;
+            Ok(())
+        })();
+        if let Err(e) = written {
+            std::fs::remove_file(&tmp).ok();
+            return Err(e);
+        }
+        // The previous copy, by a hard link (the state file is never
+        // absent); best effort: a failure here only loses the fallback.
+        let prev = sibling(path, ".prev");
+        let prev_tmp = sibling(path, &format!(".prev.tmp.{}.{n}", std::process::id()));
+        if std::fs::hard_link(path, &prev_tmp).is_ok() && std::fs::rename(&prev_tmp, &prev).is_err() {
+            std::fs::remove_file(&prev_tmp).ok();
+        }
         std::fs::rename(&tmp, path)?;
+        if let Some(dir) = dir {
+            std::fs::File::open(dir)?.sync_all()?;
+        }
         Ok(())
     }
 
@@ -584,6 +612,80 @@ impl FedState {
             }
         }
     }
+}
+
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{suffix}", path.display()))
+}
+
+/// A state file that did not parse at startup, and what was done (#81).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StateRecovery {
+    /// The parse error, e.g. `EOF while parsing a value at line 1 column 0`.
+    pub error: String,
+    /// Where the bad file was kept (`<path>.bad-<unix secs>`).
+    pub kept_as: Option<PathBuf>,
+    /// `previous` (`<path>.prev`, the last good copy) or `empty`.
+    pub started_from: String,
+    pub at: SystemTime,
+}
+
+impl StateRecovery {
+    pub fn message(&self) -> String {
+        let kept = match &self.kept_as {
+            Some(p) => format!("kept as {}", p.display()),
+            None => "could not be set aside".into(),
+        };
+        let from = if self.started_from == "previous" {
+            "started from the previous copy; changes since it are lost"
+        } else {
+            "no good previous copy: started empty; volumes, snapshots and backups recorded here are missing until re-imported"
+        };
+        format!("state file did not parse ({}); {kept}; {from}", self.error)
+    }
+}
+
+/// Startup read of the state (#81). A file that does not parse (empty or
+/// truncated by a power cut) never stops the process: it is set aside as
+/// `<path>.bad-<unix secs>` and the state starts from `<path>.prev` when
+/// that parses, else empty. Only an I/O error reading the file fails.
+pub fn load_state(path: &Path) -> anyhow::Result<(FedState, Option<StateRecovery>)> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // A first start, or a cut between the link and the rename of an
+            // older save: the previous copy, if any, is the state.
+            return Ok((FedState::load(&sibling(path, ".prev")).unwrap_or_default(), None));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let error = match serde_json::from_str(&text) {
+        Ok(fed) => return Ok((fed, None)),
+        Err(e) => e.to_string(),
+    };
+    let secs = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let bad = sibling(path, &format!(".bad-{secs}"));
+    let kept_as = std::fs::rename(path, &bad).ok().map(|_| bad);
+    let prev = sibling(path, ".prev");
+    let (fed, started_from) = match std::fs::read_to_string(&prev)
+        .ok()
+        .and_then(|s| serde_json::from_str::<FedState>(&s).ok())
+    {
+        Some(fed) => (fed, "previous"),
+        None => (FedState::default(), "empty"),
+    };
+    Ok((
+        fed,
+        Some(StateRecovery {
+            error,
+            kept_as,
+            started_from: started_from.into(),
+            at: SystemTime::now(),
+        }),
+    ))
 }
 
 #[cfg(test)]
@@ -627,6 +729,72 @@ mod tests {
         loaded.apply_config_nodes(&[a2]);
         assert_eq!(loaded.nodes["a"].config.engine_url, "http://a:9999");
         assert!(loaded.nodes["a"].status.healthy);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn recovery_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ss-recover-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_empty_or_truncated_state_file_starts_empty_and_is_kept() {
+        for (tag, content) in [("empty", ""), ("trunc", "{\"nodes\": {\"a\": {")] {
+            let dir = recovery_dir(tag);
+            let path = dir.join("state.json");
+            std::fs::write(&path, content).unwrap();
+            let (fed, rec) = load_state(&path).unwrap();
+            let rec = rec.expect("recovery recorded");
+            assert!(fed.nodes.is_empty() && fed.volumes.is_empty());
+            assert_eq!(rec.started_from, "empty");
+            let kept = rec.kept_as.clone().unwrap();
+            assert_eq!(std::fs::read_to_string(&kept).unwrap(), content, "bad file kept");
+            assert!(!path.exists(), "bad file moved aside");
+            assert!(rec.message().contains("did not parse"), "{}", rec.message());
+            // The next save and start are clean.
+            fed.save(&path).unwrap();
+            assert!(load_state(&path).unwrap().1.is_none());
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_bad_state_file_falls_back_to_the_previous_copy() {
+        let dir = recovery_dir("prev");
+        let path = dir.join("state.json");
+        let mut st = FedState::default();
+        st.apply_config_nodes(&[nc("a")]);
+        st.save(&path).unwrap();
+        st.apply_config_nodes(&[nc("b")]);
+        st.save(&path).unwrap();
+        // .prev holds the first save; the second was cut short.
+        std::fs::write(&path, "").unwrap();
+        let (fed, rec) = load_state(&path).unwrap();
+        assert_eq!(rec.unwrap().started_from, "previous");
+        assert_eq!(fed.nodes.keys().collect::<Vec<_>>(), ["a"]);
+        // No temp files left behind by the saves.
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_state_file_with_a_previous_copy_uses_it() {
+        let dir = recovery_dir("missing");
+        let path = dir.join("state.json");
+        assert!(load_state(&path).unwrap().0.nodes.is_empty(), "first start");
+        let mut st = FedState::default();
+        st.apply_config_nodes(&[nc("a")]);
+        st.save(&dir.join("state.json.prev")).unwrap();
+        let (fed, rec) = load_state(&path).unwrap();
+        assert!(rec.is_none());
+        assert_eq!(fed.nodes.len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 

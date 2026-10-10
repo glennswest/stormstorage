@@ -42,11 +42,11 @@ async fn main() -> anyhow::Result<()> {
         .data_dir
         .as_ref()
         .map(|d| PathBuf::from(d).join("state.json"));
-    let mut fed = match &state_path {
-        Some(p) => FedState::load(p)?,
+    let (mut fed, recovered) = match &state_path {
+        Some(p) => stormstorage::model::load_state(p)?,
         None => {
             tracing::warn!("no data_dir configured — federation state is in-memory only");
-            FedState::default()
+            (FedState::default(), None)
         }
     };
     fed.apply_config_nodes(&config.nodes);
@@ -66,7 +66,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let listen = config.listen_addr.clone();
-    let state = Arc::new(AppState::try_new(config, fed, state_path)?);
+    let mut state = AppState::try_new(config, fed, state_path)?;
+    if let Some(rec) = recovered {
+        state.note_state_recovery(rec);
+    }
+    let state = Arc::new(state);
     if let Some(store) = &state.store {
         tracing::info!(
             instance = %store.instance,

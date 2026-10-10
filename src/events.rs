@@ -20,7 +20,8 @@ pub struct Event {
     pub subject: Option<String>,
     pub severity: Severity,
     /// node, volume, assemble (assembly and leg-move progress), register,
-    /// adopt (local engine and its cluster peers), replicate.
+    /// adopt (local engine and its cluster peers), replicate, state (a
+    /// state file recovered at startup, #81).
     pub kind: String,
     pub message: String,
 }

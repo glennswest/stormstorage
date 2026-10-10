@@ -51,6 +51,8 @@ pub struct AppState {
     /// The fleet store and this instance's role in it, with `[store]
     /// backend = "etcd"` (#34).
     pub store: Option<Arc<crate::store::Store>>,
+    /// The state file did not parse at startup and was set aside (#81).
+    pub state_recovery: Option<crate::model::StateRecovery>,
 }
 
 impl AppState {
@@ -78,7 +80,35 @@ impl AppState {
             head_live: Default::default(),
             noted: Default::default(),
             store,
+            state_recovery: None,
         })
+    }
+
+    /// Record a state file recovered at startup (#81): an ERROR log, an
+    /// Error event, and the `state_recovered` condition in health.
+    pub fn note_state_recovery(&mut self, rec: crate::model::StateRecovery) {
+        let msg = rec.message();
+        tracing::error!("{msg}");
+        self.events.get_mut().push(None, Severity::Error, "state", msg);
+        self.state_recovery = Some(rec);
+    }
+
+    /// `state_recovered` while a startup recovery is on record (#81).
+    pub fn conditions(&self) -> Vec<serde_json::Value> {
+        self.state_recovery
+            .iter()
+            .map(|r| {
+                json!({
+                    "type": "state_recovered",
+                    "severity": "error",
+                    "message": r.message(),
+                    "error": r.error,
+                    "kept_as": r.kept_as,
+                    "started_from": r.started_from,
+                    "at": r.at,
+                })
+            })
+            .collect()
     }
 }
 
@@ -255,6 +285,10 @@ async fn ui_index() -> Html<&'static str> {
 
 async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let mut h = json!({ "status": "ok", "version": crate::VERSION });
+    let conditions = s.conditions();
+    if !conditions.is_empty() {
+        h["conditions"] = json!(conditions);
+    }
     if let Some(store) = &s.store {
         let st = store.status();
         h["store"] = json!({ "backend": "etcd", "role": st.role, "leader": st.leader });
@@ -265,7 +299,12 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
 /// The fleet store and this instance's role in it (#34).
 async fn store_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     match &s.store {
-        None => Json(json!({ "backend": "file", "path": s.state_path, "leads": true })),
+        None => Json(json!({
+            "backend": "file",
+            "path": s.state_path,
+            "leads": true,
+            "conditions": s.conditions(),
+        })),
         Some(store) => Json(json!({
             "backend": "etcd",
             "endpoints": s.config.store.endpoints,
