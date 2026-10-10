@@ -626,7 +626,7 @@ skips migrating volumes. Pure `next_step`; unit tests + tests/replication.rs
 Done: sc-build passes on 2bd672c (77 unit, replication 9/9) after four
 no-slot tries. The head's own leg waits on stormblock#296.
 
-### Routes stormblock-csi needs (#49, P2) — in progress 2026-10-10
+### Routes stormblock-csi needs (#49, P2) — DONE 2026-10-10 (expand split to #73)
 Owner (2026-10-09, master's recommendation): (1) clones copy-on-write on
 the source's array now, full copies onto new legs after stormblock#295;
 (2) group snapshots only for volumes served from one node, others refused
@@ -660,6 +660,9 @@ the node that serves the volume — its head's array, or a single leg):
 - `encrypted: true` / `qos_class` on create → 501 naming stormblock#319.
 Tests: tests/replication.rs mock engine grows /v1 snapshots, group
 snapshots and create-with-source.
+Done: 799c77b (+ docs); sc-build passes (replication 20/20: snapshots and
+clones, group snapshots one node only, hint refusal, a clone through a
+promote; clippy clean). Expand → #73, proposed after stormblock#318.
 
 ### Head-node preference on create (#50, P3) — in progress 2026-10-06
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the

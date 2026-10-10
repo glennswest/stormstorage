@@ -153,6 +153,39 @@ stormview components feed on **:9093**.
   `raid {level, members[{node, role, sync}], health, rebuilding}`, the
   level following from the leg count; `/replicas` carries `raid` (the
   level).
+- **Snapshots, group snapshots and clones (#49, for stormblock-csi).**
+  Everything runs on the node that serves the volume's data: the head's
+  array, or a single leg. It goes through that engine's `/v1` snapshots,
+  group snapshots and create-with-`source`.
+  - **A snapshot** (`POST /api/v1/snapshots {name, volume_id}`) is a sealed
+    copy-on-write snapshot of the served volume (`<name>-mirror` on the
+    head), so it is one point in time across the mirror. It is in /v1's
+    `Snapshot` shape, with `id` = `name`. A repeat with the same name and
+    volume returns it, and another volume is a 409. Snapshots share one
+    namespace with volumes.
+  - **A group snapshot** (`POST /api/v1/group-snapshots {name,
+    volume_ids}`) is one fence across volumes served from **one node**.
+    Volumes on different nodes are refused (409), naming where each is.
+    Its members are snapshots named `<group>-<volume>`, deleted with the
+    group only.
+  - **A clone, or a restore,** is `POST /api/v1/volumes` with `source
+    {kind: snapshot|volume, id}`. It is a copy-on-write clone on the
+    source's node (owner, 2026-10-09; full copies onto legs of its own
+    wait on stormblock#295).
+    - It is at least the source's size. It has `assembly: clone`, no
+      legs, and `clone_of {source, parent}`, and it is served as itself.
+      Its `health` and `raid` are its parent's.
+    - It follows the parent: after a promote or reassembly it is served
+      again from the new head, found by name there. On its own it is
+      never fenced, promoted, moved or assembled.
+    - `raid`, `replicas`, `pool`, `rung`, `tier`, `prefer_node` and
+      `extent_size_bytes` given with `source` are a 400.
+    - A volume with clones or snapshots on its data cannot be deleted
+      (409).
+  - **`encrypted: true` or `qos_class`** on create is a 501 until
+    stormblock#319: the engine would only record them.
+  - **Expand** waits on stormblock#318 (growing a RAID1 array and its
+    slab).
 - **Tier migration (#32).** `POST /api/v1/volumes/{name}/migrate {pool}`
   moves every leg of an assembled volume into another pool, for example
   from the 3.5" cluster's pool to the 2.5" one. It is refused (409) when
@@ -576,8 +609,11 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, hosts?: [{host_nqn, dhchap?}]}` (`raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, source?: {kind: snapshot|volume, id}, hosts?: [{host_nqn, dhchap?}]}` (`source`: a copy-on-write clone, #49; `encrypted`/`qos_class`: 501 until stormblock#319; `raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
 | GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `extent_size_bytes` (when asked at create), `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`), and `raid {level, members, health, rebuilding}` (#68). `GET /api/v1/volumes` lists the same. |
+| POST | `/api/v1/snapshots` | Snapshot `{name, volume_id}` on the node serving the volume (#49): /v1's `Snapshot` (`id` = name) plus `parent`, `node`, `engine_name`, `engine_id`. Idempotent on name. |
+| GET | `/api/v1/snapshots` | Bare array (as /v1); `?name=`, `?source_volume=`. `GET /api/v1/snapshots/{id}` one, `DELETE` removes it (409 for a group's member). |
+| POST | `/api/v1/group-snapshots` | `{name, volume_ids}`: one point in time across volumes served from one node (else 409). /v1's `GroupSnapshot` (`snapshots` in full). `GET` lists (`?name=`), `GET`/`DELETE /api/v1/group-snapshots/{id}`. |
 | GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, raid, replicas[{node, role, sync}], bandwidth_class, extent_size_bytes, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
 | POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |

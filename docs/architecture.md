@@ -433,9 +433,13 @@ stormstorage, not one engine** (owner decisions on stormblock-csi#29 and
   legs, the epoch). A driver keeping its own copy against one engine's
   `/v1` is why a slave never reached `in_sync` there.
 
-What it still needs from here: #49 (snapshots, expand, clones,
-`encrypted`/`qos_class`; waits on owner decisions and stormblock#318/#319)
-and #56 (one
+Snapshots, group snapshots (one node) and copy-on-write clones are
+served from here (#49, owner decisions 2026-10-09). They live on the node
+that serves the volume's data, so a clone shares its source's head and
+legs, and the source cannot be deleted under it. Full copies onto new
+legs wait on stormblock#295, expand waits on stormblock#318, and
+`encrypted`/`qos_class` are refused until stormblock#319. What it still
+needs from here: #56 (one
 elected cluster stormstorage that a multi-node foreign cluster points at,
 with stormcos#354). Single-node clusters point the driver at the node's
 own stormstorage (`$(HOST_IP):9093`).

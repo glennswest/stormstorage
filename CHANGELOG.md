@@ -3,6 +3,16 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#49)
+- **feat:** Snapshots, group snapshots and copy-on-write clones for stormblock-csi (#49, stormblock-csi#29; owner decisions 2026-10-09). Each runs on the node that serves the volume's data (the head's array, or a single leg), through that engine's `/v1`.
+  - `POST/GET /api/v1/snapshots`, `GET/DELETE /api/v1/snapshots/{id}`: in /v1's `Snapshot` shape (`id` = name), idempotent on name, and one point in time across the mirror.
+  - `POST/GET /api/v1/group-snapshots`, `GET/DELETE …/{id}`: one fence, only for volumes served from one node. Others are a 409 naming where each is.
+  - Clones: `POST /api/v1/volumes` with `source {kind: snapshot|volume, id}` makes a copy-on-write clone on the source's node (`assembly: clone`, no legs, `clone_of`), served as itself. Its health and `raid` are its parent's, and it follows the parent through a promote or reassembly.
+  - A volume with clones or snapshots cannot be deleted. Snapshots and volumes share one namespace. Snapshots replicate to peers.
+- **feat:** `encrypted: true` and `qos_class` on create are refused with 501 until stormblock#319 (the engine only records them) (#49).
+- **test:** `tests/replication.rs`: snapshots and clones; group snapshots on one node only; the hint refusal; a clone through a promote (#49).
+- **docs:** README (feature and endpoints) and architecture (stormblock-csi section) (#49). Expand is split to #73, which waits on stormblock#318.
+
 ### 2026-10-10 (#68)
 - **feat:** A RAID profile on create (#68, for nextnfs-operator#17's shared NFS PVCs). `raid` on `POST /api/v1/volumes` and the `placement/plan` dry run takes:
   - `none`: one leg (a `replicas` other than 1 is a 400);
