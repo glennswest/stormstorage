@@ -1630,10 +1630,11 @@ async fn backups_wait_for_the_engine_and_refuse_clones() {
     assert_eq!(b["state"], "waiting_engine", "{b}");
     assert!(b["message"].as_str().unwrap().contains("stormblock#400"), "{b}");
     assert_eq!(b["points"], json!([]));
-    let m = mocks[&head].lock().unwrap();
-    assert_eq!(m.log.iter().filter(|l| l.starts_with("snapshot wv-ship-")).count(), 1, "one try per interval: {:?}", m.log);
-    assert!(m.log.iter().any(|l| l.starts_with("delete snapshot")), "the snapshot it took is dropped: {:?}", m.log);
-    drop(m);
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert_eq!(m.log.iter().filter(|l| l.starts_with("snapshot wv-ship-")).count(), 1, "one try per interval: {:?}", m.log);
+        assert!(m.log.iter().any(|l| l.starts_with("delete snapshot")), "the snapshot it took is dropped: {:?}", m.log);
+    }
 
     let (st, _) = call(
         format!("{api}/api/v1/volumes"),
