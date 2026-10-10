@@ -626,14 +626,40 @@ skips migrating volumes. Pure `next_step`; unit tests + tests/replication.rs
 Done: sc-build passes on 2bd672c (77 unit, replication 9/9) after four
 no-slot tries. The head's own leg waits on stormblock#296.
 
-### Routes stormblock-csi needs (#49, P2) — waits on the owner (2026-10-06)
-Engine today: `/v1` leg expand yes, but no RAID1/slab grow → filed
-stormblock#318 (expand waits on it). Snapshots: `/v1` + engine-local on the
-head's array (one crash-consistent point) — buildable. Clone: COW on the
-same slab only; no engine-to-engine copy. Group snapshots: one engine only.
-`encrypted`/`qos_class`: `/v1` only records them → filed stormblock#319.
-Asked on #49 (needs-owner): clone COW-on-source-array vs full copy; groups
-same-head only; keep refusing encrypted/qos. Nothing built yet.
+### Routes stormblock-csi needs (#49, P2) — in progress 2026-10-10
+Owner (2026-10-09, master's recommendation): (1) clones copy-on-write on
+the source's array now, full copies onto new legs after stormblock#295;
+(2) group snapshots only for volumes served from one node, others refused
+with the reason; (3) keep refusing `encrypted`/`qos_class` until
+stormblock#319. Expand waits on stormblock#318 (open) → propose after it.
+Plan (engine: /v1 snapshots, group-snapshots, create with `source`, all on
+the node that serves the volume — its head's array, or a single leg):
+- `FedState.snapshots` {name → Snapshot: /v1 shape `{id (= name), name,
+  source_volume_id, size_bytes, ready, created_at_ms, group_snapshot_id}`
+  + `node`, `engine_name`, `engine_id`}, `group_snapshots` {name →
+  {id, name, members, ready, created_at_ms, node, engine_id}}; replicated.
+  One namespace with volumes (an engine volume is named after each).
+- `POST /api/v1/snapshots {name, volume_id}` → `/v1/snapshots {name,
+  volume_id: <served engine name>}` on the serving node (crash-consistent:
+  one point on the head). Idempotent on name (same source); GET list
+  (`?source_volume=`, `?name=`), GET/DELETE `{id}`. Delete: /v1 id on the
+  node that made it, else the engine volume by name (after a promote).
+- `POST/GET /api/v1/group-snapshots`, GET/DELETE `{id}`: every volume
+  served from one node, else 409 naming the nodes. Members recorded as
+  snapshots `{group}-{volume}` (engine names `{group}-{served name}`).
+- Clone: `POST /api/v1/volumes` with `source {kind: snapshot|volume, id}`
+  → `/v1/volumes {name, size_bytes ≥ source, master_node, source: {kind:
+  volume, id: <engine name>}}` on the source's serving node.
+  `AssemblyState::Clone`, `clone_of {parent, source}` (parent = the root
+  volume whose array/leg holds it), no legs. Served as itself; follows
+  the parent's serving node (after a promote: found by name, adopted).
+  View: health/raid from the parent. Refused on clones: fence, promote,
+  prestage, dual-attach, move, migrate, assemble. Delete of a volume with
+  clones or snapshots → 409. `raid`/`replicas`/`pool`/`extent_size_bytes`
+  with `source` → 400.
+- `encrypted: true` / `qos_class` on create → 501 naming stormblock#319.
+Tests: tests/replication.rs mock engine grows /v1 snapshots, group
+snapshots and create-with-source.
 
 ### Head-node preference on create (#50, P3) — in progress 2026-10-06
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
