@@ -308,6 +308,8 @@ The compose was refused in this session by the permission classifier
 2026-10-10: unblocked. Release 12.14 carries stormstorage 0cad0c4 (has the
 token fix ef3af98); C2NR0Q2, pvetest1 and server8 run 12.14 (install
 passed). Rerunning `test run stormstorage short`, then `medium`.
+Run b231ed5133 (short, f61750f on C2NR0Q2) queued; paused for P0 #81 —
+check `stormcentral test show b231ed5133`, then medium.
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
