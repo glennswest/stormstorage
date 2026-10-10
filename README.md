@@ -412,6 +412,26 @@ stormview components feed on **:9093**.
   status is not replicated: each peer polls the engines itself.
 - **Persistence.** State is written to `<data_dir>/state.json`. With no
   `data_dir`, state lives only in memory and a warning is logged.
+- **HA: state in a fleet fastetcd (#34).** With `[store] backend = "etcd"`
+  every instance of a fleet shares one etcd (a fleet fastetcd across the
+  storage nodes, stormcluster#55), spoken to over etcd's v3 JSON gateway
+  (`/v3/kv/*`, `/v3/lease/*`). One instance is elected leader: it holds
+  `<prefix>leader` on a lease of `lease_ttl_secs`, renewed every third of
+  it, and steps down when it cannot renew for two thirds of it. Only the
+  leader writes: each durable record has its own key (`volumes/<name>`,
+  `snapshots/…`, `group_snapshots/…`, `backups/…`, `nodes/<name>` for
+  registered nodes, `orphans`, `stale_heads`, plus `meta`), and what
+  changed goes in one transaction guarded by the leader key still being
+  its own, so a deposed leader writes nothing. Only the leader runs the
+  reconciler (re-leg, re-head, reassembly, rebalance, migration, backups)
+  and republishes. Followers poll the engines themselves (status is local),
+  reload the records when `meta` moves, answer reads, and forward every
+  write (`POST`/`PUT`/`DELETE` under `/api/`, register included) to the
+  leader's `advertise_url` with its headers and body; the reply carries
+  `x-stormstorage-leader`. No leader → 503 `no_leader`. The first leader
+  of an empty store imports its state.json; after that the store wins.
+  `[replication] peers` stay the fallback for a fleet without a fleet
+  etcd; the two are exclusive.
 - **UI and feeds.** The embedded UI at `/` shows:
   - nodes, and pools (policy, slab with its drive, tier);
   - node volumes with their slab and drive, RAID partners, consumer, kind,
@@ -476,7 +496,7 @@ stormview components feed on **:9093**.
     (`source_deleted`), so a delete can be undone by a restore. A new
     volume of that name is refused (409) until they are purged.
 
-**Not done yet** (tracked in issues, see [Status](#status)): HA state (#34), and moving a head by handover (stormblock#296),
+**Not done yet** (tracked in issues, see [Status](#status)): moving a head by handover (stormblock#296),
 which is what a tier migration of the head's own leg waits on.
 
 ## Running
@@ -516,7 +536,15 @@ worked example.
 | `[poll] interval_secs` | `15` | Seconds between engine polls. Must be non-zero. |
 | `[poll] fail_threshold` | `3` | Consecutive failed polls before a node is marked unhealthy. |
 | `[api] api_token` | `""` | Set: every inbound write needs `Authorization: Bearer <token>` (see *Auth* under API), and outbound replication pushes send it, so replicating peers share one token. Empty: no auth. |
-| `[replication] peers` | `[]` | Base URLs of peer instances, e.g. `["http://siteb:9093"]`. |
+| `[replication] peers` | `[]` | Base URLs of peer instances, e.g. `["http://siteb:9093"]`. Not with `[store] backend = "etcd"`. |
+| `[store] backend` | `"file"` | `file`: state in `<data_dir>/state.json`, this instance alone. `etcd`: state in a fleet etcd shared by every instance, one elected leader (#34, see *HA* above). |
+| `[store] endpoints` | `[]` | etcd client URLs (`https://host:2379`); the JSON gateway on that port is used. A call goes on to the next member when one does not answer or answers 503. Required for `etcd`. |
+| `[store] prefix` | `"/stormstorage/"` | Every key stormstorage writes starts with this; must end with `/`. |
+| `[store] ca_file` | unset | CA bundle that signed the members' certificates. |
+| `[store] cert_file` / `key_file` | unset | Client certificate and key (mutual TLS; the CN is the etcd user, which needs readwrite on the prefix). Together or not at all. |
+| `[store] lease_ttl_secs` | `15` | The leader's lease (≥ 3). A leader that stops renewing is replaced about this long later. |
+| `[store] instance` | hostname | This instance's name in the leader key. |
+| `[store] advertise_url` | `http://<hostname>:<listen port>` | Where the other instances forward writes while this one leads. |
 | `[local] enabled` | `true` | Adopt the engine on this machine, see [Local adoption](#local-adoption). |
 | `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
 | `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
@@ -525,7 +553,7 @@ worked example.
 | `[local] shared_token_file` | unset | File holding the cluster's **shared** engine token (stormblock's `management.api_token`), presented to every engine, peers included (#12). `$STORMBLOCK_API_TOKEN` wins over it. The `token_file` search above finds a token the engine minted for itself, which goes only to an engine on this machine. |
 | `[local] admin_token_file` | unset | The engine's **admin** token file, presented on its destructive verbs (array create/delete, members, drive close; stormblock#274, #47), and only to an engine on this machine. `$STORMBLOCK_ADMIN_TOKEN` wins over it. There is no default: stormblock keeps its admin token (`/run/stormblock-admin/admin_token`) out of what services mount. Without either, the `[kubernetes]` bearer is presented, and the engine reviews it against `storage-admin`. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
-| `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
+| `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. With `[store] backend = "etcd"` the elected leader acts (`false` turns it off everywhere). When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member's rebuild may make no progress (state or `rebuilt_bytes` unchanged) before the replacement is undone. Not a limit on the whole rebuild (#65). |
 | `[recovery] rate_low` / `rate_normal` / `rate_high` | `52428800` / `209715200` / `1073741824` | Rebuild cap, bytes a second, for a volume's `bandwidth_class` (#33); applied to the head's array. `unthrottled` is 0 (no cap). |
@@ -667,8 +695,9 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
 | GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (an `export` metric, Publish/Republish and delete actions) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
-| POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans, stale_heads}`. Applied only if newer. |
+| POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans, stale_heads}`. Applied only if newer. 409 with `[store] backend = "etcd"`. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
+| GET | `/api/v1/store` | Where state lives (#34). `file`: `{backend, path, leads: true}`. `etcd`: `{backend, endpoints, prefix, instance, advertise_url, lease_ttl_secs, leads, status: {role (starting/leader/follower), leader {instance, url}, lease_id, leader_revision, meta_revision, last_load, last_write, writes, loads, last_error}}`. `/api/v1/health` adds `store {backend, role, leader}`. |
 | POST | `/api/v1/storage/register` | stormblock heartbeat, `{node_addr, hostname, volumes[]}`. |
 | POST | `/api/v1/storage/deregister` | `{node_addr}`. |
 
@@ -857,7 +886,8 @@ done. The open work:
   from a live head stormblock#296;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #34: HA state (waits on an owner decision);
+- #34: HA state in a fleet fastetcd is in (mock-gateway tested); the
+  fleet fastetcd itself is stormcluster#55;
 - stormblock-csi (#36, settled): its controller talks to stormstorage
   only (stormblock-csi v0.4.0). Snapshots, group snapshots and clones
   are in (#49). What it still needs from here is #73 (expand, after

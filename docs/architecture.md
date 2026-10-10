@@ -458,9 +458,42 @@ pushes the full payload to every peer (`POST /api/v1/replicate`); a peer
 applies only newer revisions. Poll status deliberately does not replicate
 — each peer watches the engines itself, so freshness is local and peers
 cannot ping-pong overwrites. This is honest async last-writer-wins for
-state that is also rebuildable from the engines; consensus
-(StormKV/fastetcd, #34) is the phase-5 ladder, same as stormblock's GEM (#44).
+state that is also rebuildable from the engines. It stays the fallback for
+a fleet without a fleet etcd.
 State persists per-instance in `<data_dir>/state.json` (atomic writes).
+
+**HA: a fleet fastetcd (implemented, #34; owner decision 2026-10-09).**
+Every stormcos node is an SNO cluster with its own fastetcd, so nothing
+spans the fleet; a dedicated multi-member fastetcd across the storage
+nodes does (deployed by stormcluster#55). With `[store] backend = "etcd"`
+the instances share it through etcd's v3 JSON gateway:
+
+- **Election by lease.** `<prefix>leader` = {instance, url} is created
+  only if absent (`create_revision == 0`) and bound to a lease of
+  `lease_ttl_secs`, renewed every third of it. A leader that cannot renew
+  for two thirds of the TTL steps down; its key dies with the lease, and
+  the next instance to try wins.
+- **One writer, guarded.** Only the leader writes, record by record
+  (`volumes/<name>`, `snapshots/…`, `group_snapshots/…`, `backups/…`,
+  `nodes/<name>`, `orphans`, `stale_heads`, `meta`), only what changed,
+  in transactions of ≤ 100 operations guarded by `create_revision(leader)
+  == its own`: a deposed leader's write changes nothing and makes it step
+  down.
+- **One actor.** The reconciler (re-leg, re-head, reassembly, rebalance,
+  migration, backups) and republish-on-recovery run on the leader alone,
+  so no `[recovery] enabled` juggling between instances.
+- **Followers** poll the engines (status stays local, as with peers),
+  reload the records when `meta` moves, serve reads, and forward every
+  write to the leader with its headers and body (one hop:
+  `x-stormstorage-forwarded`). An election in flight or a store outage is
+  a 503 for writes; the data path never notices.
+- **Import.** The first leader of an empty store writes its state.json;
+  afterwards the store wins over any instance's file.
+
+Known edge: an engine call already in flight on a leader that is then
+deposed (a leg move, say) finishes; its record write is refused, and the
+new leader's reconciler finds the leg as the engine left it (an orphan
+to reap or a member to adopt), as after a crash.
 
 ## Cost: metadata only on create, enrol and install (#65)
 
@@ -555,7 +588,8 @@ stormconsole#53).
    stormblock#179 option b); enforcement at the legs is stormblock#6,
    handover from a live head stormblock#296. Point-in-time backups (#46):
    built; the copy waits on stormblock#399/#400.
-5. **HA** (#34): state to StormKV/fastetcd; multiple instances.
+5. **HA** (#34): in — state in a fleet fastetcd, one leader elected by
+   lease, followers forward writes. The fleet fastetcd is stormcluster#55.
 
 ## What this asked of the neighbours
 

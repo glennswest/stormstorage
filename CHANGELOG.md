@@ -3,6 +3,17 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#34)
+- **feat:** HA: state in a fleet fastetcd and several instances (#34; owner decision (a), 2026-10-09). `[store] backend = "etcd"` with `endpoints`, `prefix`, `ca_file`/`cert_file`/`key_file`, `lease_ttl_secs`, `instance`, `advertise_url`.
+  - Talks etcd's v3 JSON gateway (fastetcd serves it on the client port): no gRPC client, no new dependency.
+  - Leader election by lease (`<prefix>leader`, created only if absent, renewed every third of the TTL; stepping down after two thirds without a renewal).
+  - Only the leader writes: one key per record, only what changed, in transactions guarded by its leader key (a deposed leader writes nothing). Only the leader reconciles and republishes.
+  - Followers reload when `meta` moves and forward every API write to the leader (`x-stormstorage-leader` on the reply; 503 `no_leader` while none is elected).
+  - The first leader of an empty store imports its state.json.
+  - `GET /api/v1/store`; `/api/v1/health` carries `store {backend, role, leader}`. `POST /api/v1/replicate` is refused (409) with the store, and `[replication] peers` with `etcd` fails validation.
+- **test:** `tests/store.rs` against a mock etcd JSON gateway: election and import, follower load, writes forwarded, failover when the lease goes, a deposed leader's write refused, lease expiry, no leader → 503, no transaction without a change; unit tests for base64, keys, diff and transaction chunks (#34).
+- **docs:** README (HA, `[store]` keys, `/api/v1/store`), docs/architecture.md (HA design), work plan (#34). Deployment of the fleet fastetcd filed as stormcluster#55.
+
 ### 2026-10-10 (#35)
 - **docs:** There is one node registry in the fleet: stormfs reads stormstorage's `GET /api/v1/nodes`, and stormstorage forwards no announcements (owner decision 2026-10-09; #35 is closed with nothing built). The promise to forward is removed from docs/architecture.md, and the README status is brought up to date (#49 done, #46, #72, #73).
 
