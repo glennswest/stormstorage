@@ -839,6 +839,19 @@ health, rebuilding}` (level from the leg count). Tests: tests/replication.rs.
 Done: 7b6de5f; sc-build passes (replication 16/16, clippy clean). Parity: #72.
 Golden golden-stormstorage-330e7eac0722 (stormcos#428).
 
+### State file survives a power cut (#81, P0) — in progress 2026-10-10
+server2 (12.14) crash-looped on an empty state.json after a hard power cut
+(`EOF while parsing a value at line 1 column 0`). Plan: `FedState::save`
+writes a uniquely named temp file, fsyncs it, hard-links the current file
+to `state.json.prev` (the last good copy), renames, fsyncs the directory.
+`model::load_state` never fails on content: a file that does not parse
+(empty, truncated) is kept as `state.json.bad-<unix secs>`, the state starts
+from `.prev` if that parses, else empty; `StateRecovery` is recorded on
+AppState, logged at ERROR, an Error event, and a `state_recovered`
+condition in `/api/v1/health` and `/api/v1/store`. There are no append-only
+logs (events are memory only). Tests: unit (empty, truncated, prev) and
+tests/state.rs (starts, health shows the condition).
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
