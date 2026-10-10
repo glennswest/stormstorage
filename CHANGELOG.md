@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#50)
+- **docs:** #50 (head-node preference on create) recorded as done: its tests pass in sc-build on aeef92e and it ships in golden-stormstorage-89bdc8b2c158. The work plan said "in progress".
+
 ### 2026-10-10 (#64)
 - **chore:** #64 closed: the golden build's SBOM check (stormcentral#571) accepts the stormview pin (golden-stormstorage-89bdc8b2c158).
 

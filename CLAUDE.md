@@ -733,7 +733,7 @@ Done: e05d729 (+ docs); sc-build passes (79 unit incl. prune, replication
 until they land a cycle reads `waiting_engine`. Live run: stormcentral#131.
 Golden golden-stormstorage-c8d36379c5b2 (stormcos#428).
 
-### Head-node preference on create (#50, P3) — in progress 2026-10-06
+### Head-node preference on create (#50, P3) — DONE 2026-10-10
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
 node is a fitting candidate (healthy, pool/tier, room), it is the first
 pick — the first leg is the head (or, single copy, the only leg, local to
@@ -741,6 +741,11 @@ the consumer) — and the rest are placed over the other domains by the
 usual rules; otherwise the plain plan. Responses carry
 `prefer_node_honored`. Pure `placement::plan_preferring` + unit tests;
 tests/replication.rs: created with prefer_node → that node is head.
+Done: 54b94d0 (+ ec5ac39 docs). sc-build on aeef92e (`--locked`, clippy
+-D warnings): unit `a_preferred_node_leads_when_it_fits` and
+`tests/replication.rs::a_preferred_node_becomes_the_head` pass (preferred
+node is head; unknown node → honored false; dry run single leg there).
+In golden-stormstorage-89bdc8b2c158 (stormcos#428).
 
 ### Extent size on create (#59, P3) — DONE 2026-10-07
 stormblock#156: `/v1` create takes `extent_size_bytes` (absent = the node
