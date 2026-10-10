@@ -717,6 +717,7 @@ Done: cb1e2de; sc-build passes (78 unit, replication 15/15, clippy clean).
 Engine-side issues filed: stormblock#395 (allocation-aware rebuild),
 #396 (persist the rebuild cap / take it on add-member), #397 (array slab
 format inline under the lock, ≤64 MiB zero-fill through every leg).
+Golden golden-stormstorage-d3deff6c8547 (release request stormcos#428).
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
