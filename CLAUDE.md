@@ -393,7 +393,7 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       (2026-10-06), waits on the owner's choice (point-in-time B / async
       replica A or C / both).
 
-### Phase 5: HA — fleet fastetcd (#34) — in progress 2026-10-10
+### Phase 5: HA — fleet fastetcd (#34) — DONE 2026-10-10
 Owner (2026-10-09, master's recommendation): **(a) a fleet fastetcd**
 (multi-member, across the storage nodes); `[replication] peers` stay the
 fallback for a fleet without one. Deployment of that fastetcd: filed on
@@ -426,6 +426,11 @@ stormcluster. Plan:
 - Tests: unit (keys, diff, chunking); tests/store.rs against a mock etcd
   gateway (two instances: one leader, follower proxies, follower loads,
   failover when the lease goes).
+Done: feat + docs + test fixes; sc-build passes on aeef92e (`--locked`
+build, 85 unit incl. 6 store, tests/store.rs 4/4, every suite green,
+clippy `-D warnings` clean). Not run against a real fastetcd: the fleet
+fastetcd is stormcluster#55 (deployment), and nothing changes until a
+node's config says `backend = "etcd"`. #56 (one cluster instance) can use it.
 
 ### Live migration of a VM's disks (#44, P3) — waits on stormblock#295
 Owner (rustkube-node#159): RAID to the destination, let it catch up, then
