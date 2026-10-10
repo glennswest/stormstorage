@@ -692,6 +692,28 @@ closed with it. Golden golden-stormstorage-c2663e2fa2c2 (release request
 stormcos#428); its SBOM step (stormcentral#571) took the pinned stormview.
 Left for #64 when it comes back: close it with that.
 
+### Nothing O(capacity) on a create/enrol/install path (#65, stormblock#363) — in progress 2026-10-10
+Review. stormstorage never touches data; what it asks of an engine:
+- create (legs `/v1/volumes` thin, attach, drive open, `POST /api/v1/arrays`
+  RAID1, pinned `<name>-mirror`), enrol (register/adopt/poll), assemble,
+  reassemble: O(metadata) on the engine (stormblock a0f5baf: array create
+  writes superblocks + bitmaps, no initial resync; legs are fresh thin
+  volumes, so "never written = zero" holds on every leg). Array create's
+  slab format zero-fills ≤ 64 MiB of slot table through RAID1 inline under
+  the volume-manager lock → stormblock issue (metadata only / own task).
+- add member (move, re-leg, prestage, rebalance, migration): the engine's
+  RAID1 rebuild copies the whole leg (O(capacity), and allocates the whole
+  thin target) → stormblock issue (allocation-aware rebuild). Its rate cap
+  is memory only on the engine (lost on restart, unlimited until PUT).
+Fixes here: (1) the rebuild wait abandons a replacement only when
+`rebuilt_bytes` makes no progress for `rebuild_timeout_secs` (was: wall
+clock — a leg over ~700 GiB at 200 MiB/s could never move, and every
+retry redid the copy); (2) the rate cap is put before `add_member` and
+re-put every minute while waiting (an engine restart resets it to
+unlimited). Test: 1 PiB two-leg create against mock engines completes in
+seconds with only control-plane calls; rebuild progressing past the
+timeout is kept, a stalled one undone.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
