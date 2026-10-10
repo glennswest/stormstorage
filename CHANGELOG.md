@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#35)
+- **docs:** There is one node registry in the fleet: stormfs reads stormstorage's `GET /api/v1/nodes`, and stormstorage forwards no announcements (owner decision 2026-10-09; #35 is closed with nothing built). The promise to forward is removed from docs/architecture.md, and the README status is brought up to date (#49 done, #46, #72, #73).
+
 ### 2026-10-10 (#46)
 - **feat:** Point-in-time backups to the backup tier (#46; owner decision B, 2026-10-09).
   - `PUT/GET/DELETE /api/v1/volumes/{name}/backup` sets the policy `{pool?, tier?, node?, interval_secs, keep}`. The backup node never holds a leg, and `<name>-backup` is a thin volume there, attached for the serving node.

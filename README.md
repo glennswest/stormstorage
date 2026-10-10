@@ -857,9 +857,13 @@ done. The open work:
   from a live head stormblock#296;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #34, #35: HA state, forwarding announcements to stormfs (both wait on
-  owner decisions);
+- #34: HA state (waits on an owner decision);
 - stormblock-csi (#36, settled): its controller talks to stormstorage
-  only (stormblock-csi v0.4.0). What it still needs from here is #49
-  (snapshots, expand, clones) and #56 (one elected cluster instance for
-  multi-node).
+  only (stormblock-csi v0.4.0). Snapshots, group snapshots and clones
+  are in (#49). What it still needs from here is #73 (expand, after
+  stormblock#318) and #56 (one elected cluster instance for multi-node);
+- #46: point-in-time backups are in; the copy waits on
+  stormblock#399/#400;
+- #72: parity volumes (needs a parity engine on the head).
+- stormfs reads stormstorage's node registry (`GET /api/v1/nodes`); no
+  forwarding to a stormfs registry (#35, owner 2026-10-09).

@@ -798,7 +798,7 @@ Golden golden-stormstorage-330e7eac0722 (stormcos#428).
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
 - [x] #14 re-head — opt-in, off by default (done 2026-10-06).
-- [ ] #35 forward announcements to stormfs — waits on the owner (2026-10-06): does stormfs keep its own registry (stormfs#64, unanswered; stormfs has no session)?
+- [x] #35 closed with nothing built (owner, 2026-10-09): one node registry — stormfs reads `GET /api/v1/nodes`; no forwarding. Docs say so; recorded on stormfs#64.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
       `token_file` is now under `[local]` (checked with `component export`).

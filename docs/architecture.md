@@ -396,8 +396,9 @@ on an interval, N kept), not a synchronous mirror member. See
 ### StormFS
 
 *Design.* The stormstorage side exists (`GET /api/v1/nodes`,
-`POST /api/v1/volumes`). Consuming it is stormfs#64. Forwarding
-announcements to a stormfs endpoint is not implemented (#35).
+`POST /api/v1/volumes`). Consuming it is stormfs#64. There is one node
+registry in the fleet: stormfs reads stormstorage's, and stormstorage does
+not forward announcements anywhere (owner, 2026-10-09, #35).
 
 stormfs v2 puts its namespace in an embedded sharded KV across fleet
 nodes and writes file data **directly** to stormblock volumes over
@@ -409,10 +410,10 @@ is exactly what consumers get:
 - `POST /api/v1/volumes` — chunk-carrier volumes placed by pool/rung
   policy, so stormfs chunks land spread across the federation without
   stormfs re-implementing placement
-- the registration endpoint means stormfs and stormstorage can share one
-  fleet view: nodes announce once, both read it (stormstorage can also
-  *forward* announcements to a stormfs metadata endpoint if stormfs
-  keeps its own).
+- the registration endpoint means stormfs and stormstorage share one
+  fleet view: nodes announce once, to stormstorage, and stormfs reads
+  `GET /api/v1/nodes`. stormfs keeps no registry of its own, so nothing
+  is forwarded (#35, closed).
 
 ### stormblock-csi (#36)
 
