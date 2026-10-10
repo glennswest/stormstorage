@@ -683,8 +683,7 @@ had, so nothing compiled changes); Cargo.lock's source reads
 Cargo.lock, README/CLAUDE/CHANGELOG); `sc-build --locked` build + test
 pass (78 unit + all integration). Open: `cargo clippy --all-targets -D
 warnings` fails on pre-existing lints (#67): test crate's manual_contains
-fixed; lib still has 6 `explicit_auto_deref` errors (locations not yet
-read). Then: sc-build clean incl. clippy, close #64 + #67, golden.
+fixed; lib's 6 `explicit_auto_deref` errors (src/placement.rs) are #69, fixed. Then: sc-build clean incl. clippy, close #64 + #67, golden.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release

@@ -103,7 +103,7 @@ pub fn plan(
         let d = domain_at(&c.labels, rungs, rung);
         let replace = match domains.get(&d) {
             None => true,
-            Some(cur) => s(*c) > s(*cur) || (s(*c) == s(*cur) && c.name < cur.name),
+            Some(cur) => s(c) > s(cur) || (s(c) == s(cur) && c.name < cur.name),
         };
         if replace {
             domains.insert(d, c);
@@ -119,7 +119,7 @@ pub fn plan(
     // Best-scoring domains first, ties by name.
     let mut picks: Vec<&Candidate> = domains.into_values().collect();
     picks.sort_by(|a, b| {
-        s(*b).partial_cmp(&s(*a))
+        s(b).partial_cmp(&s(a))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.name.cmp(&b.name))
     });
