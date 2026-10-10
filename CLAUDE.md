@@ -839,7 +839,7 @@ health, rebuilding}` (level from the leg count). Tests: tests/replication.rs.
 Done: 7b6de5f; sc-build passes (replication 16/16, clippy clean). Parity: #72.
 Golden golden-stormstorage-330e7eac0722 (stormcos#428).
 
-### State file survives a power cut (#81, P0) — in progress 2026-10-10
+### State file survives a power cut (#81, P0) — DONE 2026-10-10
 server2 (12.14) crash-looped on an empty state.json after a hard power cut
 (`EOF while parsing a value at line 1 column 0`). Plan: `FedState::save`
 writes a uniquely named temp file, fsyncs it, hard-links the current file
@@ -851,6 +851,8 @@ AppState, logged at ERROR, an Error event, and a `state_recovered`
 condition in `/api/v1/health` and `/api/v1/store`. There are no append-only
 logs (events are memory only). Tests: unit (empty, truncated, prev) and
 tests/state.rs (starts, health shows the condition).
+Done: 05eb7f8; sc-build passes (`--locked`, 88 unit incl. 3 new, state 1/1,
+clippy -D warnings clean).
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
