@@ -688,8 +688,9 @@ fixed; lib's 6 `explicit_auto_deref` errors (src/placement.rs) are #69, fixed.
 across an await in tests/export.rs (4713bfc), and `[workspace.lints]`
 denying rustc warnings and clippy `all` in both crates (9f09efe). sc-build
 `--locked` build + test + `clippy --all-targets -D warnings` passes. #67
-closed with it. Left for #64 when it comes back: close it (the pin passed
-the same builds).
+closed with it. Golden golden-stormstorage-c2663e2fa2c2 (release request
+stormcos#428); its SBOM step (stormcentral#571) took the pinned stormview.
+Left for #64 when it comes back: close it with that.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
