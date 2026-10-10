@@ -64,6 +64,10 @@ struct Mock {
     rebuild_step: Option<u64>,
     /// Free bytes reported by capacity; None = 50 GiB.
     free: Option<u64>,
+    /// /v1 snapshot id → its engine volume id (#49).
+    snaps: BTreeMap<String, String>,
+    /// /v1 group snapshot id → member engine volume ids (#49).
+    groups: BTreeMap<String, Vec<String>>,
     log: Vec<String>,
 }
 
@@ -84,11 +88,44 @@ fn coords(node: &str, nsid: u32) -> Value {
            "addresses": [{"traddr": "0.0.0.0", "trsvcid": 4420}]})
 }
 
+/// An engine volume by id or name (#130): its id and the array it is on.
+fn find_engine_volume(m: &Mock, key: &str) -> Option<(String, Option<String>)> {
+    m.volumes
+        .iter()
+        .find(|(id, v)| *id == key || v.0 == key)
+        .map(|(id, v)| (id.clone(), v.1.clone()))
+        .or_else(|| m.adopted.iter().find(|(id, n)| *id == key || *n == key).map(|(id, _)| (id.clone(), None)))
+}
+
+/// A new engine volume `name` on `pin`'s slab (copy-on-write children
+/// live on their source's array, so they come across with it).
+fn add_engine_volume(s: &S, m: &mut Mock, name: &str, pin: Option<String>) -> String {
+    m.next += 1;
+    let id = format!("{}-vol-{}", m.node, m.next);
+    m.volumes.insert(id.clone(), (name.to_string(), pin.clone(), 1));
+    if let Some(a) = &pin {
+        s.disks.lock().unwrap().slabs.entry(a.clone()).or_default().push((id.clone(), name.to_string()));
+    }
+    id
+}
+
 async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
     let mut m = s.m.lock().unwrap();
     let name = b["name"].as_str().unwrap().to_string();
-    let pin = b["placement"]["array_id"].as_str().map(|x| x.to_string());
     let node = m.node.clone();
+    // A copy-on-write clone (#49): of an engine volume here, mastered here.
+    if let Some(src) = b["source"]["id"].as_str() {
+        if b["master_node"] != node.as_str() || b["source"]["kind"] != "volume" {
+            return (StatusCode::BAD_REQUEST, Json(json!({"message": format!("clone: {b}")})));
+        }
+        let Some((_, pin)) = find_engine_volume(&m, src) else {
+            return (StatusCode::NOT_FOUND, Json(json!({"message": format!("volume {src}")})));
+        };
+        m.log.push(format!("clone {name} from {src}"));
+        let id = add_engine_volume(&s, &mut m, &name, pin);
+        return (StatusCode::OK, Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]})));
+    }
+    let pin = b["placement"]["array_id"].as_str().map(|x| x.to_string());
     let extent = b.get("extent_size_bytes").and_then(|x| x.as_u64());
     m.log.push(format!("create {name} extent={extent:?}"));
     if let Some(e) = extent {
@@ -108,6 +145,65 @@ async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Jso
         id
     });
     (StatusCode::OK, Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]})))
+}
+
+async fn v1_snapshot(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    let (name, src) = (b["name"].as_str().unwrap().to_string(), b["volume_id"].as_str().unwrap().to_string());
+    let Some((_, pin)) = find_engine_volume(&m, &src) else {
+        return (StatusCode::NOT_FOUND, Json(json!({"message": format!("volume {src}")})));
+    };
+    m.log.push(format!("snapshot {name} of {src}"));
+    let vid = add_engine_volume(&s, &mut m, &name, pin);
+    let sid = format!("snap-{}", m.next);
+    m.snaps.insert(sid.clone(), vid);
+    (StatusCode::OK, Json(json!({"id": sid, "name": name, "source_volume_id": src, "size_bytes": 1u64 << 30,
+                                  "ready": true, "created_at_ms": 7})))
+}
+
+async fn v1_snapshot_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
+    let mut m = s.m.lock().unwrap();
+    if let Some(v) = m.snaps.remove(&id) {
+        m.volumes.remove(&v);
+    }
+    m.log.push(format!("delete snapshot {id}"));
+    StatusCode::OK
+}
+
+async fn v1_group(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    let name = b["name"].as_str().unwrap().to_string();
+    let ids: Vec<String> = b["volume_ids"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+    let mut found = Vec::new();
+    for id in &ids {
+        match find_engine_volume(&m, id) {
+            Some((_, pin)) => found.push((id.clone(), pin)),
+            None => return (StatusCode::NOT_FOUND, Json(json!({"message": format!("volume {id}")}))),
+        }
+    }
+    m.log.push(format!("group {name} of {}", ids.join(",")));
+    let mut snaps = Vec::new();
+    let mut vids = Vec::new();
+    for (id, pin) in found {
+        let member = format!("{name}-{id}");
+        let vid = add_engine_volume(&s, &mut m, &member, pin);
+        snaps.push(json!({"id": format!("snap-{}", m.next), "name": member, "source_volume_id": id,
+                          "size_bytes": 1u64 << 30, "ready": true, "created_at_ms": 9, "group_snapshot_id": "g"}));
+        vids.push(vid);
+    }
+    m.next += 1;
+    let gid = format!("gsnap-{}", m.next);
+    m.groups.insert(gid.clone(), vids);
+    (StatusCode::OK, Json(json!({"id": gid, "name": name, "snapshots": snaps, "ready": true, "created_at_ms": 9})))
+}
+
+async fn v1_group_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
+    let mut m = s.m.lock().unwrap();
+    for v in m.groups.remove(&id).unwrap_or_default() {
+        m.volumes.remove(&v);
+    }
+    m.log.push(format!("delete group {id}"));
+    StatusCode::OK
 }
 
 async fn v1_get(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
@@ -365,6 +461,10 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
         .route("/v1/volumes/{id}/detach", post(v1_detach))
         .route("/v1/volumes/{id}/fence", post(v1_fence))
         .route("/v1/volumes/{id}/raid-superblock", get(v1_superblock))
+        .route("/v1/snapshots", post(v1_snapshot))
+        .route("/v1/snapshots/{id}", delete(v1_snapshot_delete))
+        .route("/v1/group-snapshots", post(v1_group))
+        .route("/v1/group-snapshots/{id}", delete(v1_group_delete))
         .route("/api/v1/drives", post(add_drive))
         .route("/api/v1/drives/{p}", delete(close_drive))
         .route("/api/v1/arrays", post(create_array).get(list_arrays))
@@ -1196,4 +1296,188 @@ async fn create_takes_a_raid_profile() {
     assert_eq!(st, 200, "{p}");
     assert_eq!(p["replicas"], 2, "{p}");
     assert_eq!(p["raid"], "mirror", "{p}");
+}
+
+async fn delete_status(url: String) -> (u16, Value) {
+    let r = reqwest::Client::new().delete(url).send().await.unwrap();
+    let st = r.status().as_u16();
+    (st, r.json().await.unwrap_or(Value::Null))
+}
+
+/// #49: a snapshot is taken on the head, of the served mirror (one point
+/// in time across the RAID1), idempotent on its name; clones from it and
+/// from the volume are copy-on-write on the head, served as themselves,
+/// and report their parent's health; the parent cannot go while they live.
+#[tokio::test]
+async fn snapshots_and_copy_on_write_clones() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, _, _) = create_mirror(&api, "src").await;
+
+    let (st, sn) = call(format!("{api}/api/v1/snapshots"), json!({"name": "s1", "volume_id": "src"})).await;
+    assert_eq!(st, 200, "{sn}");
+    assert_eq!((sn["id"].as_str(), sn["source_volume_id"].as_str()), (Some("s1"), Some("src")));
+    assert_eq!(sn["ready"], true);
+    assert_eq!(sn["node"], head.as_str());
+    let (st, again) = call(format!("{api}/api/v1/snapshots"), json!({"name": "s1", "volume_id": "src"})).await;
+    assert_eq!((st, &again["id"]), (200, &sn["id"]), "idempotent on name");
+    assert_eq!(
+        mocks[&head].lock().unwrap().log.iter().filter(|l| *l == "snapshot s1 of src-mirror").count(),
+        1,
+        "taken once, of the served mirror"
+    );
+    let (st, _) = call(format!("{api}/api/v1/snapshots"), json!({"name": "src", "volume_id": "src"})).await;
+    assert_eq!(st, 409, "one namespace with volumes");
+    let (st, _) = call(format!("{api}/api/v1/snapshots"), json!({"name": "s9", "volume_id": "nope"})).await;
+    assert_eq!(st, 404);
+    let l = get_json(format!("{api}/api/v1/snapshots?source_volume=src")).await;
+    assert_eq!(l.as_array().unwrap().len(), 1, "{l}");
+    assert_eq!(get_json(format!("{api}/api/v1/snapshots?source_volume=other")).await, json!([]));
+
+    // Restore: a clone of the snapshot, on the head, served.
+    let (st, c) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "c1", "size_bytes": 1u64 << 30, "source": {"kind": "snapshot", "id": "s1"}}),
+    )
+    .await;
+    assert_eq!(st, 200, "{c}");
+    assert_eq!(c["assembly"], "clone", "{c}");
+    assert_eq!(c["legs"], json!([]));
+    assert_eq!(c["clone_of"], json!({"source": {"kind": "snapshot", "id": "s1"}, "parent": "src"}));
+    assert_eq!(c["export"]["state"], "published", "{c}");
+    assert_eq!(c["export"]["node"], head.as_str());
+    assert_eq!(c["raid"]["level"], "mirror", "the parent's copies: {c}");
+    assert!(c["health"].is_string(), "{c}");
+    // Clone of the volume itself: of its served mirror.
+    let (st, c2) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "c2", "size_bytes": 2u64 << 30, "source": {"kind": "volume", "id": "src"}}),
+    )
+    .await;
+    assert_eq!(st, 200, "{c2}");
+    // A snapshot of a clone lives on the same parent.
+    let (st, sc) = call(format!("{api}/api/v1/snapshots"), json!({"name": "s2", "volume_id": "c2"})).await;
+    assert_eq!(st, 200, "{sc}");
+    assert_eq!(sc["parent"], "src");
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert!(m.log.contains(&"clone c1 from s1".to_string()), "{:?}", m.log);
+        assert!(m.log.contains(&"clone c2 from src-mirror".to_string()), "{:?}", m.log);
+        assert!(m.log.contains(&"snapshot s2 of c2".to_string()), "{:?}", m.log);
+    }
+    // Refusals: smaller than the source, a layout of its own, unknown source.
+    for (body, want) in [
+        (json!({"name": "x", "size_bytes": 1u64 << 20, "source": {"kind": "volume", "id": "src"}}), 400),
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "replicas": 2, "source": {"kind": "volume", "id": "src"}}), 400),
+        (json!({"name": "x", "size_bytes": 1u64 << 30, "source": {"kind": "snapshot", "id": "nope"}}), 404),
+        (json!({"name": "s1", "size_bytes": 1u64 << 30, "source": {"kind": "volume", "id": "src"}}), 409),
+    ] {
+        let (st, e) = call(format!("{api}/api/v1/volumes"), body.clone()).await;
+        assert_eq!(st, want, "{body} → {e}");
+    }
+    // A clone does not fence, promote or move on its own.
+    let (st, _) = call(format!("{api}/api/v1/volumes/c1/fence"), json!({"expected_epoch": 1})).await;
+    assert_eq!(st, 409);
+
+    // The parent stays while anything lives on its data.
+    let (st, e) = delete_status(format!("{api}/api/v1/volumes/src")).await;
+    assert_eq!(st, 409, "{e}");
+    assert!(e["error"].as_str().unwrap().contains("clone c1"), "{e}");
+    // A clone keeps its data when its snapshot goes (copy-on-write).
+    let (st, _) = delete_status(format!("{api}/api/v1/snapshots/s1")).await;
+    assert_eq!(st, 200);
+    assert!(mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("delete snapshot snap-")));
+    assert_eq!(get_json(format!("{api}/api/v1/volumes/c1")).await["export"]["state"], "published");
+    for p in ["snapshots/s2", "volumes/c1", "volumes/c2", "volumes/src"] {
+        let (st, e) = delete_status(format!("{api}/api/v1/{p}")).await;
+        assert_eq!(st, 200, "{p}: {e}");
+    }
+    let fed = state.fed.read().await;
+    assert!(fed.volumes.is_empty() && fed.snapshots.is_empty());
+}
+
+/// #49: a group snapshot is one fence on one node; volumes served from
+/// different nodes are refused with where each is. Its members go with it.
+#[tokio::test]
+async fn group_snapshots_are_one_node_only() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    for (n, prefer) in [("g1", "node-a"), ("g2", "node-a"), ("g3", "node-b")] {
+        let (st, v) = call(
+            format!("{api}/api/v1/volumes"),
+            json!({"name": n, "size_bytes": 1u64 << 30, "replicas": 2, "prefer_node": prefer}),
+        )
+        .await;
+        assert_eq!((st, v["head"].as_str()), (200, Some(prefer)), "{v}");
+    }
+    let (st, e) = call(format!("{api}/api/v1/group-snapshots"), json!({"name": "gx", "volume_ids": ["g1", "g3"]})).await;
+    assert_eq!(st, 409, "{e}");
+    assert!(e["error"].as_str().unwrap().contains("g3 on node-b"), "{e}");
+
+    let (st, g) = call(format!("{api}/api/v1/group-snapshots"), json!({"name": "gs", "volume_ids": ["g1", "g2"]})).await;
+    assert_eq!(st, 200, "{g}");
+    assert_eq!(g["id"], "gs");
+    let names: Vec<&str> = g["snapshots"].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["gs-g1", "gs-g2"]);
+    assert!(g["snapshots"].as_array().unwrap().iter().all(|x| x["group_snapshot_id"] == "gs"), "{g}");
+    assert!(mocks["node-a"].lock().unwrap().log.contains(&"group gs of g1-mirror,g2-mirror".to_string()));
+    let (st, again) = call(format!("{api}/api/v1/group-snapshots"), json!({"name": "gs", "volume_ids": ["g2", "g1"]})).await;
+    assert_eq!((st, &again["id"]), (200, &g["id"]), "idempotent");
+    assert_eq!(get_json(format!("{api}/api/v1/group-snapshots")).await.as_array().unwrap().len(), 1);
+    // A member is restorable, but deleted only with its group.
+    let (st, c) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "gc", "size_bytes": 1u64 << 30, "source": {"kind": "snapshot", "id": "gs-g1"}}),
+    )
+    .await;
+    assert_eq!(st, 200, "{c}");
+    assert!(mocks["node-a"].lock().unwrap().log.contains(&"clone gc from gs-g1-mirror".to_string()));
+    let (st, _) = delete_status(format!("{api}/api/v1/snapshots/gs-g1")).await;
+    assert_eq!(st, 409);
+    let (st, _) = delete_status(format!("{api}/api/v1/group-snapshots/gs")).await;
+    assert_eq!(st, 200);
+    assert!(mocks["node-a"].lock().unwrap().log.iter().any(|l| l.starts_with("delete group gsnap-")));
+    let fed = state.fed.read().await;
+    assert!(fed.snapshots.is_empty() && fed.group_snapshots.is_empty());
+}
+
+/// #49: `encrypted` and `qos_class` are refused until stormblock#319 — the
+/// engine would only record them.
+#[tokio::test]
+async fn encrypted_and_qos_are_refused() {
+    let (api, _state, mocks) = setup(&["node-a", "node-b"]).await;
+    for extra in [json!({"encrypted": true}), json!({"qos_class": "gold"})] {
+        let mut body = json!({"name": "e", "size_bytes": 1u64 << 30});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let (st, e) = call(format!("{api}/api/v1/volumes"), body).await;
+        assert_eq!(st, 501, "{e}");
+        assert!(e["error"].as_str().unwrap().contains("stormblock#319"), "{e}");
+    }
+    assert!(mocks.values().all(|m| m.lock().unwrap().log.is_empty()));
+    let (st, _) = call(format!("{api}/api/v1/volumes"), json!({"name": "e", "size_bytes": 1u64 << 30, "encrypted": false})).await;
+    assert_eq!(st, 200);
+}
+
+/// #49: a clone lives on its parent's array, so it comes across with a
+/// promote and is served again by the new head, found by name.
+#[tokio::test]
+async fn a_clone_follows_its_parent_through_a_promote() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, target, _) = create_mirror(&api, "p").await;
+    let (st, c) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "pc", "size_bytes": 1u64 << 30, "source": {"kind": "volume", "id": "p"}}),
+    )
+    .await;
+    assert_eq!(st, 200, "{c}");
+    let (st, _) = call(format!("{api}/api/v1/volumes/p/fence"), json!({"expected_epoch": 1})).await;
+    assert_eq!(st, 200);
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = false;
+    let (st, v) = call(format!("{api}/api/v1/volumes/p/promote"), json!({"target_node": target, "fenced_epoch": 2})).await;
+    assert_eq!(st, 200, "{v}");
+    let c = get_json(format!("{api}/api/v1/volumes/pc")).await;
+    assert_eq!(c["export"]["state"], "published", "{c}");
+    assert_eq!(c["export"]["node"], target.as_str());
+    assert_eq!(c["export"]["adopted"], true);
+    let m = mocks[&target].lock().unwrap();
+    assert!(!m.log.iter().any(|l| l.starts_with("clone pc")), "not made again: {:?}", m.log);
+    assert!(m.log.iter().any(|l| l.starts_with("attach-any ")), "{:?}", m.log);
 }
