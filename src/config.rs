@@ -36,8 +36,10 @@ pub struct RecoveryConfig {
     /// After a failed re-leg attempt (no target, engine error, rebuild
     /// that never converged), wait this long before the next one.
     pub cooldown_secs: u64,
-    /// How long a new member may take to rebuild before the replacement
-    /// is abandoned and rolled back.
+    /// How long a new member's rebuild may make no progress (no change of
+    /// its state or `rebuilt_bytes`) before the replacement is abandoned
+    /// and rolled back. Not a limit on the whole rebuild, which copies the
+    /// whole leg and so takes as long as the leg is big (#65).
     pub rebuild_timeout_secs: u64,
     /// Resync rate caps per `bandwidth_class` (#33), bytes a second of
     /// member data, applied to the head array's rebuilds. 0 = unlimited;

@@ -519,6 +519,12 @@ async fn build_replacement(
             .await
             .map_err(|e| anyhow::anyhow!("{head}: open leg drive: {e:#}"))?;
         leg.drive_uuid = Some(drive.clone());
+        // The engine keeps a rebuild cap in memory only and starts the
+        // rebuild inside add_member: put the cap first, or the copy of the
+        // whole leg begins unthrottled (#65).
+        let _ = head_engine
+            .set_rebuild_rate(&array_id, state.config.recovery.rate(vol.bandwidth_class))
+            .await;
         let member = head_engine
             .array_add_member(&array_id, &drive)
             .await
@@ -603,8 +609,8 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
         (rep, he, te, array_id, head)
     };
     let member = rep.leg.member_uuid.clone().unwrap_or_default();
-    let timeout = Duration::from_secs(state.config.recovery.rebuild_timeout_secs.max(1));
-    let ok = wait_member_active(&head_engine, &array_id, &member, timeout).await;
+    let stall = Duration::from_secs(state.config.recovery.rebuild_timeout_secs.max(1));
+    let ok = wait_member_active(state, name, &head_engine, &array_id, &member, stall).await;
     let from = rep.from.clone();
     let to = rep.leg.node.clone();
 
@@ -2025,35 +2031,63 @@ pub async fn republish_on(state: &Arc<AppState>, node: &str) {
     }
 }
 
-/// Poll the head's array until the member reports active. False on timeout
-/// or persistent errors.
+/// Poll the head's array until the member reports active. False when it
+/// fails, or when it makes no progress for `stall`: progress is a change
+/// of its state or of `rebuilt_bytes`, so a long rebuild (a big leg is a
+/// copy of the whole leg on the engine, #65) is waited for as long as it
+/// moves, and never abandoned and redone for its size. An engine that
+/// reports no `rebuilt_bytes` gets `stall` from the last state change.
+/// While waiting, the volume's rebuild cap is put again every minute: the
+/// engine holds it in memory only, so a restart of the head's engine
+/// would resume the copy unthrottled.
 async fn wait_member_active(
+    state: &Arc<AppState>,
+    name: &str,
     engine: &crate::engine::Engine,
     array_id: &str,
     member_uuid: &str,
-    timeout: Duration,
+    stall: Duration,
 ) -> bool {
-    let deadline = tokio::time::Instant::now() + timeout;
+    let tick = (stall / 4).clamp(Duration::from_millis(100), Duration::from_secs(3));
+    let reput = Duration::from_secs(60);
+    let mut deadline = tokio::time::Instant::now() + stall;
+    let mut last_put = tokio::time::Instant::now();
+    let mut seen: Option<(String, Option<u64>)> = None;
     loop {
-        if tokio::time::Instant::now() > deadline {
-            return false;
-        }
         if let Ok(arr) = engine.get_array(array_id).await {
-            let st = arr
+            let m = arr
                 .get("members")
                 .and_then(|m| m.as_array())
                 .and_then(|ms| {
                     ms.iter()
                         .find(|m| m.get("uuid").and_then(|u| u.as_str()) == Some(member_uuid))
-                })
-                .and_then(|m| m.get("state").and_then(|s| s.as_str()).map(|s| s.to_lowercase()));
+                });
+            let st = m
+                .and_then(|m| m.get("state").and_then(|s| s.as_str()))
+                .map(|s| s.to_lowercase());
+            let rebuilt = m.and_then(|m| m.get("rebuilt_bytes")).and_then(|b| b.as_u64());
             match st.as_deref() {
                 Some("active") => return true,
                 Some("failed") => return false,
                 _ => {}
             }
+            let now_seen = st.map(|s| (s, rebuilt));
+            if now_seen.is_some() && now_seen != seen {
+                deadline = tokio::time::Instant::now() + stall;
+                seen = now_seen;
+            }
         }
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        if tokio::time::Instant::now() > deadline {
+            return false;
+        }
+        if last_put.elapsed() >= reput {
+            let class = state.fed.read().await.volumes.get(name).map(|v| v.bandwidth_class);
+            if let Some(class) = class {
+                let _ = engine.set_rebuild_rate(array_id, state.config.recovery.rate(class)).await;
+            }
+            last_put = tokio::time::Instant::now();
+        }
+        tokio::time::sleep(tick).await;
     }
 }
 

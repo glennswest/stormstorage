@@ -58,6 +58,12 @@ struct Mock {
     sbs: BTreeMap<String, Value>,
     /// Extent sizes this node has pools for (stormblock#156); empty = any.
     extent_sizes: Vec<u64>,
+    /// Some(step): an added member rebuilds, `rebuilt_bytes` growing by
+    /// `step` of 1000 on every array read (0 = stalled); None = active at
+    /// once (#65).
+    rebuild_step: Option<u64>,
+    /// Free bytes reported by capacity; None = 50 GiB.
+    free: Option<u64>,
     log: Vec<String>,
 }
 
@@ -215,7 +221,19 @@ async fn list_arrays(State(s): State<S>) -> Json<Value> {
 }
 
 async fn get_array(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
-    let m = s.m.lock().unwrap();
+    let mut m = s.m.lock().unwrap();
+    let step = m.rebuild_step.unwrap_or(0);
+    if let Some(ms) = m.arrays.get_mut(&id) {
+        for x in ms.iter_mut().filter(|x| x.state == "rebuilding") {
+            let b = x.rebuilt.unwrap_or(0) + step;
+            if b >= 1000 {
+                x.state = "active".into();
+                x.rebuilt = None;
+            } else {
+                x.rebuilt = Some(b);
+            }
+        }
+    }
     match m.arrays.get(&id) {
         Some(ms) => (StatusCode::OK, Json(array_json(&id, ms))),
         None => (StatusCode::NOT_FOUND, Json(json!({}))),
@@ -257,7 +275,10 @@ async fn assemble(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
 }
 
 async fn set_rate(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Value>) -> Json<Value> {
-    s.m.lock().unwrap().rates.insert(id, b["max_bytes_per_sec"].as_u64().unwrap());
+    let mut m = s.m.lock().unwrap();
+    let r = b["max_bytes_per_sec"].as_u64().unwrap();
+    m.log.push(format!("rate {id} {r}"));
+    m.rates.insert(id, r);
     Json(json!({}))
 }
 
@@ -265,11 +286,12 @@ async fn add_member(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Va
     let mut m = s.m.lock().unwrap();
     let path = m.drives[b["drive_uuid"].as_str().unwrap()].clone();
     let uuid = format!("m-{path}");
+    let rebuilding = m.rebuild_step.is_some();
     m.arrays.get_mut(&id).unwrap().push(Member {
         uuid: uuid.clone(),
         path,
-        state: "active".into(),
-        rebuilt: None,
+        state: if rebuilding { "rebuilding" } else { "active" }.into(),
+        rebuilt: rebuilding.then_some(0),
     });
     m.log.push(format!("add member {uuid}"));
     Json(json!({"member_uuid": uuid}))
@@ -327,14 +349,16 @@ async fn any_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+async fn capacity(State(s): State<S>) -> Json<Value> {
+    let free = s.m.lock().unwrap().free.unwrap_or(50u64 << 30);
+    Json(json!({"total_bytes": free.max(100u64 << 30), "free_bytes": free}))
+}
+
 async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex<Mock>>) {
     let m = Arc::new(Mutex::new(Mock { node: node.into(), ..Default::default() }));
     let s = S { m: m.clone(), disks };
     let app = Router::new()
-        .route(
-            "/v1/nodes/capacity",
-            get(|| async { Json(json!({"total_bytes": 100u64 << 30, "free_bytes": 50u64 << 30})) }),
-        )
+        .route("/v1/nodes/capacity", get(capacity))
         .route("/v1/volumes", post(v1_create))
         .route("/v1/volumes/{id}", get(v1_get).delete(v1_delete))
         .route("/v1/volumes/{id}/attach", post(v1_attach))
@@ -1046,4 +1070,75 @@ async fn bandwidth_class_changes_after_create() {
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["bandwidth_class"], "unthrottled");
     assert_eq!(v["rebuild_cap"]["pending"], false);
+}
+
+/// #65: nothing on the create path costs O(capacity). A 1 PiB two-leg
+/// volume is created, assembled and served in seconds, and every call the
+/// engines see is control plane (thin legs, attach, drive open, array,
+/// rate, served volume): no member add, so no rebuild.
+#[tokio::test]
+async fn a_petabyte_volume_is_created_in_metadata_only() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    for m in mocks.values() {
+        m.lock().unwrap().free = Some(4u64 << 50);
+    }
+    stormstorage::registry::poll_once(&state).await;
+    let t = std::time::Instant::now();
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": "pb", "size_bytes": 1u64 << 50, "replicas": 2})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["assembly"], "assembled", "{v}");
+    assert_eq!(v["export"]["state"], "published", "{v}");
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    let control = ["create ", "attach ", "attach-any ", "array ", "rate "];
+    for m in mocks.values() {
+        let m = m.lock().unwrap();
+        assert!(!m.log.is_empty());
+        for l in &m.log {
+            assert!(control.iter().any(|c| l.starts_with(c)), "{l} in {:?}", m.log);
+        }
+    }
+}
+
+async fn move_slave(api: &str, state: &Arc<AppState>, slave: &str) -> stormstorage::model::DistVolume {
+    let (st, r) = call(format!("{api}/api/v1/volumes/r/move"), json!({"from": slave})).await;
+    assert_eq!(st, 200, "{r}");
+    for _ in 0..150 {
+        if state.fed.read().await.volumes["r"].replacing.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    state.fed.read().await.volumes["r"].clone()
+}
+
+/// #65: a rebuild copies the whole leg, so it is waited for as long as it
+/// makes progress — here 20 reads, well past a 1 s `rebuild_timeout_secs`
+/// — and the cap is put before the member is added.
+#[tokio::test]
+async fn a_rebuild_that_progresses_outlives_the_stall_timeout() {
+    let (api, state, mocks) = setup_cfg(&["node-a", "node-b", "node-c"], |c| c.recovery.rebuild_timeout_secs = 1).await;
+    let (head, slave, array) = create_mirror(&api, "r").await;
+    mocks[&head].lock().unwrap().rebuild_step = Some(50);
+    let t = std::time::Instant::now();
+    let v = move_slave(&api, &state, &slave).await;
+    assert!(v.replacing.is_none(), "{:?}", v.replacing);
+    assert!(t.elapsed() > Duration::from_secs(1), "the rebuild took {:?}", t.elapsed());
+    assert!(!v.legs.iter().any(|l| l.node == slave), "moved off {slave}");
+    let m = mocks[&head].lock().unwrap();
+    let add = m.log.iter().position(|l| l.starts_with("add member")).expect("member added");
+    let cap = format!("rate {array} {}", 200u64 << 20);
+    assert_eq!(m.log[add - 1], cap, "cap put right before the add: {:?}", m.log);
+}
+
+/// #65: a rebuild that stops moving is abandoned after the stall timeout
+/// and the old leg kept.
+#[tokio::test]
+async fn a_stalled_rebuild_is_undone() {
+    let (api, state, mocks) = setup_cfg(&["node-a", "node-b", "node-c"], |c| c.recovery.rebuild_timeout_secs = 1).await;
+    let (head, slave, _) = create_mirror(&api, "r").await;
+    mocks[&head].lock().unwrap().rebuild_step = Some(0);
+    let v = move_slave(&api, &state, &slave).await;
+    assert!(v.replacing.is_none());
+    assert!(v.legs.iter().any(|l| l.node == slave), "kept on {slave}");
+    assert!(mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("remove member")));
 }

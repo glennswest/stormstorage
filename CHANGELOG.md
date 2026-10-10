@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#65)
+- **fix:** A leg replacement (move, re-leg, prestage, rebalance, tier migration) is abandoned only when the new member's rebuild makes **no progress** (no change of its state or `rebuilt_bytes`) for `recovery.rebuild_timeout_secs`, not after that much wall clock. The engine's RAID1 rebuild copies the whole leg, so before this a leg over ~700 GiB at the normal cap (200 MiB/s) could never move: it was undone after an hour and the copy redone after the cooldown, again and again (#65).
+- **fix:** The volume's rebuild cap is put on the head's array right before a member is added, and again every minute while the rebuild runs. The engine keeps the cap in memory only and starts the rebuild inside add-member, so the copy began unthrottled, and an engine restart left it unthrottled (#65).
+- **test:** `tests/replication.rs`: a 1 PiB two-leg volume is created, assembled and served in seconds with only control-plane calls on the engines; a rebuild that keeps progressing outlives a 1 s stall timeout, with the cap put right before the add; a stalled rebuild is undone and the old leg kept (#65).
+
 ### 2026-10-10
 - **build:** stormview is pinned to a `rev` (81ef1d2, the commit Cargo.lock already compiled) instead of `branch = "main"` (#64, stormcentral#571: golden builds refuse unpinned git dependencies). Cargo.lock's source reads `?rev=<sha>#<sha>`. Moving stormview forward is now a deliberate rev bump. README and CLAUDE.md say so.
 - **fix(test):** The test crate's three `iter().any(|x| *x == …)` checks are `contains` (clippy `manual_contains` under `-D warnings`, #67).

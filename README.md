@@ -217,15 +217,19 @@ stormview components feed on **:9093**.
   or degraded volume and runs these steps:
   1. create a new leg on the target node;
   2. attach it and add it as a RAID member on the head;
-  3. a background task waits (up to 1 h) for that member to report
-     active;
+  3. a background task waits for that member to report active. The
+     engine's rebuild copies the whole leg, so it takes as long as the leg
+     is big; the wait lasts as long as the member makes progress (its
+     state or `rebuilt_bytes` changes). The volume's rebuild cap is put
+     before the member is added and again every minute while waiting
+     (the engine keeps it in memory only);
   4. it then removes the old member, closes the old head drive and
      deletes the old volume.
 
   Progress is logged to the event feed. The replacement in flight is
   recorded on the volume (`replacing`), so a restart of stormstorage
   resumes the wait rather than adding another member; one replacement per
-  volume at a time. If the new member never becomes active within
+  volume at a time. If the new member fails, or makes no progress for
   `recovery.rebuild_timeout_secs`, the new leg is undone and the old one
   kept.
 - **Re-leg on node loss (#1).** After every poll a reconciler checks the
@@ -447,7 +451,7 @@ worked example.
 | `[local] tier` | unset | Tier role given to adopted nodes. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
-| `[recovery] rebuild_timeout_secs` | `3600` | How long a new member may take to become active before the replacement is undone. |
+| `[recovery] rebuild_timeout_secs` | `3600` | How long a new member's rebuild may make no progress (state or `rebuilt_bytes` unchanged) before the replacement is undone. Not a limit on the whole rebuild (#65). |
 | `[recovery] rate_low` / `rate_normal` / `rate_high` | `52428800` / `209715200` / `1073741824` | Rebuild cap, bytes a second, for a volume's `bandwidth_class` (#33); applied to the head's array. `unthrottled` is 0 (no cap). |
 | `[recovery] max_dual_attach_secs` | `3600` | Longest dual-attach window (#33). |
 | `[recovery] rehead` | `false` | Re-head a volume automatically when its head is lost (#14). **Off by default (owner, 2026-10-06). Turn it on only once a lost head is fenced through cluster membership or quorum (stormcluster)**, not merely unreachable from stormstorage: a partitioned head that keeps writing to the legs is split-brain. When on, and only on the instance that acts on recovery, the reconciler re-heads a volume when all of these hold: its head has failed polls for `rehead_after_secs`; it is not already fenced (someone else's failover in flight is left alone); it is idle; and a surviving leg on a healthy node reads `in_sync` (from the head's last reading or the legs' superblocks, #48). It then fences the volume at its epoch and promotes that leg's node. Without an in-sync leg it holds, with one warning: promoting a stale copy would lose writes. A failed promote leaves the volume fenced, names the manual promote in an error event, and waits `cooldown_secs`. A WARN is logged at start when it is on. Until it is on, failover is the consumer's tiebreaker's or an operator's (fence + promote). |
