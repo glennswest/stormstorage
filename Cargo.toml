@@ -12,6 +12,17 @@ license = "MIT"
 members = [".", "test"]
 default-members = [".", "test"]
 
+# Zero build warnings (stormcentral#193): a rustc or clippy warning fails
+# the build of every member.
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }

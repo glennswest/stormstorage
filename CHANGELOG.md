@@ -8,6 +8,7 @@
 - **fix(test):** The test crate's three `iter().any(|x| *x == …)` checks are `contains` (clippy `manual_contains` under `-D warnings`, #67).
 - **fix:** `placement::plan` drops six explicit derefs clippy's `explicit_auto_deref` refuses under `-D warnings` (#69).
 - **fix(test):** `tests/export.rs` releases two mock-engine `MutexGuard`s before the next await (clippy `await_holding_lock`, #69).
+- **build:** Warnings fail the build (`[workspace.lints]`: rustc `warnings` and clippy `all` deny, both crates), so plain `sc-build` catches what #67/#69 found only under an explicit clippy run (stormcentral#193).
 
 ### 2026-10-07
 - **fix(test):** The #60 test helper no longer shadows axum's `put` (#62).

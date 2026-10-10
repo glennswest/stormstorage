@@ -6,6 +6,9 @@ license = "MIT"
 description = "stormstorage's test container: short, medium and long suites, per stormcentral docs/test-standard.md (#8)."
 publish = false
 
+[lints]
+workspace = true
+
 # A workspace member, so the one Cargo.lock pins it and sc-build compiles it.
 # It drives the stormstorage running on the node through its REST API, the
 # way anything on the fleet does; no library code of the component is used.
