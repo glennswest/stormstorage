@@ -851,6 +851,56 @@ impl Engine {
             .to_string()
     }
 
+    /// POST /v1/volumes with `source` (#49): a copy-on-write clone of the
+    /// engine volume `source` (by id or name) on this engine — `master_node`
+    /// must be this engine's own node, so the clone is backed here.
+    pub async fn create_clone(
+        &self,
+        name: &str,
+        size_bytes: u64,
+        master_node: &str,
+        source: &str,
+    ) -> anyhow::Result<Value> {
+        self.v1_post(
+            "/v1/volumes",
+            serde_json::json!({
+                "name": name,
+                "size_bytes": size_bytes,
+                "master_node": master_node,
+                "replica_tier": { "slaves": 0 },
+                "source": { "kind": "volume", "id": source },
+            }),
+        )
+        .await
+    }
+
+    /// POST /v1/snapshots {name, volume_id} (#49): a sealed COW snapshot of
+    /// the engine volume `volume_id` (by id or name), named `name`.
+    pub async fn create_snapshot(&self, name: &str, volume_id: &str) -> anyhow::Result<Value> {
+        self.v1_post("/v1/snapshots", serde_json::json!({ "name": name, "volume_id": volume_id }))
+            .await
+    }
+
+    /// POST /v1/group-snapshots {name, volume_ids} (#49): one fence across
+    /// the members; each member is named `<name>-<volume id>`.
+    pub async fn create_group_snapshot(&self, name: &str, volume_ids: &[String]) -> anyhow::Result<Value> {
+        self.v1_post(
+            "/v1/group-snapshots",
+            serde_json::json!({ "name": name, "volume_ids": volume_ids }),
+        )
+        .await
+    }
+
+    /// DELETE `path` (/v1 snapshot or group snapshot); 404 = gone.
+    pub async fn delete_v1(&self, path: &str) -> anyhow::Result<()> {
+        let resp = self.req(reqwest::Method::DELETE, path).send().await?;
+        check_refused(&resp, path)?;
+        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
+            anyhow::bail!("delete {path}: {}", resp.status());
+        }
+        Ok(())
+    }
+
     pub async fn delete_volume(&self, id: &str) -> anyhow::Result<()> {
         let resp = self
             .req(reqwest::Method::DELETE, &format!("/v1/volumes/{id}"))

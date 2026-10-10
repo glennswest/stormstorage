@@ -340,7 +340,7 @@ pub fn replicas(vol: &DistVolume, reading: Option<&ArrayReading>) -> Vec<Replica
         } else {
             match vol.assembly {
                 AssemblyState::SingleLeg => SyncState::InSync,
-                AssemblyState::PendingEngineSupport => SyncState::Detached,
+                AssemblyState::PendingEngineSupport | AssemblyState::Clone => SyncState::Detached,
                 AssemblyState::Assembled | AssemblyState::Degraded => reading
                     .and_then(|r| member_of(leg, r).map(|m| member_sync(m, r.member_data_bytes)))
                     .unwrap_or(SyncState::Detached),
@@ -362,6 +362,26 @@ pub fn health(vol: &DistVolume, replicas: &[Replica]) -> Health {
     } else {
         Health::Degraded
     }
+}
+
+/// [`view`] for any volume: a clone (#49) has no legs of its own, so its
+/// health, `raid` and replica sync are its parent's — the copies that
+/// hold its data.
+pub fn view_in(
+    fed: &crate::model::FedState,
+    heads: &std::collections::BTreeMap<String, ArrayReading>,
+    vol: &DistVolume,
+) -> serde_json::Value {
+    let mut v = view(vol, heads.get(&vol.name));
+    if vol.clone_of.is_some() {
+        let pv = fed.parent_of(vol).map(|p| view(p, heads.get(&p.name)));
+        if let (Some(o), Some(p)) = (v.as_object_mut(), pv.as_ref().and_then(|p| p.as_object())) {
+            for k in ["health", "raid", "replica_sync", "sync_read_at", "sync_source"] {
+                o.insert(k.into(), p.get(k).cloned().unwrap_or_default());
+            }
+        }
+    }
+    v
 }
 
 /// A volume as the API shows it: the stored record plus `replicas`,
@@ -756,6 +776,7 @@ async fn promote_claimed(
     match served {
         Some(_) => {
             let _ = crate::orchestrate::publish(state, name).await;
+            crate::orchestrate::publish_clones_of(state, name).await;
         }
         None => {
             let msg = format!(
@@ -970,6 +991,7 @@ pub async fn reassemble(state: &Arc<AppState>, name: &str) -> Result<Reassembled
     if served.is_some() && was_served {
         let _ = crate::orchestrate::publish(state, name).await;
     }
+    crate::orchestrate::publish_clones_of(state, name).await;
     if let Some(m) = gone_msg {
         event(state, name, Severity::Error, m).await;
     }
@@ -1464,6 +1486,7 @@ mod tests {
             rate_pending: false,
             dual_attach: None,
             migration: None,
+            clone_of: None,
         }
     }
 

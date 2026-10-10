@@ -117,6 +117,7 @@ async fn setup() -> (Arc<AppState>, M) {
             rate_pending: false,
             dual_attach: None,
             migration: None,
+            clone_of: None,
         },
     );
     let state = Arc::new(AppState::new(config, fed, None));

@@ -35,6 +35,11 @@ pub struct Payload {
     /// Former heads waiting to be cleaned up (#33).
     #[serde(default)]
     pub stale_heads: Vec<crate::model::StaleHead>,
+    /// Snapshots and group snapshots (#49).
+    #[serde(default)]
+    pub snapshots: BTreeMap<String, crate::model::Snapshot>,
+    #[serde(default)]
+    pub group_snapshots: BTreeMap<String, crate::model::GroupSnapshot>,
 }
 
 pub async fn build_payload(state: &Arc<AppState>) -> Payload {
@@ -50,6 +55,8 @@ pub async fn build_payload(state: &Arc<AppState>) -> Payload {
             .collect(),
         orphans: fed.orphans.clone(),
         stale_heads: fed.stale_heads.clone(),
+        snapshots: fed.snapshots.clone(),
+        group_snapshots: fed.group_snapshots.clone(),
     }
 }
 
@@ -62,6 +69,8 @@ pub async fn apply(state: &Arc<AppState>, payload: Payload) -> bool {
     fed.volumes = payload.volumes;
     fed.orphans = payload.orphans;
     fed.stale_heads = payload.stale_heads;
+    fed.snapshots = payload.snapshots;
+    fed.group_snapshots = payload.group_snapshots;
     for nc in payload.registered {
         match fed.nodes.get_mut(&nc.name) {
             Some(n) => {

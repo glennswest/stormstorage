@@ -163,6 +163,9 @@ pub enum AssemblyState {
     /// Assembled, but at least one leg is lost: the array runs short of
     /// the redundancy asked for until the re-leg converges (#1).
     Degraded,
+    /// A copy-on-write clone (#49) on its parent's array (or single leg):
+    /// no legs of its own; served from wherever the parent is served.
+    Clone,
 }
 
 /// A leg being replaced: the new leg is a member of the head's array and
@@ -402,6 +405,67 @@ pub struct DistVolume {
     /// A move of every leg to another pool in flight (#32).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<Migration>,
+    /// Set on a clone (#49): what it was made from and the volume whose
+    /// array (or leg) holds its data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_of: Option<CloneOf>,
+}
+
+/// What a clone was made from (#49), in /v1's `source` shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+pub enum VolumeSource {
+    Snapshot(String),
+    Volume(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloneOf {
+    pub source: VolumeSource,
+    /// The volume with legs whose array (or single leg) holds the clone:
+    /// the source's own parent when the source is a clone or a snapshot.
+    pub parent: String,
+}
+
+/// A snapshot (#49): /v1's `Snapshot` JSON (stormblock-csi parses it
+/// unchanged; `id` is the name), plus where it lives. Taken on the node
+/// that serves its volume, so one point in time on the head's array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub id: String,
+    pub name: String,
+    pub source_volume_id: String,
+    pub size_bytes: u64,
+    pub ready: bool,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub group_snapshot_id: Option<String>,
+    /// The volume with legs that holds it (the source's parent for a
+    /// clone): delete is refused there while this exists.
+    pub parent: String,
+    /// The node it was taken on.
+    pub node: String,
+    /// Its engine volume's name: how it is found after a promote.
+    pub engine_name: String,
+    /// Its /v1 snapshot id on `node` (none for a group member).
+    #[serde(default)]
+    pub engine_id: Option<String>,
+}
+
+/// A group snapshot (#49): one consistency point across volumes served
+/// from one node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupSnapshot {
+    pub id: String,
+    pub name: String,
+    /// Member snapshot names (each in `FedState.snapshots`).
+    pub members: Vec<String>,
+    pub ready: bool,
+    pub created_at_ms: i64,
+    pub node: String,
+    /// Its /v1 group snapshot id on `node`.
+    #[serde(default)]
+    pub engine_id: Option<String>,
 }
 
 /// Where a tier migration stands (#32).
@@ -444,9 +508,39 @@ pub struct FedState {
     /// Former heads to clean up once they answer (#33).
     #[serde(default)]
     pub stale_heads: Vec<StaleHead>,
+    /// Snapshots by name (#49).
+    #[serde(default)]
+    pub snapshots: BTreeMap<String, Snapshot>,
+    /// Group snapshots by name (#49).
+    #[serde(default)]
+    pub group_snapshots: BTreeMap<String, GroupSnapshot>,
 }
 
 impl FedState {
+    /// The volume with legs that holds `vol`'s data: itself, or a clone's
+    /// parent (#49).
+    pub fn parent_of<'a>(&'a self, vol: &'a DistVolume) -> Option<&'a DistVolume> {
+        match &vol.clone_of {
+            None => Some(vol),
+            Some(c) => self.volumes.get(&c.parent),
+        }
+    }
+
+    /// Clones and snapshots that live on `name`'s array or leg (#49).
+    pub fn dependents_of(&self, name: &str) -> Vec<String> {
+        self.volumes
+            .values()
+            .filter(|v| v.clone_of.as_ref().is_some_and(|c| c.parent == name))
+            .map(|v| format!("clone {}", v.name))
+            .chain(
+                self.snapshots
+                    .values()
+                    .filter(|s| s.parent == name || s.source_volume_id == name)
+                    .map(|s| format!("snapshot {}", s.name)),
+            )
+            .collect()
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(s) => Ok(serde_json::from_str(&s)?),

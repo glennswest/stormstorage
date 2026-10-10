@@ -306,6 +306,10 @@ fn volume_component(v: &DistVolume, reading: Option<&crate::head::ArrayReading>)
             metrics.push(Metric::new("assembly", "degraded").tone("warn"));
         }
         AssemblyState::SingleLeg => {}
+        AssemblyState::Clone => {
+            let of = v.clone_of.as_ref().map(|c| c.parent.as_str()).unwrap_or("?");
+            metrics.push(Metric::new("clone of", of).tone("accent"));
+        }
     }
     match v.export.state {
         ExportState::Published => {
@@ -644,6 +648,7 @@ mod tests {
             rate_pending: false,
             dual_attach: None,
             migration: None,
+            clone_of: None,
         };
         let c = volume_component(&v, None);
         assert_eq!(c.health, Health::Ok);

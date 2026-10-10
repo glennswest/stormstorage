@@ -2,6 +2,7 @@
 //! stormblock-compatible self-registration endpoints.
 
 pub mod auth;
+mod snapshots;
 
 use crate::config::{Config, NodeConfig, PoolConfig};
 use crate::engine::Engine;
@@ -180,6 +181,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes/{name}/bandwidth-class", put(put_bandwidth_class))
         .route("/api/v1/volumes/{name}/dual-attach", post(open_dual_attach))
         .route("/api/v1/volumes/{name}/dual-attach/close", post(close_dual_attach))
+        .route("/api/v1/snapshots", post(snapshots::create_snapshot).get(snapshots::list_snapshots))
+        .route("/api/v1/snapshots/{id}", get(snapshots::get_snapshot).delete(snapshots::delete_snapshot))
+        .route("/api/v1/group-snapshots", post(snapshots::create_group).get(snapshots::list_groups))
+        .route("/api/v1/group-snapshots/{id}", get(snapshots::get_group).delete(snapshots::delete_group))
         .route("/api/v1/stale-heads", get(list_stale_heads))
         .route("/api/v1/orphans", get(list_orphans))
         .route("/api/v1/events", get(list_events))
@@ -535,6 +540,16 @@ struct CreateVolumeRequest {
     /// `parity1`/`parity2` answer 501 until #72. Absent = `replicas`.
     #[serde(default)]
     raid: Option<crate::model::RaidProfile>,
+    /// Clone (#49): a copy-on-write clone of a volume or a snapshot, on the
+    /// node that holds the source's data. /v1's shape: `{kind, id}`.
+    #[serde(default)]
+    source: Option<crate::model::VolumeSource>,
+    /// Refused until stormblock#319 (#49): the engine only records them,
+    /// and a volume must not claim an encryption it does not have.
+    #[serde(default)]
+    encrypted: bool,
+    #[serde(default)]
+    qos_class: Option<String>,
 }
 
 /// A consumer host to serve a volume to (#51).
@@ -569,6 +584,29 @@ async fn create_volume(
         return Err(ApiError::bad_request("name and size_bytes required"));
     }
     let hosts = host_records(&req.hosts)?;
+    if req.encrypted || req.qos_class.is_some() {
+        return Err(ApiError::not_implemented(
+            "encrypted and qos_class are not applied by the engine yet (stormblock#319): refused rather than \
+             recorded, so no volume claims an encryption or a QoS class it does not have",
+        ));
+    }
+    if let Some(source) = req.source.clone() {
+        if req.raid.is_some() || req.replicas.is_some() || req.pool.is_some() || req.extent_size_bytes.is_some()
+            || req.rung.is_some() || req.tier.is_some() || req.prefer_node.is_some()
+        {
+            return Err(ApiError::bad_request(
+                "a clone lives on its source's array (or leg): raid, replicas, pool, rung, tier, prefer_node \
+                 and extent_size_bytes are its source's",
+            ));
+        }
+        if req.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
+            return Err(ApiError::bad_request(format!(
+                "names ending in {:?} are reserved for served mirrors",
+                crate::orchestrate::MIRROR_SUFFIX
+            )));
+        }
+        return snapshots::create_clone(&s, &req.name, req.size_bytes, source, hosts).await.map(Json);
+    }
     if let Some(e) = req.extent_size_bytes {
         if !crate::engine::Engine::valid_extent_size(e) {
             return Err(ApiError::bad_request(format!(
@@ -588,6 +626,9 @@ async fn create_volume(
         let fed = s.fed.read().await;
         if fed.volumes.contains_key(&req.name) {
             return Err(ApiError::conflict(format!("volume {:?} exists", req.name)));
+        }
+        if fed.snapshots.contains_key(&req.name) {
+            return Err(ApiError::conflict(format!("{:?} is a snapshot", req.name)));
         }
     }
     let plan_req = PlanRequest {
@@ -686,6 +727,7 @@ async fn create_volume(
         rate_pending: false,
         dual_attach: None,
         migration: None,
+        clone_of: None,
     };
     {
         let mut fed = s.fed.write().await;
@@ -743,7 +785,7 @@ async fn create_volume(
     let mut response = {
         let fed = s.fed.read().await;
         match fed.volumes.get(&req.name) {
-            Some(v) => crate::head::view(v, s.heads.read().await.get(&req.name)),
+            Some(v) => crate::head::view_in(&fed, &*s.heads.read().await, v),
             None => serde_json::Value::Null,
         }
     };
@@ -761,7 +803,7 @@ async fn list_volumes(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
     let volumes: Vec<serde_json::Value> = fed
         .volumes
         .values()
-        .map(|v| crate::head::view(v, heads.get(&v.name)))
+        .map(|v| crate::head::view_in(&fed, &heads, v))
         .collect();
     Json(json!({ "volumes": volumes }))
 }
@@ -775,7 +817,7 @@ async fn get_volume(
         .volumes
         .get(&name)
         .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?;
-    Ok(Json(crate::head::view(v, s.heads.read().await.get(&name))))
+    Ok(Json(crate::head::view_in(&fed, &*s.heads.read().await, v)))
 }
 
 /// A refused replication call, in /v1's error envelope (`{code, message,
@@ -950,10 +992,28 @@ async fn delete_volume(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let vol = {
         let fed = s.fed.read().await;
-        fed.volumes
+        let vol = fed
+            .volumes
             .get(&name)
             .cloned()
-            .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?
+            .ok_or_else(|| ApiError::not_found(format!("volume {name:?}")))?;
+        // Clones and snapshots live on its array or leg (#49).
+        let deps = fed.dependents_of(&name);
+        if !deps.is_empty() {
+            return Err(ApiError::conflict(format!(
+                "{name}: {} still on its data — delete them first",
+                deps.join(", ")
+            )));
+        }
+        // A clone is deleted on the node that holds it; unreachable, the
+        // record stays (no leg to orphan).
+        if vol.clone_of.is_some() {
+            let node = vol.export.node.clone().unwrap_or_default();
+            if !fed.nodes.get(&node).map(|n| n.status.healthy).unwrap_or(false) {
+                return Err(ApiError::conflict(format!("{name}: {node} holds the clone and is unreachable")));
+            }
+        }
+        vol
     };
     // Stop serving first (#2): consumers lose the volume before any leg
     // does, and the head's array cannot go while a volume is pinned to it.

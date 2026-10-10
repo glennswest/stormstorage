@@ -340,6 +340,7 @@ mod tests {
             rate_pending: false,
             dual_attach: None,
             migration: None,
+            clone_of: None,
         }
     }
 

@@ -1411,7 +1411,61 @@ fn serve_at(
         AssemblyState::PendingEngineSupport => {
             anyhow::bail!("{name}: not assembled — nothing to serve until the mirror exists")
         }
+        // A clone (#49) is served where its parent is: on the parent's
+        // head (or single leg), as itself. Moved there with the array by a
+        // promote, it has no record there yet: publish finds it by name.
+        AssemblyState::Clone => {
+            let parent = fed
+                .parent_of(vol)
+                .filter(|p| p.clone_of.is_none())
+                .ok_or_else(|| anyhow::anyhow!("{name}: its parent volume is gone"))?;
+            let p = serve_at(state, fed, parent)?;
+            let here = vol.export.node.as_deref() == Some(p.node.as_str());
+            Ok(ServeAt {
+                volume_id: vol.export.volume_id.clone().filter(|_| here),
+                master_node: vol.export.master_node.clone().filter(|_| here),
+                array_id: None,
+                ..p
+            })
+        }
     }
+}
+
+/// Where `vol`'s data is served from, for a snapshot or a clone of it
+/// (#49): the node, its engine, the engine volume to snapshot or clone
+/// (the served mirror, the single leg, or the clone itself), and that
+/// engine's own /v1 node name (a clone made there must be mastered there).
+pub struct DataAt {
+    pub node: String,
+    pub engine: crate::engine::Engine,
+    pub engine_name: String,
+    pub master_node: Option<String>,
+    /// The volume with legs that holds the data.
+    pub parent: String,
+}
+
+pub fn data_at(state: &Arc<AppState>, fed: &crate::model::FedState, vol: &DistVolume) -> anyhow::Result<DataAt> {
+    let parent = fed
+        .parent_of(vol)
+        .filter(|p| p.clone_of.is_none())
+        .ok_or_else(|| anyhow::anyhow!("{}: its parent volume is gone", vol.name))?;
+    if !matches!(
+        parent.assembly,
+        AssemblyState::SingleLeg | AssemblyState::Assembled | AssemblyState::Degraded
+    ) {
+        anyhow::bail!("{}: not assembled — no data to take a point in time from", parent.name);
+    }
+    let at = serve_at(state, fed, parent)?;
+    // The node's own leg carries its /v1 node name; a served mirror's
+    // record has it too unless it came across with a promote.
+    let own_leg = parent.legs.iter().find(|l| l.node == at.node).and_then(|l| l.master_node.clone());
+    Ok(DataAt {
+        master_node: own_leg.or(at.master_node.clone()),
+        engine_name: served_name(vol),
+        node: at.node,
+        engine: at.engine,
+        parent: parent.name.clone(),
+    })
 }
 
 /// Publish a volume to consumers, or republish it (#2): make sure the
@@ -1452,7 +1506,7 @@ async fn served_local_id(at: &ServeAt, vol: &DistVolume, volume_id: &str, adopte
 /// The served volume's name on its engine: the mirror, or the only leg.
 fn served_name(vol: &DistVolume) -> String {
     match vol.assembly {
-        AssemblyState::SingleLeg => vol.name.clone(),
+        AssemblyState::SingleLeg | AssemblyState::Clone => vol.name.clone(),
         _ => format!("{}{MIRROR_SUFFIX}", vol.name),
     }
 }
@@ -1524,7 +1578,8 @@ async fn publish_inner(
     let mut master_node = at.master_node.clone();
     // Served volume that came across with the array on a promote (#33): no
     // /v1 record on this head, and never replaced by a new, empty one.
-    let adopted = vol.export.adopted && vol.export.node.as_deref() == Some(at.node.as_str());
+    let mut adopted = vol.export.adopted && vol.export.node.as_deref() == Some(at.node.as_str());
+    let is_clone = vol.assembly == AssemblyState::Clone;
     let hosts = vol.export.hosts.clone();
     let per_host = vol.export.per_host || !hosts.is_empty();
     // A served volume this publish did not make: a 404 on it means its data
@@ -1533,6 +1588,16 @@ async fn publish_inner(
     let mut gone = false;
     // The shared attach, when no host is named; `None` when serving hosts.
     let mut result: anyhow::Result<Option<crate::engine::AttachedLeg>> = async {
+        // A clone whose parent moved (#49): it came across with the array,
+        // under its own name; never created here.
+        if is_clone && volume_id.is_none() {
+            let id = at.engine.local_volume_id(&vol.name).await.map_err(|e| {
+                gone = crate::engine::is_not_found(&e);
+                anyhow::anyhow!("{}: {e:#}", at.node)
+            })?;
+            volume_id = Some(id);
+            adopted = true;
+        }
         if adopted {
             let vid = volume_id.clone().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -2006,6 +2071,23 @@ async fn set_export_state(state: &Arc<AppState>, name: &str, st: crate::model::E
     state.persist().await;
 }
 
+/// Republish the clones living on `parent`'s data (#49): run after the
+/// parent is served from a new place (a promote, a reassembly), where its
+/// clones came across with the array.
+pub async fn publish_clones_of(state: &Arc<AppState>, parent: &str) {
+    let names: Vec<String> = {
+        let fed = state.fed.read().await;
+        fed.volumes
+            .values()
+            .filter(|v| v.clone_of.as_ref().is_some_and(|c| c.parent == parent) && !v.export.gone)
+            .map(|v| v.name.clone())
+            .collect()
+    };
+    for name in names {
+        let _ = publish(state, &name).await;
+    }
+}
+
 /// Republish every published or failed export served from `node` — run
 /// when the node's engine answers again after being unreachable, since a
 /// restarted engine may hand out different coordinates, and a publish that
@@ -2148,6 +2230,7 @@ mod tests {
             rate_pending: false,
             dual_attach: None,
             migration: None,
+            clone_of: None,
         }
     }
 
