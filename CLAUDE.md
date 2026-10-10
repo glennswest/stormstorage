@@ -665,6 +665,34 @@ clones, group snapshots one node only, hint refusal, a clone through a
 promote; clippy clean). Expand → #73, proposed after stormblock#318.
 Golden golden-stormstorage-3feae051c784 (stormcos#428).
 
+### Point-in-time backups to the backup tier (#46, P3) — in progress 2026-10-10
+Owner (2026-10-09, master's recommendation): **B** — periodic snapshots,
+changed extents shipped to a volume on a backup node, N points kept; not a
+sync/async replica. Engine primitives filed on stormblock (snapshot diff;
+ship a snapshot's changes to a remote volume over NVMe-TCP as a job).
+Plan here, built against that contract (`waiting_engine` until it lands):
+- `PUT /api/v1/volumes/{name}/backup {pool?, tier?, node?, interval_secs
+  (3600), keep (7)}` → `DistVolume.backup` policy; `GET …/backup` (policy,
+  state, points); `DELETE …/backup` stops (points kept), `?purge=true`
+  deletes the backup volume and points too.
+- `FedState.backups` {volume → Backup}: backup node (placement over the
+  policy's nodes, never one holding a leg), `<name>-backup` thin /v1 volume
+  there attached for the serving node's host NQN, `base` (last shipped
+  snapshot on the serving node, by engine name), `job`, `points[]`, state
+  idle|shipping|waiting_engine|failed + message, `next_at`. Replicated.
+- Reconciler (recovery-active instance): create/attach the target (again
+  after the serving node changes); when due, snapshot the served volume
+  on the serving node, `POST /v1/snapshots/{snap}/ship {target_uri, base,
+  max_bytes_per_sec}`; poll the job; done → snapshot the target on the
+  backup node (a point), drop points beyond `keep`, drop the old base.
+  Ship route 404 → `waiting_engine`, the snapshot taken is dropped.
+- Restore: `POST …/backup/points/{point}/restore {name}` → COW clone of the
+  point on the backup node = a new single-leg volume there, served.
+- Backups outlive their volume (undoing a delete is the point): a deleted
+  volume's backup stays; a new volume of that name is refused until it is
+  restored from or purged.
+Tests: tests/backup.rs with mock engines implementing the contract.
+
 ### Head-node preference on create (#50, P3) — in progress 2026-10-06
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
 node is a fitting candidate (healthy, pool/tier, room), it is the first

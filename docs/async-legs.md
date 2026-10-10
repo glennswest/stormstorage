@@ -1,7 +1,7 @@
 # Async catch-up legs for the backup tier (#46): design pass
 
-Status: **design only; it waits on an owner decision** (posted on #46).
-Nothing here is in the code.
+Status: **decided — B** (owner, 2026-10-09, on #46): point-in-time
+backups. The build is described under *What is built (B)* below.
 
 ## The need
 
