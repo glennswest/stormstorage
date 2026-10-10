@@ -445,8 +445,38 @@ stormview components feed on **:9093**.
   Enforcement at the legs is stormblock#6, to the contract in
   [docs/replication.md](docs/replication.md).
 
-**Not done yet** (tracked in issues, see [Status](#status)): async backup
-legs (#46), HA state (#34), and moving a head by handover (stormblock#296),
+- **Point-in-time backups to the backup tier (#46).** The owner chose
+  backups over an async replica on 2026-10-09: they undo the primary's
+  mistakes, while the synchronous legs already cover losing a node.
+  - `PUT /api/v1/volumes/{name}/backup {pool?, tier?, node?,
+    interval_secs (3600, ≥ 60), keep (7)}` turns backups on. The backup
+    node is chosen from the policy's healthy nodes and never holds a leg
+    of the volume. `<name>-backup`, a thin volume there, is attached for
+    the serving node's host NQN, again after a promote.
+  - Each interval, on the instance that acts on recovery:
+    1. the served volume is snapshotted on the node that serves it;
+    2. the engine ships the extents changed since the last shipped
+       snapshot (all allocated ones the first time) to the backup volume,
+       as a throttled background job at the volume's bandwidth class
+       (stormblock#400, over the diff of stormblock#399);
+    3. when the job is `done`, the backup volume is snapshotted on the
+       backup node. That snapshot is a **point**; `keep` points are kept,
+       the oldest dropped, and the previous base dropped on the head.
+  - Until an engine has the ship route, a cycle ends `waiting_engine`
+    (one event), and the snapshot it took is dropped.
+  - `GET …/backup` returns the policy, state, job and points;
+    `GET /api/v1/backups` lists every backup.
+  - `POST …/backup/points/{point}/restore {name}` creates a new
+    single-leg volume holding that point: a copy-on-write clone on the
+    backup node, served from there. `DELETE …/backup/points/{point}`
+    drops a point.
+  - `DELETE …/backup` stops backups and keeps the points; adding
+    `?purge=true` also deletes the points and the backup volume.
+  - **Backups outlive their volume:** a deleted volume's points stay
+    (`source_deleted`), so a delete can be undone by a restore. A new
+    volume of that name is refused (409) until they are purged.
+
+**Not done yet** (tracked in issues, see [Status](#status)): HA state (#34), and moving a head by handover (stormblock#296),
 which is what a tier migration of the head's own leg waits on.
 
 ## Running
@@ -614,6 +644,8 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/snapshots` | Snapshot `{name, volume_id}` on the node serving the volume (#49): /v1's `Snapshot` (`id` = name) plus `parent`, `node`, `engine_name`, `engine_id`. Idempotent on name. |
 | GET | `/api/v1/snapshots` | Bare array (as /v1); `?name=`, `?source_volume=`. `GET /api/v1/snapshots/{id}` one, `DELETE` removes it (409 for a group's member). |
 | POST | `/api/v1/group-snapshots` | `{name, volume_ids}`: one point in time across volumes served from one node (else 409). /v1's `GroupSnapshot` (`snapshots` in full). `GET` lists (`?name=`), `GET`/`DELETE /api/v1/group-snapshots/{id}`. |
+| PUT | `/api/v1/volumes/{name}/backup` | Point-in-time backups (#46): `{pool?, tier?, node?, interval_secs?, keep?}`. `GET` = the backup record (policy, node, state `idle`/`shipping`/`waiting_engine`/`failed`, message, job, points, `source_deleted`); `DELETE` stops (`?purge=true` deletes points and the backup volume). |
+| POST | `/api/v1/volumes/{name}/backup/points/{point}/restore` | `{name}`: a new single-leg volume on the backup node holding that point (also for a deleted volume's backups). `DELETE …/backup/points/{point}` drops a point. `GET /api/v1/backups` lists every backup. |
 | GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, raid, replicas[{node, role, sync}], bandwidth_class, extent_size_bytes, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
 | POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |

@@ -93,3 +93,34 @@ follow-up.
 Which semantics the backup tier has: point-in-time backups (B), an async
 replica (A, or C on #295), or both. That choice decides which stormblock
 issues get filed.
+
+## What is built (B)
+
+Owner, 2026-10-09: B. stormstorage's side is built against the engine
+contract filed as stormblock#399 (snapshot diff) and stormblock#400 (ship a
+snapshot's changes to a remote volume as a job). Until both land, a cycle
+ends `waiting_engine`. The API is in the README.
+
+- **Policy** per volume (`PUT /api/v1/volumes/{name}/backup`): the backup
+  node's pool, tier or name, `interval_secs`, and `keep`. The backup node
+  never holds a leg of the volume.
+- **Target:** `<name>-backup`, a thin /v1 volume on the backup node. It is
+  attached for the serving node's host NQN (#27), and again after a
+  promote moves the head.
+- **Cycle** (reconciler, one step per poll, recorded so a restart resumes):
+  1. snapshot the served volume on the serving node;
+  2. `POST /v1/snapshots/{snap}/ship {target_uri, base, max_bytes_per_sec}`;
+  3. poll the job until `done`;
+  4. snapshot the target on the backup node (a point);
+  5. prune to `keep`;
+  6. drop the old base.
+
+  `base` is named by engine name, so it still resolves on a head the array
+  moved to. A job whose serving node changed is abandoned, and a new full
+  ship follows against the base, if the new head has it by name.
+- **Restore:** a COW clone of a point on the backup node, as a new
+  single-leg volume.
+- **Retention outlives the volume:** delete keeps the points; purge
+  removes them.
+- **Cost (#65):** every step is metadata or O(changed bytes) on the engine.
+  The first ship copies allocated extents only.

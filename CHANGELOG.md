@@ -3,6 +3,17 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-10 (#46)
+- **feat:** Point-in-time backups to the backup tier (#46; owner decision B, 2026-10-09).
+  - `PUT/GET/DELETE /api/v1/volumes/{name}/backup` sets the policy `{pool?, tier?, node?, interval_secs, keep}`. The backup node never holds a leg, and `<name>-backup` is a thin volume there, attached for the serving node.
+  - Each interval the served volume is snapshotted on the serving node and its changes are shipped to the backup volume by the engine as a throttled job. A finished job becomes a point (a snapshot on the backup node), `keep` points are kept, and the old base goes.
+  - Built against stormblock#399 (snapshot diff) and #400 (ship job). Until they land, a cycle ends `waiting_engine` and drops its snapshot.
+  - Restore: `POST …/backup/points/{point}/restore {name}` creates a new single-leg volume on the backup node.
+  - Backups outlive their volume: a delete keeps the points and holds the name until `?purge=true`.
+  - `GET /api/v1/backups` lists them, and they replicate to peers.
+- **test:** `tests/replication.rs` (mock engines with the ship contract): full then incremental ships, retention, restore, delete keeps the points, purge; `waiting_engine` without the route; clones refused; unit `prune` (#46).
+- **docs:** README (feature, endpoints), docs/async-legs.md (*What is built (B)*), architecture (#46).
+
 ### 2026-10-10 (#49)
 - **feat:** Snapshots, group snapshots and copy-on-write clones for stormblock-csi (#49, stormblock-csi#29; owner decisions 2026-10-09). Each runs on the node that serves the volume's data (the head's array, or a single leg), through that engine's `/v1`.
   - `POST/GET /api/v1/snapshots`, `GET/DELETE /api/v1/snapshots/{id}`: in /v1's `Snapshot` shape (`id` = name), idempotent on name, and one point in time across the mirror.

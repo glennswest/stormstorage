@@ -665,7 +665,7 @@ clones, group snapshots one node only, hint refusal, a clone through a
 promote; clippy clean). Expand → #73, proposed after stormblock#318.
 Golden golden-stormstorage-3feae051c784 (stormcos#428).
 
-### Point-in-time backups to the backup tier (#46, P3) — in progress 2026-10-10
+### Point-in-time backups to the backup tier (#46, P3) — DONE 2026-10-10 (copy waits on stormblock#399/#400)
 Owner (2026-10-09, master's recommendation): **B** — periodic snapshots,
 changed extents shipped to a volume on a backup node, N points kept; not a
 sync/async replica. Engine primitives filed on stormblock (snapshot diff;
@@ -691,7 +691,10 @@ Plan here, built against that contract (`waiting_engine` until it lands):
 - Backups outlive their volume (undoing a delete is the point): a deleted
   volume's backup stays; a new volume of that name is refused until it is
   restored from or purged.
-Tests: tests/backup.rs with mock engines implementing the contract.
+Tests: tests/replication.rs (mock engines implementing the contract).
+Done: e05d729 (+ docs); sc-build passes (80 unit incl. prune, replication
+22/22, clippy clean). Engine side: stormblock#399 (diff), #400 (ship job);
+until they land a cycle reads `waiting_engine`. Live run: stormcentral#131.
 
 ### Head-node preference on create (#50, P3) — in progress 2026-10-06
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the

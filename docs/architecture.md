@@ -333,9 +333,9 @@ DistVolumes: sync state read from the head's array, a per-volume epoch
 with a CAS fence carried down to every leg's `/v1` epoch, promote,
 prestage with a bandwidth class, and dual-attach windows. The engine
 refuses a fenced head's leg attaches under stormblock#6, to the contract
-in [replication.md](replication.md). Async catch-up legs for the backup
-tier (#46) have a design pass in [async-legs.md](async-legs.md), which
-waits on an owner decision.
+in [replication.md](replication.md). The backup tier (#46) holds
+point-in-time backups (owner decision B, 2026-10-09). See
+[async-legs.md](async-legs.md); the copy waits on stormblock#399/#400.
 
 ### Placement
 
@@ -377,7 +377,7 @@ It runs only when every node of the pool answers, keeps at most
 
 ### Tiering across clusters
 
-*Tier migration is implemented (#32); async backup legs are not (#46).* A
+*Tier migration is implemented (#32); point-in-time backups (#46) are built against the engine contract of stormblock#399/#400.* A
 tier is a node attribute that pool selectors and create requests filter
 on, and a volume can move between pools.
 
@@ -389,8 +389,9 @@ rebuild, old leg retired). When every leg is there, the volume's pool
 changes. The head's own leg moves by promote only. A handover from a live
 head waits on stormblock#296, so until then a migration ends
 `waiting_handover` with every other leg moved. The backup tier is
-asymmetric by design: an async catch-up leg, not a synchronous mirror
-member. Its design pass is [async-legs.md](async-legs.md) (#46).
+asymmetric by design: it holds point-in-time backups (snapshots shipped
+on an interval, N kept), not a synchronous mirror member. See
+[async-legs.md](async-legs.md) (#46).
 
 ### StormFS
 
@@ -551,8 +552,8 @@ stormconsole#53).
 4. **Replication on the RAID head** (#33, in the code): sync state,
    fence, promote, prestage, dual-attach over DistVolumes (owner,
    stormblock#179 option b); enforcement at the legs is stormblock#6,
-   handover from a live head stormblock#296. Async backup legs (#46):
-   design pass in async-legs.md, waits on an owner decision.
+   handover from a live head stormblock#296. Point-in-time backups (#46):
+   built; the copy waits on stormblock#399/#400.
 5. **HA** (#34): state to StormKV/fastetcd; multiple instances.
 
 ## What this asked of the neighbours
