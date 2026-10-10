@@ -695,6 +695,7 @@ Tests: tests/replication.rs (mock engines implementing the contract).
 Done: e05d729 (+ docs); sc-build passes (79 unit incl. prune, replication
 22/22, clippy clean). Engine side: stormblock#399 (diff), #400 (ship job);
 until they land a cycle reads `waiting_engine`. Live run: stormcentral#131.
+Golden golden-stormstorage-c8d36379c5b2 (stormcos#428).
 
 ### Head-node preference on create (#50, P3) — in progress 2026-10-06
 `prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
