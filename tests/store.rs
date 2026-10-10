@@ -164,12 +164,13 @@ async fn mock_etcd(m: Mock) -> String {
             "keepalive" => {
                 let id: i64 = body["ID"].as_str().unwrap().parse().unwrap();
                 // A stream: one line per message.
+                let header = e.header();
                 let r = match e.leases.get_mut(&id) {
                     Some((ttl, at)) => {
                         *at = Instant::now() + Duration::from_secs(*ttl as u64);
-                        json!({ "result": { "header": e.header(), "ID": id.to_string(), "TTL": ttl.to_string() } })
+                        json!({ "result": { "header": header, "ID": id.to_string(), "TTL": ttl.to_string() } })
                     }
-                    None => json!({ "result": { "header": e.header(), "ID": id.to_string() } }),
+                    None => json!({ "result": { "header": header, "ID": id.to_string() } }),
                 };
                 return format!("{r}\n");
             }
