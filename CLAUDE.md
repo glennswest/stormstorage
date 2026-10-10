@@ -692,7 +692,7 @@ closed with it. Golden golden-stormstorage-c2663e2fa2c2 (release request
 stormcos#428); its SBOM step (stormcentral#571) took the pinned stormview.
 Left for #64 when it comes back: close it with that.
 
-### Nothing O(capacity) on a create/enrol/install path (#65, stormblock#363) — in progress 2026-10-10
+### Nothing O(capacity) on a create/enrol/install path (#65, stormblock#363) — DONE 2026-10-10
 Review. stormstorage never touches data; what it asks of an engine:
 - create (legs `/v1/volumes` thin, attach, drive open, `POST /api/v1/arrays`
   RAID1, pinned `<name>-mirror`), enrol (register/adopt/poll), assemble,
@@ -713,6 +713,10 @@ re-put every minute while waiting (an engine restart resets it to
 unlimited). Test: 1 PiB two-leg create against mock engines completes in
 seconds with only control-plane calls; rebuild progressing past the
 timeout is kept, a stalled one undone.
+Done: cb1e2de; sc-build passes (78 unit, replication 15/15, clippy clean).
+Engine-side issues filed: stormblock#395 (allocation-aware rebuild),
+#396 (persist the rebuild cap / take it on add-member), #397 (array slab
+format inline under the lock, ≤64 MiB zero-fill through every leg).
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release

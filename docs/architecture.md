@@ -456,6 +456,26 @@ state that is also rebuildable from the engines; consensus
 (StormKV/fastetcd, #34) is the phase-5 ladder, same as stormblock's GEM (#44).
 State persists per-instance in `<data_dir>/state.json` (atomic writes).
 
+## Cost: metadata only on create, enrol and install (#65)
+
+stormstorage never touches data. Everything it asks an engine for on
+create, enrol, adopt, assemble and reassemble is O(metadata): thin /v1
+legs (never written = zero, so fresh legs are already identical and a new
+RAID1 needs no initial resync), attaches, drive opens, `POST
+/api/v1/arrays` (superblocks + write-intent bitmaps) and the pinned
+`<name>-mirror`. A test creates a 1 PiB two-leg volume against mock
+engines in seconds with only control-plane calls.
+
+The one O(capacity) step is the engine's rebuild after add-member (leg
+move, re-leg, prestage, rebalance, tier migration): it copies the whole
+leg (stormblock#395 asks for an allocation-aware rebuild). Those are
+explicit, background, throttled at the volume's bandwidth class (the cap
+is put before the add and re-put every minute, since the engine keeps it
+in memory only, stormblock#396) and resumable on the engine. stormstorage
+waits for as long as the rebuild progresses and gives up only on a stall
+(`recovery.rebuild_timeout_secs`). Array create's slab format zero-fills
+up to 64 MiB of slot table inline (stormblock#397).
+
 ## API (:9093)
 
 ```
