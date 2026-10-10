@@ -692,7 +692,7 @@ Plan here, built against that contract (`waiting_engine` until it lands):
   volume's backup stays; a new volume of that name is refused until it is
   restored from or purged.
 Tests: tests/replication.rs (mock engines implementing the contract).
-Done: e05d729 (+ docs); sc-build passes (80 unit incl. prune, replication
+Done: e05d729 (+ docs); sc-build passes (79 unit incl. prune, replication
 22/22, clippy clean). Engine side: stormblock#399 (diff), #400 (ship job);
 until they land a cycle reads `waiting_engine`. Live run: stormcentral#131.
 
