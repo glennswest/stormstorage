@@ -111,6 +111,9 @@ EOF
 # Engine API call: engine, method, path, [json body].
 eapi() {
     local n=$1 m=$2 p=$3 t=${TOKEN[$1]:-}
+    # The harness's own writes (the consumer's slab format, drive close) are
+    # destructive verbs: they take the admin token (stormblock#274).
+    [ "$m" != GET ] && t=$STORMBLOCK_ADMIN_TOKEN
     local a=(); [ -n "$t" ] && a=(-H "Authorization: Bearer $t")
     if [ $# -ge 4 ]; then
         curl -s -X "$m" "${a[@]}" -H 'Content-Type: application/json' -d "$4" "http://${MGMT[$n]}$p"
