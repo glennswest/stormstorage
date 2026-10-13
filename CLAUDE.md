@@ -340,7 +340,7 @@ read `export.hosts[]` coordinates. Then rerun short + medium on C2NR0Q2.
 33a0048: **medium b89965dcb1 passed 13/0/1** (raid1-across-nodes skipped:
 one storage node) and **short 7270fc5af0 passed 4/4**. pvetest2's medium
 ee1a8b06f6 did not start its container (CreateContainerError, machine side).
-#8 closed.
+#8 closed. Golden golden-stormstorage-0fadf7cd56be (4d2bafa, stormcos#428).
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
