@@ -386,7 +386,7 @@ stormblock self-registered, or adopted) was polled bare.
 - [x] Placement by live IO load, not only free ratio (#31) — done 2026-10-06
 - [x] Cross-cluster tier migration (pool → pool) (#32) — done 2026-10-06 (head leg waits on stormblock#296)
 
-### Phase 4: Replication on the RAID head (#33) — code done 2026-10-05; live run waits
+### Phase 4: Replication on the RAID head (#33) — DONE 2026-10-13 (live run passed)
 Re-scoped by the owner on stormblock#179 (option b, 2026-10-05): cross-node
 RAID1 is the head's job here, not the engine's. stormblock #5/#7 moved
 here; the engine's `/v1` prestage/promote/dual-attach are never called.
@@ -437,6 +437,8 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       same id + mirror name + engine holds no such volume). Run 3 on
       98afef6 PASSED; sc-build on 0d72448 (mock lists /v1) passes: 88
       unit, replication 22/22, clippy -D warnings. Docs: #57 done with it.
+      #33 and #57 closed. Golden golden-stormstorage-e6494f899158 (e45381e,
+      stormcos#428).
 
 ### Phase 5: HA — fleet fastetcd (#34) — DONE 2026-10-10
 Owner (2026-10-09, master's recommendation): **(a) a fleet fastetcd**
