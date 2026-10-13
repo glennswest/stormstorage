@@ -284,6 +284,12 @@ async fn v1_detach(State(s): State<S>, Path(id): Path<String>) -> Json<Value> {
     Json(json!({}))
 }
 
+async fn v1_list(State(s): State<S>) -> Json<Value> {
+    let m = s.m.lock().unwrap();
+    let vols: Vec<Value> = m.volumes.iter().map(|(id, v)| json!({"id": id, "name": v.0, "epoch": v.2})).collect();
+    Json(json!(vols))
+}
+
 async fn v1_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
     let mut m = s.m.lock().unwrap();
     m.volumes.remove(&id);
@@ -495,7 +501,7 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
     let s = S { m: m.clone(), disks };
     let app = Router::new()
         .route("/v1/nodes/capacity", get(capacity))
-        .route("/v1/volumes", post(v1_create))
+        .route("/v1/volumes", get(v1_list).post(v1_create))
         .route("/v1/volumes/{id}", get(v1_get).delete(v1_delete))
         .route("/v1/volumes/{id}/attach", post(v1_attach))
         .route("/v1/volumes/{id}/detach", post(v1_detach))
