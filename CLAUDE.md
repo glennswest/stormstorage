@@ -201,6 +201,10 @@ active → remove_member → drop old drive/volume.
       loaded box. When it passes: close #17, #18, #19, #21 (harness
       build-failures) and #2 with what was verified, then request the
       golden once. #13 and #16 closed.
+      **2026-10-13: unblocked** (#168 `SC_TOOLS=stormblock`, stormblock
+      20.0.0; admin token shared since f54cb02). Running
+      `SC_TOOLS=stormblock sc-build scripts/e2e-export.sh`; a head stall goes
+      on stormblock#266.
 - [x] Retry a failed assembly (#7) — done 2026-09-28:
       `POST /api/v1/volumes/{name}/assemble` (409 when assembled, single
       leg or busy) → `orchestrate::assemble`, then publish. The reconciler
