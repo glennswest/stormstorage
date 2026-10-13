@@ -184,14 +184,16 @@ converge() {
 }
 # Every replica's sync state, "node:role:state …".
 replicas() { curl -s "$SS/volumes/rv/replicas" | py 'print(" ".join("%s:%s:%s" % (r["node"], r["role"], r["sync"]["state"]) for r in d["replicas"]))'; }
+# Wait until both replicas read in_sync; sets SYNC (a caller's $(…) would
+# swallow fail's exit).
 wait_in_sync() {
-    local r=
+    SYNC=
     for _ in $(seq 1 120); do
-        r=$(replicas)
-        py "import sys; assert all(x.endswith(':in_sync') for x in '$r'.split()) and len('$r'.split())==2" </dev/null 2>/dev/null && { echo "$r"; return 0; }
+        SYNC=$(replicas)
+        [ "$(echo "$SYNC" | tr ' ' '\n' | grep -c ':in_sync$')" = 2 ] && return 0
         sleep 1
     done
-    fail "replicas not in sync: $r"
+    fail "replicas not in sync: $SYNC"
 }
 
 say "create a 2-leg volume served to x"
@@ -216,7 +218,7 @@ kill -TERM "${PID[x]}"; wait "${PID[x]}" 2>/dev/null || true; unset "PID[x]"
 ok "x formatted data slab $CSLAB through the mirror, then stopped"
 
 say "sync state"
-ok "replicas: $(wait_in_sync)"
+wait_in_sync; ok "replicas: $SYNC"
 [ "$(curl -s "$SS/volumes/rv/replicas" | py 'print(d["epoch"])')" = 1 ] || fail "epoch is not 1"
 
 say "prestage the slave $SLAVE → $SPARE at class low"
@@ -227,7 +229,7 @@ seen=
 for _ in $(seq 1 20); do r=$(replicas); case "$r" in *resyncing*) seen=$r; break ;; esac; sleep 0.5; done
 [ -n "$seen" ] && echo "  during: $seen" || echo "  (rebuild finished before a resyncing read)"
 converge "$(printf '%s\n' "$HEAD" "$SPARE" | sort | tr '\n' ' ' | sed 's/ $//')"
-ok "legs [$(legs)], class $(vol | py 'print(d["bandwidth_class"])'), replicas: $(wait_in_sync)"
+wait_in_sync; ok "legs [$(legs)], class $(vol | py 'print(d["bandwidth_class"])'), replicas: $SYNC"
 OLD_SLAVE=$SLAVE; SLAVE=$SPARE; SPARE=$OLD_SLAVE
 SLAVE_VID=$(vol | py "print([l['volume_id'] for l in d['legs'] if l['node']=='$SLAVE'][0])")
 HEAD_VID=$(vol | py "print([l['volume_id'] for l in d['legs'] if l['node']=='$HEAD'][0])")
@@ -288,7 +290,7 @@ ok "slab $CSLAB read back after the failover"
 say "the lost leg is re-legged under the new head"
 OLD_HEAD=$HEAD; HEAD=$SLAVE
 converge "$(printf '%s\n' "$HEAD" "$SPARE" | sort | tr '\n' ' ' | sed 's/ $//')"
-ok "legs [$(legs)], replicas: $(wait_in_sync)"
+wait_in_sync; ok "legs [$(legs)], replicas: $SYNC"
 
 say "restart the old head $OLD_HEAD: stale head and orphan reaped"
 start_engine "$OLD_HEAD"
@@ -321,7 +323,16 @@ done
 py 'assert d.get("deleted")=="rv", d' <"$W/r.json" || fail "delete: $(cat "$W/r.json")"
 for n in "${NODES[@]}"; do
     left=$(eapi "$n" GET /v1/volumes | py 'print(len(d if isinstance(d,list) else d.get("volumes",[])))')
-    [ "$left" = 0 ] || fail "$n still has $left /v1 volumes"
+    if [ "$left" != 0 ]; then
+        eapi "$n" GET /v1/volumes >"$W/left.json"
+        echo "  $n /v1 volumes left: $(cat "$W/left.json")"
+        for id in $(py 'print(" ".join(v["id"] for v in (d if isinstance(d,list) else d.get("volumes",[]))))' <"$W/left.json"); do
+            echo "  $n /v1/volumes/$id: $(eapi "$n" GET "/v1/volumes/$id")"
+        done
+        echo "  $n /api/v1/volumes: $(eapi "$n" GET /api/v1/volumes | cut -c1-1500)"
+        echo "  $n /api/v1/slabs: $(eapi "$n" GET /api/v1/slabs | cut -c1-1500)"
+        fail "$n still has $left /v1 volumes"
+    fi
 done
 ok "deleted; no leg left on any engine"
 echo
