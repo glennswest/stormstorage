@@ -214,7 +214,8 @@ optimization.
   without the array (its engine restarted) gets the same array put back
   together from the legs' superblocks (*implemented, #15*). With replication peers,
   exactly one instance acts (`[recovery] enabled = true`). Unit-tested;
-  the live run (`scripts/e2e-releg.sh`) waits on stormcentral#131.
+  live-verified with `scripts/e2e-releg.sh` (three stormblock 20.0.0
+  engines, 2026-10-13).
   ```
   LegState      created | failed | lost
   AssemblyState single_leg | pending_engine_support | assembled | degraded

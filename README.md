@@ -389,9 +389,9 @@ stormview components feed on **:9093**.
   servers are wanted (rustkube-node#68), and that path is re-leg (#1).
 
   Unit and mock-engine tests cover re-leg, serving and assembly retry
-  (`tests/export.rs`). The live runs against real engines
-  (`scripts/e2e-releg.sh`, `scripts/e2e-export.sh`) have not passed yet:
-  they need a built stormblock in the build job (stormcentral#131).
+  (`tests/export.rs`). Re-leg has passed live against real engines
+  (`scripts/e2e-releg.sh`, stormblock 20.0.0, 2026-10-13); the serving run
+  (`scripts/e2e-export.sh`) has not passed yet (#2).
 - **Delete.** Revokes the export first: it detaches the served volume and
   deletes it. The head's array refuses deletion while a volume is pinned
   to it, so if this fails on a reachable head, the record is kept and the
@@ -760,10 +760,13 @@ stormcentral#571). A fix in stormview reaches this binary only when that
 (`STORMBLOCK_BIN`) on loopback, unprivileged. It creates
 a 2-leg volume, kills the non-head engine, checks the re-leg converges
 (both members active, one re-leg, the orphan recorded), then restarts the
-engine and checks the orphan is reaped:
+engine and checks the orphan is reaped. The engines and stormstorage share
+one `STORMBLOCK_ADMIN_TOKEN`, since engines enforce it on array create
+(stormblock#274). `SC_TOOLS=stormblock` gives the job stormblock's newest
+golden and sets `STORMBLOCK_BIN` (stormcentral#168):
 
 ```
-sc-build 'STORMBLOCK_BIN=/path/to/stormblock scripts/e2e-releg.sh'
+SC_TOOLS=stormblock sc-build scripts/e2e-releg.sh
 ```
 
 ### Live test: consumer serving

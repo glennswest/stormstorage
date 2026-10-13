@@ -128,7 +128,7 @@ active → remove_member → drop old drive/volume.
 - [x] e2e on dev: 3 engines — create → assembled RAID1 on head (member
       uuids captured); move node-c → node-d converged, both members
       active, old volume gone
-- [ ] Node-loss handling: re-leg from surviving copies (#1, P1) — code
+- [x] Node-loss handling: re-leg from surviving copies (#1, P1) — DONE 2026-10-13; code
       done (999556f, 5deffda, c7d71f9); live run waits on
       stormcentral#131 (#27 host_nqn done 2026-10-06).
       Plan: `LegState::Lost` (was created, node now unhealthy) and
@@ -154,6 +154,11 @@ active → remove_member → drop old drive/volume.
       **2026-10-13: unblocked** (stormcentral#131 closed via #168:
       `SC_TOOLS=stormblock` gives a job stormblock's golden, 20.0.0).
       Running `SC_TOOLS=stormblock sc-build scripts/e2e-releg.sh`.
+      Run 1: 401 on array create (stormblock#274 admin gate) → #83; the
+      scripts now share a `STORMBLOCK_ADMIN_TOKEN` (f54cb02). Run 2 on
+      f54cb02 PASSED: loss noticed in 40 s, one re-leg b → c, both members
+      active on the head, orphan recorded and reaped on restart, no second
+      re-leg, delete leaves no leg. #1 and #83 closed.
 - [ ] Consumer serving (#2) — code done; live e2e waits on
       stormcentral#131 (#25) and, on closed engines, #53. History (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
