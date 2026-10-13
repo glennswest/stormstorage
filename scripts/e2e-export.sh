@@ -7,8 +7,9 @@
 # 1. three storage engines (a, b, c) with file-backed slabs and NVMe-oF/TCP
 #    targets on loopback, stormstorage over them, and a fourth engine (x)
 #    with no drives as the consumer;
-# 2. create a 2-leg volume: assembled on its head and published — a
-#    volume pinned to the head's dedicated array, served over NVMe-TCP;
+# 2. create a 2-leg volume served to x by name: assembled on its head and
+#    published — a volume pinned to the head's dedicated array, served over
+#    NVMe-TCP from a subsystem of x's own (closed engines, stormblock#210);
 # 3. the consumer opens the published coordinates and formats a data slab
 #    on them (a real write through the mirror);
 # 4. kill -9 the non-head leg's engine under the consumer: the re-leg
@@ -159,15 +160,19 @@ done
 ok "3 nodes healthy"
 
 say "create a 2-leg volume: assembled and published"
+# Engines admit no host on their shared subsystem (stormblock#210): the
+# consumer is named at create and served from a subsystem of its own
+# (#51/#53); x's initiator presents that NQN through the URI's hostnqn.
+X_NQN=nqn.2026-10.lo.storm:e2e:consumer-x
 curl -s -X POST "$SS/volumes" -H 'Content-Type: application/json' \
-    -d '{"name":"ev","size_bytes":536870912,"replicas":2}' >"$W/create.json"
+    -d "{\"name\":\"ev\",\"size_bytes\":536870912,\"replicas\":2,\"hosts\":[{\"host_nqn\":\"$X_NQN\"}]}" >"$W/create.json"
 vol() { curl -s "$SS/volumes/ev"; }
 [ "$(vol | py 'print(d["assembly"])')" = assembled ] || fail "not assembled: $(cat "$W/create.json")"
 [ "$(vol | py 'print(d["export"]["state"])')" = published ] || fail "not published: $(vol)"
 HEAD=$(vol | py 'print(d["head"])')
 ARRAY=$(vol | py 'print(d["array_id"])')
 SERVED=$(vol | py 'print(d["export"]["volume_id"])')
-URI=$(vol | py 'c=d["export"]["coordinates"]; print("nvme-tcp://%s:%s/%s?nsid=%s" % (c["traddr"], c["trsvcid"], c["nqn"], c["nsid"]))')
+URI=$(vol | py 'c=d["export"]["hosts"][0]["coordinates"]; print("nvme-tcp://%s:%s/%s?nsid=%s&hostnqn=%s" % (c["traddr"], c["trsvcid"], c["nqn"], c["nsid"], "'"$X_NQN"'"))')
 VICTIM=$(vol | py 'print([l["node"] for l in d["legs"] if l["node"]!=d["head"]][0])')
 [ "$(vol | py 'print(d["export"]["node"])')" = "$HEAD" ] || fail "served from elsewhere than the head"
 vol | py "assert all(l['volume_id']!='$SERVED' for l in d['legs']), 'served volume is a leg'" || fail "served a leg"
@@ -216,13 +221,13 @@ ok "consumer reads slab $CSLAB back through the re-legged mirror"
 
 say "republish"
 curl -s -X POST "$SS/volumes/ev/export" -H 'Content-Type: application/json' -d '{}' >"$W/repub.json"
-py "assert d['state']=='published' and d['coordinates_changed'] is False and d['volume_id']=='$SERVED', d" \
+py "assert d['state']=='published' and d['volume_id']=='$SERVED' and [h['coordinates_changed'] for h in d['hosts']]==[False], d" \
     <"$W/repub.json" || fail "republish: $(cat "$W/repub.json")"
 ok "republished, coordinates unchanged"
 
 say "single-leg volume"
 curl -s -X POST "$SS/volumes" -H 'Content-Type: application/json' \
-    -d '{"name":"sv","size_bytes":268435456,"replicas":1}' >"$W/single.json"
+    -d "{\"name\":\"sv\",\"size_bytes\":268435456,\"replicas\":1,\"hosts\":[{\"host_nqn\":\"$X_NQN\"}]}" >"$W/single.json"
 # On a busy build box the head can miss polls and read as unreachable; a
 # publish then fails, is recorded, and is retried when the node answers.
 first=$(py 'print(d["export"]["state"], d["export"].get("message") or "")' <"$W/single.json")
@@ -231,7 +236,7 @@ for _ in $(seq 1 180); do
     [ "$(py 'print(d["export"]["state"])' <"$W/single.json")" = published ] && break
     sleep 1
 done
-py 'e=d["export"]; l=d["legs"][0]; assert d["assembly"]=="single_leg" and e["state"]=="published" and e["volume_id"]==l["volume_id"] and e["coordinates"]==l["export"], d' \
+py 'e=d["export"]; l=d["legs"][0]; assert d["assembly"]=="single_leg" and e["state"]=="published" and e["volume_id"]==l["volume_id"] and e["per_host"] and [h["host_nqn"] for h in e["hosts"]]==["'"$X_NQN"'"] and ":host:" in e["hosts"][0]["coordinates"]["nqn"], d' \
     <"$W/single.json" || fail "single leg: $(cat "$W/single.json")"
 case "$first" in published*) ok "served as its leg" ;;
     *) ok "served as its leg (on create: $first — published on recovery)" ;; esac
