@@ -159,6 +159,7 @@ active → remove_member → drop old drive/volume.
       f54cb02 PASSED: loss noticed in 40 s, one re-leg b → c, both members
       active on the head, orphan recorded and reaped on restart, no second
       re-leg, delete leaves no leg. #1 and #83 closed.
+      Golden golden-stormstorage-bb67cbce78ea (73b97e2, stormcos#428).
 - [ ] Consumer serving (#2) — code done; live e2e waits on
       stormcentral#131 (#25) and, on closed engines, #53. History (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
