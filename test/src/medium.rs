@@ -104,8 +104,10 @@ async fn republish(api: &Api, env: &Env) -> Outcome {
         let r = api.post(&format!("/api/v1/volumes/{name}/export"), json!({})).await?;
         ensure(r.ok(), format!("republish: {} {}", r.status, r.body))?;
         ensure(r.body["state"] == "published", format!("state: {}", r.body))?;
-        ensure(r.body["coordinates_changed"] == false, format!("coordinates changed: {}", r.body))?;
-        ensure(r.body["coordinates"] == v["export"]["coordinates"], "coordinates differ from create's")?;
+        let (now, then) = (crate::api::served_host(&r.body), crate::api::served_host(&v["export"]));
+        ensure(now["coordinates"].is_object(), format!("no coordinates for the consumer host: {}", r.body))?;
+        ensure(now["coordinates_changed"] == false, format!("coordinates changed: {}", r.body))?;
+        ensure(now["coordinates"] == then["coordinates"], "coordinates differ from create's")?;
         Ok::<_, Why>("published, coordinates unchanged".to_string())
     }
     .await;

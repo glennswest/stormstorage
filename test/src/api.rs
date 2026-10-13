@@ -5,6 +5,17 @@ use std::time::Duration;
 
 use crate::report::Why;
 
+/// The host NQN volumes are served to (see `Api::create`).
+pub const CONSUMER_NQN: &str = "nqn.2026-10.lo.storm:stormstorage-test:consumer";
+
+/// The consumer host's entry in an export (`export.hosts[]`), or null.
+pub fn served_host(export: &Value) -> &Value {
+    export["hosts"]
+        .as_array()
+        .and_then(|h| h.iter().find(|h| h["host_nqn"] == CONSUMER_NQN))
+        .unwrap_or(&Value::Null)
+}
+
 pub struct Api {
     base: String,
     token: Option<String>,
@@ -89,10 +100,16 @@ impl Api {
         self.write(reqwest::Method::DELETE, path, None).await
     }
 
-    /// Create a volume; its record on success.
+    /// Create a volume served to the test's consumer host; its record on
+    /// success. A closed engine admits no host on its shared subsystem
+    /// (stormblock#210), so a volume is served by host NQN (#51/#53); nothing
+    /// connects to it.
     pub async fn create(&self, name: &str, size: u64, replicas: u32) -> Result<Value, Why> {
         let r = self
-            .post("/api/v1/volumes", json!({"name": name, "size_bytes": size, "replicas": replicas}))
+            .post(
+                "/api/v1/volumes",
+                json!({"name": name, "size_bytes": size, "replicas": replicas, "hosts": [{"host_nqn": CONSUMER_NQN}]}),
+            )
             .await?;
         if !r.ok() {
             return Err(Why::Fail(format!("create {name}: {} {}", r.status, r.body)));

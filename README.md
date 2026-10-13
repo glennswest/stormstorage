@@ -813,7 +813,10 @@ devices, and carries no stormblock of its own.
 | `long` | the night window | waves of 64 MiB volumes sized from the healthy nodes' free bytes (4 to 64, `STORM_WAVE_MAX` caps), 8 at a time: create p50/max per wave, then delete and settle, then count what is left (volumes, engine legs, orphans). A wave with errors, a residue, or a p50 over twice wave 1's fails; `trend` names the first regressed wave |
 
 Every volume is named `t-<run id>-…` and is deleted on success, on failure
-and on timeout. With the node's `[api] api_token` set, writes need
+and on timeout. Each one is served to the host NQN
+`nqn.2026-10.lo.storm:stormstorage-test:consumer` (`hosts` on create),
+because a closed engine refuses the shared subsystem (stormblock#210).
+Nothing connects to it; the checks read that host's coordinates. With the node's `[api] api_token` set, writes need
 `STORM_STORMSTORAGE_TOKEN`; without it they are skips, never passes.
 Results are JSON lines on stdout and in `/results/results.jsonl`. Exit
 codes: 0 all passed, 1 a test failed, 2 the run could not happen (no

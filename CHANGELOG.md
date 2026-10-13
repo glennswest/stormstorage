@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-13 (#8)
+- **test:** The node suites serve every volume they create to a test consumer host NQN (`hosts` on create) and read that host's coordinates. Short run b231ed5133 on C2NR0Q2 (release 12.14) failed `single-leg-lifecycle`: the node's closed stormblock refused the shared-subsystem publish (stormblock#210). Its other three checks now pass with #42's token fix.
+
 ### 2026-10-13 (#33)
 - **fix:** A former head reaped after a promote (it restarted without the array) also loses its `/v1` record of the served volume. The engine keeps that record across a restart with nothing behind it, and reports it `healthy`. Before, it stayed on the old head for ever: found by the first live run of `scripts/e2e-replication.sh`. The record is deleted only when it is the served volume's (same id, `<name>-mirror`) and the engine holds no volume of that id. `StaleHead.served_v1` records the id at promote.
 - **fix:** The "former head still holds the array" event no longer says the legs refuse its writes only once stormblock#6 lands: they do now.

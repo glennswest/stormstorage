@@ -330,6 +330,11 @@ token fix ef3af98); C2NR0Q2, pvetest1 and server8 run 12.14 (install
 passed). Rerunning `test run stormstorage short`, then `medium`.
 Run b231ed5133 (short, f61750f on C2NR0Q2) queued; paused for P0 #81 —
 check `stormcentral test show b231ed5133`, then medium.
+2026-10-13: b231ed5133 = 3 pass / 1 fail: api-up, engine-adopted,
+pools-and-feed pass (token fix works on the node); single-leg-lifecycle
+fails on the closed engine's shared-subsystem refusal (stormblock#210).
+Fix: the suites create every volume with `hosts: [{CONSUMER_NQN}]` and
+read `export.hosts[]` coordinates. Then rerun short + medium on C2NR0Q2.
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`

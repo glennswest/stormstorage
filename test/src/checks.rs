@@ -74,8 +74,8 @@ pub async fn single_leg_lifecycle(api: &Api, env: &Env, tag: &str) -> Outcome {
         let ex = &v["export"];
         ensure(ex["state"] == "published", format!("export: {ex}"))?;
         ensure(ex["volume_id"] == v["legs"][0]["volume_id"], "served volume is not the leg")?;
-        let c = &ex["coordinates"];
-        ensure(c["nqn"].is_string() && c["nsid"].is_u64(), format!("coordinates: {c}"))?;
+        let c = &crate::api::served_host(ex)["coordinates"];
+        ensure(c["nqn"].is_string() && c["nsid"].is_u64(), format!("coordinates for the consumer host: {ex}"))?;
         Ok::<_, Why>(format!(
             "{name} on {} served at {}:{} nsid {}",
             v["legs"][0]["node"].as_str().unwrap_or("?"),
