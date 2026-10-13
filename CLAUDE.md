@@ -417,6 +417,19 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       stormblock#296. Async backup legs split to #46: design pass in docs/async-legs.md
       (2026-10-06), waits on the owner's choice (point-in-time B / async
       replica A or C / both).
+      **2026-10-13: live run** (stormblock#6 closed, SC_TOOLS=stormblock).
+      Plan: `scripts/e2e-replication.sh`, built like e2e-export (3 engines
+      + consumer x served by host NQN, shared admin token): replicas both
+      in_sync; prestage the slave onto c at class low → in_sync again;
+      kill -9 the head; fence (stale expected → 412; legs fenced, leg /v1
+      epoch 2); enforcement on a leg engine: attach without/with stale
+      epoch → 412, the old head's attachment gone; promote onto a
+      surviving leg → same array uuid, adopted mirror, consumer re-opens
+      the new coordinates and reads its slab back; restart the old head →
+      stale head reaped; dual-attach open + abort; delete leaves nothing.
+      Out of scope: promote off a live head (stormblock#296), superblock
+      sync evidence (stormblock#309, still open: a lost head reads
+      detached).
 
 ### Phase 5: HA — fleet fastetcd (#34) — DONE 2026-10-10
 Owner (2026-10-09, master's recommendation): **(a) a fleet fastetcd**
