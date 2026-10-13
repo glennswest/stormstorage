@@ -160,7 +160,7 @@ active → remove_member → drop old drive/volume.
       active on the head, orphan recorded and reaped on restart, no second
       re-leg, delete leaves no leg. #1 and #83 closed.
       Golden golden-stormstorage-bb67cbce78ea (73b97e2, stormcos#428).
-- [ ] Consumer serving (#2) — code done; live e2e waits on
+- [x] Consumer serving (#2) — DONE 2026-10-13 (live e2e passed). Was: live e2e waits on
       stormcentral#131 (#25) and, on closed engines, #53. History (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
       pins a /v1 volume) and v19.1.1 (#149: `transport: nvme_tcp` attach).
@@ -204,7 +204,13 @@ active → remove_member → drop old drive/volume.
       **2026-10-13: unblocked** (#168 `SC_TOOLS=stormblock`, stormblock
       20.0.0; admin token shared since f54cb02). Running
       `SC_TOOLS=stormblock sc-build scripts/e2e-export.sh`; a head stall goes
-      on stormblock#266.
+      on stormblock#266. Run 1: shared publish 400 (closed engine, #210),
+      recorded `failed` as designed → the script names x as a host at
+      create (8960c56). Run 2: x's slab format 401 (admin gate) → the
+      harness's engine writes use the admin token (b1b6ec9). Run 3 on
+      b1b6ec9 PASSED (publish per host, consumer write, re-leg under it,
+      read back, republish unchanged, single leg, delete promptly, nothing
+      left). #2 closed; #17–#21 were already closed.
 - [x] Retry a failed assembly (#7) — done 2026-09-28:
       `POST /api/v1/volumes/{name}/assemble` (409 when assembled, single
       leg or busy) → `orchestrate::assemble`, then publish. The reconciler

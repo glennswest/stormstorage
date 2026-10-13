@@ -581,8 +581,8 @@ stormconsole#53).
 2. **Leg wiring** (*done, v0.3.0*, except the last item): exports per
    leg, head assembly via #73, leg move (add/rebuild/remove sequence).
    Failure-driven re-leg on node loss (#1), consumer serving (#2) and
-   assembly retry (#7) are in the code (unreleased, after v0.3.0); the
-   live runs of #1 and #2 wait on stormcentral#131.
+   assembly retry (#7) are in the code (unreleased, after v0.3.0); #1 and
+   #2 passed live against stormblock 20.0.0 engines (2026-10-13).
    Also since v0.3.0: local adoption and node inventory (#9, #11), inbound
    API auth (#6), the test container (#8), and the engine token on every
    call with a back-off for an engine that refuses it (#38).

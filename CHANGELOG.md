@@ -5,6 +5,8 @@
 
 ### 2026-10-13 (#2)
 - **test:** `scripts/e2e-export.sh` names the consumer at create (`hosts: [{host_nqn}]`) and connects with that `hostnqn`. stormblock 20 engines admit no host on their shared subsystem (stormblock#210), so the first `SC_TOOLS=stormblock` run's shared publish failed with 400. It was recorded as `failed` with the engine's reason, as designed.
+- **test:** `scripts/e2e-export.sh`'s own engine writes (the consumer's slab format, drive close) use the admin token (stormblock#274).
+- **docs:** Consumer serving (#2) is live-verified: `SC_TOOLS=stormblock sc-build scripts/e2e-export.sh` passed on b1b6ec9 against stormblock 20.0.0. README and architecture no longer say the live runs wait on stormcentral#131.
 
 ### 2026-10-13 (#1)
 - **test:** `scripts/e2e-releg.sh` and `scripts/e2e-export.sh` give the engines and stormstorage one shared `STORMBLOCK_ADMIN_TOKEN`: stormblock 20 enforces the admin credential on array create (stormblock#274), and the first run with `SC_TOOLS=stormblock` failed there with 401 (#83).

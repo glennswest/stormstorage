@@ -389,9 +389,9 @@ stormview components feed on **:9093**.
   servers are wanted (rustkube-node#68), and that path is re-leg (#1).
 
   Unit and mock-engine tests cover re-leg, serving and assembly retry
-  (`tests/export.rs`). Re-leg has passed live against real engines
-  (`scripts/e2e-releg.sh`, stormblock 20.0.0, 2026-10-13); the serving run
-  (`scripts/e2e-export.sh`) has not passed yet (#2).
+  (`tests/export.rs`). Both have passed live against real engines
+  (stormblock 20.0.0, 2026-10-13): `scripts/e2e-releg.sh` (#1) and
+  `scripts/e2e-export.sh` (#2).
 - **Delete.** Revokes the export first: it detaches the served volume and
   deletes it. The head's array refuses deletion while a volume is pinned
   to it, so if this fails on a reachable head, the record is kept and the
@@ -772,8 +772,10 @@ SC_TOOLS=stormblock sc-build scripts/e2e-releg.sh
 ### Live test: consumer serving
 
 `scripts/e2e-export.sh` runs three storage engines and a fourth engine,
-with no drives, as the consumer. It creates a 2-leg volume and checks that
-it is published as a volume pinned to the head's dedicated array. The
+with no drives, as the consumer. It creates a 2-leg volume served to the
+consumer by name (`hosts: [{host_nqn}]`: engines admit no host on their
+shared subsystem, stormblock#210) and checks that it is published as a
+volume pinned to the head's dedicated array. The
 consumer formats a data slab on the published NVMe-TCP namespace. The
 script then kills the non-head leg's engine under it, waits for the re-leg,
 and checks that the export is unchanged and the consumer reads its slab
@@ -781,14 +783,17 @@ header back through the mirror. It also checks republish, a single-leg
 volume, and that delete leaves no served volume, array or leg behind:
 
 ```
-sc-build 'STORMBLOCK_BIN=/path/to/stormblock scripts/e2e-export.sh'
+SC_TOOLS=stormblock sc-build scripts/e2e-export.sh
 ```
 
 Both scripts test at runtime against a **built** stormblock (≥ v19.1.1)
 and never compile one (#25): without `STORMBLOCK_BIN` they stop before
 starting anything, and they print the stormblock version they ran
-against. An sc-build job has no stormblock binary to point at until
-stormblock ships as a golden bin a job can reach (stormcentral#131).
+against. `SC_TOOLS=stormblock` gives the job stormblock's newest golden
+and sets `STORMBLOCK_BIN` (stormcentral#168). Engines enforce the admin
+credential on destructive verbs (stormblock#274), so the scripts share one
+`STORMBLOCK_ADMIN_TOKEN` between the engines, stormstorage and their own
+engine writes.
 
 ### Test suites on a node (the stormcos test standard)
 
@@ -887,13 +892,11 @@ snippet adds a `[process.ui]` block with `proxy` pointing at the UI and
 feed, peer replication) and 2 (leg wiring: assembled RAID1, leg move) are
 done. The open work:
 
-- #1, #2: re-leg and consumer serving are in the code; their live runs
-  wait on stormcentral#131;
 - #8: the test suites are in and run on C2NR0Q2; see the issue for the
   latest run;
 - #33: replication on the RAID head is in the code (sync state, fence,
-  promote, prestage, dual-attach; mock-engine tested). Its live run waits
-  on stormcentral#131; enforcement at the legs is stormblock#6, a handover
+  promote, prestage, dual-attach; mock-engine tested). It has not run on
+  real engines yet (a job can now, `SC_TOOLS=stormblock`); enforcement at the legs is stormblock#6, a handover
   from a live head stormblock#296;
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
