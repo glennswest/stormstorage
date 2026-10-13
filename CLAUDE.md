@@ -293,7 +293,7 @@ On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
 - Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
   fails until that is fixed.
 
-### Test suites (#8) — code done 2026-09-28; waiting on a test-machine run
+### Test suites (#8) — DONE 2026-10-13 (short + medium passed on a test machine)
 Verified on dev: `sc-build scripts/check-test-container.sh` (47a65c9)
 builds --locked, stages a 3.2 MiB static /test, and runs it against a real
 stormstorage of the commit (no nodes: api-up pass, node checks fail, exit
@@ -335,6 +335,12 @@ pools-and-feed pass (token fix works on the node); single-leg-lifecycle
 fails on the closed engine's shared-subsystem refusal (stormblock#210).
 Fix: the suites create every volume with `hosts: [{CONSUMER_NQN}]` and
 read `export.hosts[]` coordinates. Then rerun short + medium on C2NR0Q2.
+33a0048 does that. Run f43e11f9fd (C2NR0Q2) errored on its apiserver
+/readyz (stormcentral#63) and 1597cd895c lost its lease. On pvetest1 at
+33a0048: **medium b89965dcb1 passed 13/0/1** (raid1-across-nodes skipped:
+one storage node) and **short 7270fc5af0 passed 4/4**. pvetest2's medium
+ee1a8b06f6 did not start its container (CreateContainerError, machine side).
+#8 closed.
 Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
 workspace member crate `stormstorage-test` (static musl `/test`),
 `test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
