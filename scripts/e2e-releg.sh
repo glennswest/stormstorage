@@ -48,6 +48,12 @@ trap cleanup EXIT
 
 rm -rf "$W"; mkdir -p "$W"
 
+# Engines enforce an admin credential on destructive verbs (array create,
+# member add/remove, drive close; stormblock#274). Engines and stormstorage
+# share one admin token through the variable both read (stormstorage#47).
+STORMBLOCK_ADMIN_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+export STORMBLOCK_ADMIN_TOKEN
+
 say "build"
 [ -n "${STORMBLOCK_BIN:-}" ] ||
     fail "STORMBLOCK_BIN is not set: this e2e runs a built stormblock and never compiles one (#25)"

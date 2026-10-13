@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-13 (#1)
+- **test:** `scripts/e2e-releg.sh` and `scripts/e2e-export.sh` give the engines and stormstorage one shared `STORMBLOCK_ADMIN_TOKEN`: stormblock 20 enforces the admin credential on array create (stormblock#274), and the first run with `SC_TOOLS=stormblock` failed there with 401 (#83).
+
 ### 2026-10-10 (#81)
 - **fix:** A power cut no longer leaves stormstorage crash-looping on an empty `state.json` (`EOF while parsing a value at line 1 column 0`, server2 on 12.14). Saves write a uniquely named temp file, fsync it, keep the replaced file as `state.json.prev`, rename, and fsync the directory. At startup a state file that does not parse is kept as `state.json.bad-<unix secs>` and the state starts from `state.json.prev` (else empty), with an ERROR log, an Error event (kind `state`) and a `state_recovered` condition in `/api/v1/health` and `/api/v1/store`.
 
