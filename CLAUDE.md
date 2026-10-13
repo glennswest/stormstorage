@@ -211,6 +211,7 @@ active → remove_member → drop old drive/volume.
       b1b6ec9 PASSED (publish per host, consumer write, re-leg under it,
       read back, republish unchanged, single leg, delete promptly, nothing
       left). #2 closed; #17–#21 were already closed.
+      Golden golden-stormstorage-7c0e18b1438d (bc99504, stormcos#428).
 - [x] Retry a failed assembly (#7) — done 2026-09-28:
       `POST /api/v1/volumes/{name}/assemble` (409 when assembled, single
       leg or busy) → `orchestrate::assemble`, then publish. The reconciler
