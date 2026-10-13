@@ -151,6 +151,9 @@ active → remove_member → drop old drive/volume.
       pass. It now carries e2e-export's loaded-box fixes. Blocked like #2 on
       stormcentral#131 (no stormblock binary for an sc-build job, #25).
       When it passes: close #1 with the run, then the golden.
+      **2026-10-13: unblocked** (stormcentral#131 closed via #168:
+      `SC_TOOLS=stormblock` gives a job stormblock's golden, 20.0.0).
+      Running `SC_TOOLS=stormblock sc-build scripts/e2e-releg.sh`.
 - [ ] Consumer serving (#2) — code done; live e2e waits on
       stormcentral#131 (#25) and, on closed engines, #53. History (2026-09-27). Unblocked:
       stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
