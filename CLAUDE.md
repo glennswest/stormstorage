@@ -852,7 +852,9 @@ condition in `/api/v1/health` and `/api/v1/store`. There are no append-only
 logs (events are memory only). Tests: unit (empty, truncated, prev) and
 tests/state.rs (starts, health shows the condition).
 Done: 05eb7f8; sc-build passes (`--locked`, 88 unit incl. 3 new, state 1/1,
-clippy -D warnings clean).
+clippy -D warnings clean). Re-verified on 85b18b7 (2026-10-13);
+closed. Golden golden-stormstorage-7d586161ae40 (stormcos#428); live proof
+is server2's reinstall over the bad file.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
