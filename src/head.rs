@@ -714,6 +714,9 @@ async fn promote_claimed(
     let mirror = format!("{name}{}", crate::orchestrate::MIRROR_SUFFIX);
 
     let old = old_head.clone().unwrap_or_default();
+    let old_served_v1 = (vol.export.node.as_deref() == Some(old.as_str()) && !vol.export.adopted)
+        .then(|| vol.export.volume_id.clone())
+        .flatten();
     let old_uris: Vec<String> = vol
         .legs
         .iter()
@@ -759,6 +762,7 @@ async fn promote_claimed(
                 of_volume: name.to_string(),
                 epoch: vol.epoch,
                 since: SystemTime::now(),
+                served_v1: old_served_v1,
             });
         }
         fed.volumes.insert(name.to_string(), vol);
@@ -1414,9 +1418,9 @@ pub async fn reap_stale_heads(state: &Arc<AppState>) {
                     &s.of_volume,
                     Severity::Error,
                     format!(
-                        "{}: former head {} answers and still holds array {} — left alone; its writes to the legs \
-                         are refused only once stormblock#6 lands, and it can let go only once the engine can \
-                         release an array without writing (stormblock#{RELEASE_ISSUE})",
+                        "{}: former head {} answers and still holds array {} — left alone; the legs refuse its \
+                         writes (fenced, stormblock#6), and it can let go only once the engine can release an \
+                         array without writing (stormblock#{RELEASE_ISSUE})",
                         s.of_volume, s.node, s.array_id
                     ),
                 )
@@ -1424,8 +1428,32 @@ pub async fn reap_stale_heads(state: &Arc<AppState>) {
             }
             continue;
         }
+        // The served volume's /v1 record outlives a restart with nothing
+        // behind it. Drop it only when it is that record (same id, the
+        // mirror's name) and the engine holds no volume of that id; a
+        // listing that fails waits for the next poll.
+        let mut leftover = None;
+        if let Some(id) = &s.served_v1 {
+            let mirror = format!("{}{}", s.of_volume, crate::orchestrate::MIRROR_SUFFIX);
+            let (Ok(records), Ok(held)) = (engine.list_volumes().await, engine.list_engine_volumes().await) else {
+                continue;
+            };
+            let record = records.iter().any(|v| {
+                v.get("id").and_then(|x| x.as_str()) == Some(id.as_str())
+                    && v.get("name").and_then(|x| x.as_str()) == Some(mirror.as_str())
+            });
+            if record && !held.iter().any(|v| &v.id == id) {
+                leftover = Some(id.clone());
+            }
+        }
         for uri in &s.drive_uris {
             let _ = engine.delete_drive(uri, true).await;
+        }
+        if let Some(id) = &leftover {
+            if let Err(e) = engine.delete_volume(id).await {
+                tracing::warn!(node = %s.node, volume = %id, error = %e, "former head: leftover served-volume record not deleted");
+                continue;
+            }
         }
         {
             let mut fed = state.fed.write().await;
@@ -1438,7 +1466,12 @@ pub async fn reap_stale_heads(state: &Arc<AppState>) {
             state,
             &s.of_volume,
             Severity::Info,
-            format!("{}: former head {} cleaned up (no array held; leg drives closed)", s.of_volume, s.node),
+            format!(
+                "{}: former head {} cleaned up (no array held; leg drives closed{})",
+                s.of_volume,
+                s.node,
+                if leftover.is_some() { ", leftover served-volume record deleted" } else { "" }
+            ),
         )
         .await;
     }

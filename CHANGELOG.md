@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-13 (#33)
+- **fix:** A former head reaped after a promote (it restarted without the array) also loses its `/v1` record of the served volume. The engine keeps that record across a restart with nothing behind it, and reports it `healthy`. Before, it stayed on the old head for ever: found by the first live run of `scripts/e2e-replication.sh`. The record is deleted only when it is the served volume's (same id, `<name>-mirror`) and the engine holds no volume of that id. `StaleHead.served_v1` records the id at promote.
+- **fix:** The "former head still holds the array" event no longer says the legs refuse its writes only once stormblock#6 lands: they do now.
+- **test:** `scripts/e2e-replication.sh` runs replication on the RAID head against real engines (`SC_TOOLS=stormblock`): sync state, prestage at class low, head loss, fence (CAS, legs fenced), leg enforcement (stormblock#6: the old head's attachment revoked, stale attaches 412), promote (same array, adopted served volume, a consumer reads its data back), re-leg under the new head, stale-head reap, dual-attach, delete.
+
 ### 2026-10-13 (#2)
 - **test:** `scripts/e2e-export.sh` names the consumer at create (`hosts: [{host_nqn}]`) and connects with that `hostnqn`. stormblock 20 engines admit no host on their shared subsystem (stormblock#210), so the first `SC_TOOLS=stormblock` run's shared publish failed with 400. It was recorded as `failed` with the engine's reason, as designed.
 - **test:** `scripts/e2e-export.sh`'s own engine writes (the consumer's slab format, drive close) use the admin token (stormblock#274).

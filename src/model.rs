@@ -344,6 +344,12 @@ pub struct StaleHead {
     /// The epoch the volume was fenced at.
     pub epoch: u64,
     pub since: SystemTime,
+    /// The served volume's `/v1` id on this head, when it made it there
+    /// (not adopted). An engine that restarts keeps that `/v1` record with
+    /// nothing behind it (the volume was on the array's slab), so the reap
+    /// drops it (#33).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_v1: Option<String>,
 }
 
 pub fn first_epoch() -> u64 {

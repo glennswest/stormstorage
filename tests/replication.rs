@@ -50,6 +50,9 @@ struct Mock {
     volumes: BTreeMap<String, (String, Option<String>, u64)>,
     /// Volumes adopted with an assembled array (no /v1 record).
     adopted: BTreeMap<String, String>,
+    /// /v1 records whose volume is gone (an engine restarted without the
+    /// array its slab was on): listed by /v1, not by /api/v1.
+    records_only: std::collections::BTreeSet<String>,
     drives: BTreeMap<String, String>,
     arrays: BTreeMap<String, Vec<Member>>,
     rates: BTreeMap<String, u64>,
@@ -443,6 +446,7 @@ async fn engine_volumes(State(s): State<S>) -> Json<Value> {
     let items: Vec<Value> = m
         .volumes
         .iter()
+        .filter(|(id, _)| !m.records_only.contains(*id))
         .map(|(id, v)| (id.clone(), v.0.clone()))
         .chain(m.adopted.iter().map(|(id, n)| (id.clone(), n.clone())))
         .map(|(id, name)| json!({"id": id, "name": name}))
@@ -757,11 +761,22 @@ async fn fence_then_promote_after_the_head_is_lost() {
     stormstorage::head::reap_stale_heads(&state).await;
     assert_eq!(state.fed.read().await.stale_heads.len(), 1, "still holds the array");
     assert!(!mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("close drive")));
-    // It restarted without the array: its leftover drives are closed.
-    mocks[&head].lock().unwrap().arrays.clear();
+    // It restarted without the array: its leftover drives are closed, and
+    // the served volume's /v1 record, left with nothing behind it, goes.
+    {
+        let mut m = mocks[&head].lock().unwrap();
+        m.arrays.clear();
+        assert_eq!(m.volumes.get(&served).map(|v| v.0.as_str()), Some("p-mirror"), "made on the old head");
+        m.records_only.insert(served.clone());
+    }
     stormstorage::head::reap_stale_heads(&state).await;
     assert!(state.fed.read().await.stale_heads.is_empty());
-    assert!(mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("close drive")));
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert!(m.log.iter().any(|l| l.starts_with("close drive")));
+        assert!(!m.volumes.contains_key(&served), "leftover /v1 record deleted: {:?}", m.log);
+        assert!(m.log.contains(&format!("delete {served}")));
+    }
     let g = get_json(format!("{api}/api/v1/stale-heads")).await;
     assert_eq!(g["stale_heads"], json!([]));
 
