@@ -13,7 +13,7 @@ to this issue. The engine's own `/v1/prestage`, `/v1/fence`,
 state and copy nothing. **stormstorage never calls `/v1/prestage`,
 `/v1/promote` or `/v1/dual-attach`.** It does call `/v1/fence` on each
 leg (see *Fence*), because the engine's per-volume epoch is the hook
-stormblock#6 builds on.
+stormblock#6 built on.
 
 ## The model
 
@@ -160,8 +160,10 @@ enabled`).
 ### The leg attach contract (for stormblock#6)
 
 What a fence must achieve: **a head that has been fenced can no longer
-write to any leg.** Today the engine bumps the leg's `/v1` epoch and
-enforces nothing. stormblock#6 builds the enforcement to this contract:
+write to any leg.** stormblock#6 built the enforcement to this contract
+(golden-stormblock-a6c3b3a9cee4), and `scripts/e2e-replication.sh` checks
+it on real engines: after a fence the old head's attachment is gone, and
+an attach at the old epoch or with none is a 412.
 
 1. **The attach carries the epoch.** `POST /v1/volumes/{leg}/attach
    {node, mode: "read_write", transport: "nvme_tcp", host_nqn, epoch}`.
@@ -248,17 +250,23 @@ the legs at their fenced epochs and clears `fenced`.
 **Former heads.** When a stale head's engine answers again, the reconciler
 lists its arrays. If it no longer holds the array (it restarted: arrays on
 runtime-registered `nvme-tcp://` drives are not reassembled on their own),
-its leftover leg drives are closed and the record goes. If it still holds
-the array (a partition, not a restart), it is **left alone** and reported
-once as an error event. Closing its drives would write into the legs.
-Its writes are refused only once stormblock#6 lands, and it can let go
-only once stormblock#296 does.
+its leftover leg drives are closed and the record goes. The engine also
+keeps its `/v1` record of the served volume across the restart with
+nothing behind it (and reports it healthy, stormblock#419), so that
+record is deleted too. That happens only when it is the served volume's
+(the id recorded at promote, `<name>-mirror`) and the engine holds no
+volume of that id. If the former head still holds the array (a
+partition, not a restart), it is **left alone** and reported once as an
+error event: closing its drives would write into the legs. The legs
+refuse its writes (fenced, stormblock#6), and it can let go only once
+stormblock#296 lands.
 
 **Automatic re-head (#14)** is opt-in and **off by default**
 (`[recovery] rehead`, owner 2026-10-06). Turn it on only once a lost head
 is fenced through cluster membership or quorum, not merely unreachable
 from stormstorage. A partitioned head that keeps writing to the legs is
-split-brain, and until stormblock#6 a fence stops nothing at the legs.
+split-brain: a fence cuts it off at the legs (stormblock#6), but only
+once someone fences it.
 When it is on, the reconciler re-heads a volume once its head has failed
 for `rehead_after_secs` (default 120). It fences at the volume's epoch
 and promotes a surviving leg that reads `in_sync`, the same evidence
@@ -316,17 +324,24 @@ needs no special attach: the served volume is an NVMe/TCP namespace that
 both hosts can reach. With per-host subsystems for consumers (#53) the target's host
 is admitted for the window's length.
 
+## Verified
+
+`SC_TOOLS=stormblock sc-build scripts/e2e-replication.sh` (three stormblock
+20.0.0 engines and two consumer engines, closed and admin-gated) passed
+on 98afef6, 2026-10-13. It covers sync state, prestage at class `low`,
+head loss, the fence CAS with the legs fenced, enforcement at the leg,
+promote (same array, adopted served volume, a consumer reads its data
+back through the new head), re-leg under the new head, the stale head
+reaped, dual-attach and delete. Everything is also tested against mock
+engines (`tests/replication.rs`) and in unit tests (`src/head.rs`).
+
 ## Not done
 
-- The live run on real engines: the e2e scripts wait on stormcentral#131
-  (a stormblock binary for an sc-build job). Everything above is tested
-  against mock engines (`tests/replication.rs`) and in unit tests
-  (`src/head.rs`).
-- Enforcement at the leg: stormblock#6, to the contract above (legs
-  already carry the head's `host_nqn`, #27).
+- Sync evidence from superblocks while the head is gone (#48) waits on
+  stormblock#309: until then a lost head's legs read `detached`.
 - Handover from a live head (planned promote, dual-attach commit):
   stormblock#296.
 - Automatic re-head (#14) is in, opt-in; turning it on waits on fencing
-  through cluster membership (stormcluster) and stormblock#6.
+  through cluster membership (stormcluster).
 - Async catch-up legs for the backup tier: not started. Today every leg
   is a synchronous RAID1 member.

@@ -470,8 +470,10 @@ stormview components feed on **:9093**.
   superblocks. `prestage` replaces a slave at the volume's
   `bandwidth_class`. Dual-attach windows commit by fence + promote.
   A handover from a head that is still alive waits on stormblock#296.
-  Enforcement at the legs is stormblock#6, to the contract in
-  [docs/replication.md](docs/replication.md).
+  The legs enforce the fence (stormblock#6): a fence revokes the old
+  head's attachments and a stale attach is a 412, to the contract in
+  [docs/replication.md](docs/replication.md). Live-verified against
+  stormblock 20.0.0 with `scripts/e2e-replication.sh` (2026-10-13).
 
 - **Point-in-time backups to the backup tier (#46).** The owner chose
   backups over an async replica on 2026-10-09: they undo the primary's
@@ -719,7 +721,7 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
   also created with `placement: {array_id}`. Every attach sends
   `transport: nvme_tcp`; a leg attach also sends the head's `host_nqn`
   (#27, stormblock#210) and the leg's `epoch` once it has been fenced
-  (stormblock#6). `/v1` prestage, promote and dual-attach
+  (stormblock#6 refuses a stale one). `/v1` prestage, promote and dual-attach
   are never called.
 - `/api/v1`: `GET slabs`, `GET slabs/{id}/slots`, `GET volumes`,
   `POST|DELETE volumes/{id}/attach` and `DELETE volumes/{id}` (a served
@@ -880,7 +882,7 @@ snippet adds a `[process.ui]` block with `proxy` pointing at the UI and
   says whether it is implemented or design only.
 - [docs/replication.md](docs/replication.md): replication on the RAID
   head (#33): sync state, fence, promote, prestage, dual-attach, and the
-  leg attach contract for stormblock#6.
+  leg attach contract stormblock#6 built.
 - [docs/presentation.md](docs/presentation.md): an 11-slide overview deck.
   It is Marp Markdown: `npx @marp-team/marp-cli docs/presentation.md`.
 - [CLAUDE.md](CLAUDE.md): work plan, status and project rules.
@@ -894,10 +896,9 @@ done. The open work:
 
 - #8: the test suites are in and run on C2NR0Q2; see the issue for the
   latest run;
-- #33: replication on the RAID head is in the code (sync state, fence,
-  promote, prestage, dual-attach; mock-engine tested). It has not run on
-  real engines yet (a job can now, `SC_TOOLS=stormblock`); enforcement at the legs is stormblock#6, a handover
-  from a live head stormblock#296;
+- stormblock#296: a handover from a live RAID head (planned promote,
+  dual-attach commit, a tier migration's head leg). Failover from a lost
+  head is done and live-verified (#33);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
 - #34: HA state in a fleet fastetcd is in (mock-gateway tested); the

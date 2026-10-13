@@ -333,8 +333,10 @@ not in the engine. stormstorage provides `/v1`'s replica surface over
 DistVolumes: sync state read from the head's array, a per-volume epoch
 with a CAS fence carried down to every leg's `/v1` epoch, promote,
 prestage with a bandwidth class, and dual-attach windows. The engine
-refuses a fenced head's leg attaches under stormblock#6, to the contract
-in [replication.md](replication.md). The backup tier (#46) holds
+refuses a fenced head's leg attaches and revokes its attachments
+(stormblock#6, done), to the contract in [replication.md](replication.md).
+Live-verified against stormblock 20.0.0 (`scripts/e2e-replication.sh`,
+2026-10-13). The backup tier (#46) holds
 point-in-time backups (owner decision B, 2026-10-09). See
 [async-legs.md](async-legs.md); the copy waits on stormblock#399/#400.
 
@@ -588,10 +590,11 @@ stormconsole#53).
    call with a back-off for an engine that refuses it (#38).
 3. **Rebalance + tier migration** (#30, #31, #32): in. Moving the
    head's own leg waits on a live handover (stormblock#296).
-4. **Replication on the RAID head** (#33, in the code): sync state,
-   fence, promote, prestage, dual-attach over DistVolumes (owner,
-   stormblock#179 option b); enforcement at the legs is stormblock#6,
-   handover from a live head stormblock#296. Point-in-time backups (#46):
+4. **Replication on the RAID head** (#33, *done*, live-verified
+   2026-10-13): sync state, fence, promote, prestage, dual-attach over
+   DistVolumes (owner, stormblock#179 option b); enforcement at the legs
+   is in the engine (stormblock#6); handover from a live head waits on
+   stormblock#296. Point-in-time backups (#46):
    built; the copy waits on stormblock#399/#400.
 5. **HA** (#34): in — state in a fleet fastetcd, one leader elected by
    lease, followers forward writes. The fleet fastetcd is stormcluster#55.

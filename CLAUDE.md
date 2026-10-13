@@ -412,9 +412,9 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       sharing superblocks/slabs). sc-build passes (e64ad72: 55 unit).
 - [x] Contract for stormblock#6 and the stormblock-csi#29 answer (read
       from stormstorage) posted on #33 / stormblock#6 / stormblock-csi#29.
-- [ ] Live run on real engines: waits on stormcentral#131 like #1/#2;
-      enforcement needs stormblock#6 (#27 done); live handover needs
-      stormblock#296. Async backup legs split to #46: design pass in docs/async-legs.md
+- [x] Live run on real engines — DONE 2026-10-13 (was: waited on
+      stormcentral#131; enforcement stormblock#6, now closed). Live handover
+      still needs stormblock#296. Async backup legs split to #46: design pass in docs/async-legs.md
       (2026-10-06), waits on the owner's choice (point-in-time B / async
       replica A or C / both).
       **2026-10-13: live run** (stormblock#6 closed, SC_TOOLS=stormblock).
@@ -430,6 +430,13 @@ Design and contracts: docs/replication.md. Code: `src/head.rs`.
       Out of scope: promote off a live head (stormblock#296), superblock
       sync evidence (stormblock#309, still open: a lost head reads
       detached).
+      Run 1: all stormstorage steps worked; harness wait bug, and the old
+      head kept its `/v1` record of `rv-mirror` after a restart (nothing
+      behind it, reads healthy → stormblock#419). Fix 98afef6: the
+      stale-head reap deletes that record (`StaleHead.served_v1`, guarded:
+      same id + mirror name + engine holds no such volume). Run 3 on
+      98afef6 PASSED; sc-build on 0d72448 (mock lists /v1) passes: 88
+      unit, replication 22/22, clippy -D warnings. Docs: #57 done with it.
 
 ### Phase 5: HA — fleet fastetcd (#34) — DONE 2026-10-10
 Owner (2026-10-09, master's recommendation): **(a) a fleet fastetcd**
@@ -635,7 +642,8 @@ fence at the current epoch, promote onto that leg. Failure: cooldown
 start when on. Pure `rehead_plan` + unit tests; tests/replication.rs:
 off by default does nothing; on + slave in sync (superblock) → re-headed.
 Done: c4d4a88 (+ dc897ef docs); sc-build passes (68 unit, replication 8/8).
-Turning it on waits on fencing through cluster membership + stormblock#6.
+Turning it on waits on fencing through cluster membership (stormblock#6,
+enforcement at the legs, is done).
 
 ### Admin credential for the engine's destructive verbs (#47, P2) — DONE 2026-10-06
 stormblock#274: array create/delete, member add/fail/replace/remove, and

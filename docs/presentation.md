@@ -150,9 +150,9 @@ The source is `src/registry.rs`, `src/placement.rs`,
 
 | | Issue |
 |---|---|
-| Live runs of re-leg and serving (need a built stormblock in the job) | #1, #2 → stormcentral#131 |
-| Native `/v1` replication (prestage/fence/promote) | #33 (phase 4) |
-| HA state in StormKV/fastetcd | #34 (phase 5) |
+| Handover from a live RAID head (planned promote, dual-attach commit) | stormblock#296 |
+| Sync evidence from leg superblocks while the head is gone | #48 → stormblock#309 |
+| HA on a real fleet fastetcd (code is in) | #34 → stormcluster#55 |
 
 ---
 
@@ -236,11 +236,12 @@ write without the token when `api_token` is set.
   suites `/test short|medium|long` (`test/`) have not passed on a test
   machine yet.
 - **Biggest risks today:**
-  - re-leg and serving are not yet verified on live engines
-    (stormcentral#131);
-  - serving to named consumer hosts (#51) is verified only against mock
-    engines so far.
-- **Next:** the live runs; turning on automatic re-head once a lost head
+  - re-leg (#1), serving to named consumer hosts (#2, #51) and
+    replication on the head (#33) passed live against stormblock 20.0.0
+    engines (2026-10-13). A handover from a live head still waits on
+    stormblock#296;
+  - none of it has run on a node's fleet yet.
+- **Next:** a release on the test machines; turning on automatic re-head once a lost head
   is fenced by cluster membership (#14 is in, off by default).
 
 Docs: `README.md` (reference), `docs/architecture.md` (design),

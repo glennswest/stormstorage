@@ -142,8 +142,8 @@ pub struct Leg {
     #[serde(default)]
     pub member_uuid: Option<String>,
     /// The leg volume's own /v1 epoch on its engine after the last fence
-    /// (#33). The head presents it on the leg attach once stormblock#6
-    /// enforces it.
+    /// (#33). Every leg attach presents it; the engine refuses a stale one
+    /// (stormblock#6).
     #[serde(default)]
     pub epoch: Option<u64>,
 }

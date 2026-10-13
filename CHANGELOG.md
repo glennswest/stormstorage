@@ -6,6 +6,7 @@
 ### 2026-10-13 (#33)
 - **fix:** A former head reaped after a promote (it restarted without the array) also loses its `/v1` record of the served volume. The engine keeps that record across a restart with nothing behind it, and reports it `healthy`. Before, it stayed on the old head for ever: found by the first live run of `scripts/e2e-replication.sh`. The record is deleted only when it is the served volume's (same id, `<name>-mirror`) and the engine holds no volume of that id. `StaleHead.served_v1` records the id at promote.
 - **fix:** The "former head still holds the array" event no longer says the legs refuse its writes only once stormblock#6 lands: they do now.
+- **docs:** Replication on the head (#33) is live-verified: README, architecture, replication.md (a new *Verified* section), the deck and the work plan say so. They no longer say leg enforcement waits on stormblock#6, which is done (#57).
 - **test:** `scripts/e2e-replication.sh` runs replication on the RAID head against real engines (`SC_TOOLS=stormblock`): sync state, prestage at class low, head loss, fence (CAS, legs fenced), leg enforcement (stormblock#6: the old head's attachment revoked, stale attaches 412), promote (same array, adopted served volume, a consumer reads its data back), re-leg under the new head, stale-head reap, dual-attach, delete.
 
 ### 2026-10-13 (#2)
