@@ -846,7 +846,12 @@ stormd supervises it on the node with
 `--config /etc/stormstorage/stormstorage.toml`. The shipped config sets
 `listen_addr = "0.0.0.0:9093"`, `data_dir = "/var/lib/stormstorage"` and
 `[local] token_file = "/run/stormblock/engine/api_token"`, the engine's
-minted token. stormd's unit mounts the host's `/run/stormblock` read-only.
+minted token, and `[kubernetes] token_file =
+"/data/stormcert/stormstorage.token"` with `ca_file =
+"/data/stormcert/ca.crt"` (the storage-admin identity for the engine's
+array verbs, and the PV/PVC reads). stormd's unit mounts the host's
+`/run/stormblock` and the tier-0 `stormcertdata` volume at `/data/stormcert`
+read-only.
 A stock node has no static nodes or pools. `[local]` is on by default, so
 it adopts its own engine, and that engine's cluster peers, once the engine
 answers. The health check is `/api/v1/health` on 9093, and the node

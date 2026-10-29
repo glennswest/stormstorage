@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-28 (docs refresh)
+- **docs:** Refreshed from the code since 2026-10-16: the only change is a research note, so no behavior docs moved. README's shipped config now lists `[kubernetes] token_file`/`ca_file` and the `/data/stormcert` mount (checked against `stormcentral component export`, #90). CLAUDE.md no longer says builds need `SC_BUILD_VM=1` or wait on stormcentral#521 (#66).
+
 ### 2026-10-13 (#8)
 - **test:** The node suites serve every volume they create to a test consumer host NQN (`hosts` on create) and read that host's coordinates. Short run b231ed5133 on C2NR0Q2 (release 12.14) failed `single-leg-lifecycle`: the node's closed stormblock refused the shared-subsystem publish (stormblock#210). Its other three checks now pass with #42's token fix.
 - **test:** At 33a0048 the node suites pass on a test machine (pvetest1): short 7270fc5af0 4/4, medium b89965dcb1 13 pass, 0 fail, 1 skip (RAID1 needs two storage nodes). #8 is done.
