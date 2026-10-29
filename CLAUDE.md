@@ -909,7 +909,7 @@ clippy -D warnings clean). Re-verified on 85b18b7 (2026-10-13);
 closed. Golden golden-stormstorage-7d586161ae40 (stormcos#428); live proof
 is server2's reinstall over the bad file.
 
-### Expand a volume (#73, P3) — in progress 2026-10-29
+### Expand a volume (#73, P3) — DONE 2026-10-29
 stormblock v23.9.0 (#318): `POST /api/v1/arrays/{id}/grow` (admin, no body)
 after every leg grew on its own engine; 409 while a leg has not grown, a
 member is out, a rebuild runs; `slab_short` when the dedicated slab
@@ -928,6 +928,10 @@ kept); served volume `/v1/volumes/{id}/expand` (adopted:
 leg only. Clone: its own served volume, refused past the parent's size.
 A backup target smaller than its volume is grown before the next ship.
 Tests: tests/replication.rs mock engine (leg expand, grow, resize).
+Done: 133534e (+ 584718f docs); sc-build passes (`--locked`, 92 unit incl.
+4 expand, replication 23/23, clippy -D warnings). Not run on real engines
+(a head over NVMe/TCP legs grown on their engines is unproven on metal on
+stormblock's side too).
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
