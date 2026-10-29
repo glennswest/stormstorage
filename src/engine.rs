@@ -672,6 +672,48 @@ impl Engine {
         Ok(())
     }
 
+    /// POST /v1/volumes/{id}/expand {size_bytes} (#73): grow a /v1 volume
+    /// (a leg, a served mirror, a clone). Grow only: a smaller size is
+    /// answered unchanged.
+    pub async fn expand_v1(&self, id: &str, size_bytes: u64) -> anyhow::Result<Value> {
+        self.v1_post(&format!("/v1/volumes/{id}/expand"), serde_json::json!({ "size_bytes": size_bytes }))
+            .await
+    }
+
+    /// PATCH /api/v1/volumes/{id}/resize {new_size} (#73): grow an engine
+    /// volume with no /v1 record — a served mirror adopted by a promote.
+    pub async fn resize_any(&self, id: &str, size_bytes: u64) -> anyhow::Result<Value> {
+        let path = format!("/api/v1/volumes/{id}/resize");
+        let resp = self
+            .req(reqwest::Method::PATCH, &path)
+            .json(&serde_json::json!({ "new_size": size_bytes.to_string() }))
+            .send()
+            .await?;
+        check_refused(&resp, &path)?;
+        Self::read_post(&path, resp).await
+    }
+
+    /// The size an engine volume serves, by engine id or name (GET
+    /// /api/v1/volumes/{id}, `virtual_size_bytes`): /v1's expand answers
+    /// the new size even when the engine could not grow the volume.
+    pub async fn served_size(&self, id_or_name: &str) -> anyhow::Result<u64> {
+        let path = format!("/api/v1/volumes/{id_or_name}");
+        let v: Value = self.get(&path).send().await?.error_for_status()?.json().await?;
+        v.get("virtual_size_bytes")
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("{path}: no virtual_size_bytes in {v}"))
+    }
+
+    /// POST /api/v1/arrays/{id}/grow (stormblock#318, v23.9.0): take the
+    /// room every member grew into and grow the dedicated slab. An admin
+    /// verb. 409 (typed, `status_of`) while a member has not grown, is out,
+    /// or a rebuild runs — and when there is nothing left to grow into.
+    pub async fn grow_array(&self, id: &str) -> anyhow::Result<Value> {
+        let path = format!("/api/v1/arrays/{id}/grow");
+        let resp = self.admin_send(reqwest::Method::POST, &path, None).await?;
+        Self::read_post(&path, resp).await
+    }
+
     /// DELETE /api/v1/arrays/{id}?keep_superblocks=true — forget an array
     /// without writing to its members: for a former head, whose members
     /// are now another head's (#33).

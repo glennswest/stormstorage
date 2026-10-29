@@ -254,6 +254,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/volumes/{name}/promote", post(promote_volume))
         .route("/api/v1/volumes/{name}/prestage", post(prestage_volume))
         .route("/api/v1/volumes/{name}/bandwidth-class", put(put_bandwidth_class))
+        .route("/api/v1/volumes/{name}/expand", post(expand_volume))
         .route("/api/v1/volumes/{name}/dual-attach", post(open_dual_attach))
         .route("/api/v1/volumes/{name}/dual-attach/close", post(close_dual_attach))
         .route("/api/v1/snapshots", post(snapshots::create_snapshot).get(snapshots::list_snapshots))
@@ -859,6 +860,7 @@ async fn create_volume(
         dual_attach: None,
         migration: None,
         clone_of: None,
+        expanding: None,
     };
     {
         let mut fed = s.fed.write().await;
@@ -989,6 +991,7 @@ async fn volume_replicas(State(s): State<Arc<AppState>>, Path(name): Path<String
         "replicas": reps,
         "bandwidth_class": v.bandwidth_class,
         "extent_size_bytes": v.extent_size_bytes,
+        "expanding": v.expanding,
         "head": v.head,
         "dual_attach": v.dual_attach,
         "sync_read_at": reading.map(|r| r.read_at),
@@ -1073,6 +1076,23 @@ async fn put_bandwidth_class(
     Json(b): Json<BandwidthClassBody>,
 ) -> Response {
     match crate::head::set_bandwidth_class(&s, &name, b.bandwidth_class).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => refusal(r),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExpandBody {
+    size_bytes: u64,
+}
+
+/// Grow a volume (#73): its legs, the head's array and the served volume.
+async fn expand_volume(
+    State(s): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Json(b): Json<ExpandBody>,
+) -> Response {
+    match crate::expand::expand(&s, &name, b.size_bytes).await {
         Ok(v) => Json(v).into_response(),
         Err(r) => refusal(r),
     }

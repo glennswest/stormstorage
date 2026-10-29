@@ -496,6 +496,7 @@ pub(super) async fn create_clone(
         dual_attach: None,
         migration: None,
         clone_of: Some(CloneOf { source: source.clone(), parent: parent.name.clone() }),
+        expanding: None,
         ..parent
     };
     {

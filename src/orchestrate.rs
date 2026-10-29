@@ -465,7 +465,7 @@ async fn build_replacement(
             }
             None => {
                 let cands = move_target_candidates(&fed, rungs, &vol, from);
-                crate::placement::plan(&cands, rungs, &vol.rung, 1, vol.size_bytes, state.config.placement.io_weight)
+                crate::placement::plan(&cands, rungs, &vol.rung, 1, vol.leg_bytes(), state.config.placement.io_weight)
                     .map_err(|e| anyhow::anyhow!("no target: {e}"))?
                     .remove(0)
             }
@@ -483,7 +483,7 @@ async fn build_replacement(
     // New leg: volume, export, head drive, member. Undo what was done if a
     // later step fails, so a failed attempt leaves nothing behind.
     let created = target_engine
-        .create_volume(&vol.name, vol.size_bytes, vol.extent_size_bytes)
+        .create_volume(&vol.name, vol.leg_bytes(), vol.extent_size_bytes)
         .await
         .map_err(|e| anyhow::anyhow!("{target}: create leg: {e:#}"))?;
     let vid = created
@@ -1502,7 +1502,7 @@ async fn served_local_id(at: &ServeAt, vol: &DistVolume, volume_id: &str, adopte
 }
 
 /// The served volume's name on its engine: the mirror, or the only leg.
-fn served_name(vol: &DistVolume) -> String {
+pub(crate) fn served_name(vol: &DistVolume) -> String {
     match vol.assembly {
         AssemblyState::SingleLeg | AssemblyState::Clone => vol.name.clone(),
         _ => format!("{}{MIRROR_SUFFIX}", vol.name),
@@ -1618,7 +1618,7 @@ async fn publish_inner(
             let array_id = at.array_id.as_deref().expect("assembled");
             let created = at
                 .engine
-                .create_pinned_volume(&format!("{name}{MIRROR_SUFFIX}"), vol.size_bytes, array_id)
+                .create_pinned_volume(&format!("{name}{MIRROR_SUFFIX}"), vol.leg_bytes(), array_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))?;
             let id = created
@@ -2229,6 +2229,7 @@ mod tests {
             dual_attach: None,
             migration: None,
             clone_of: None,
+            expanding: None,
         }
     }
 

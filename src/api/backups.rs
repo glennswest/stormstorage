@@ -282,6 +282,7 @@ pub(super) async fn restore(
         dual_attach: None,
         migration: None,
         clone_of: None,
+        expanding: None,
     };
     {
         let mut fed = s.fed.write().await;

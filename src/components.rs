@@ -649,6 +649,7 @@ mod tests {
             dual_attach: None,
             migration: None,
             clone_of: None,
+            expanding: None,
         };
         let c = volume_component(&v, None);
         assert_eq!(c.health, Health::Ok);

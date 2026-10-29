@@ -33,6 +33,22 @@ use stormstorage::model::FedState;
 struct Disks {
     superblocks: BTreeMap<String, String>,
     slabs: BTreeMap<String, Vec<(String, String)>>,
+    /// Each /v1 volume's size by "<node>/<nsid>" (#73): what a head reads
+    /// of a member when it grows the array.
+    sizes: BTreeMap<String, u64>,
+}
+
+/// The "<node>/<nsid>" a /v1 volume id is known by (its nsid is the id's
+/// trailing number, as `v1_attach` serves it).
+fn size_key(node: &str, id: &str) -> String {
+    format!("{node}/{}", id.rsplit('-').next().unwrap())
+}
+
+/// The "<node>/<nsid>" of a member drive's `nvme-tcp://…/<nqn>?nsid=N` URI.
+fn member_key(path: &str) -> String {
+    let p = disk_of(path);
+    let (nqn, q) = p.rsplit('/').next().unwrap().split_once('?').unwrap();
+    format!("{}/{}", nqn.rsplit(':').next().unwrap(), q.trim_start_matches("nsid="))
 }
 
 struct Member {
@@ -76,6 +92,14 @@ struct Mock {
     ship: Option<u32>,
     /// Ship job id → reads left before `done`.
     jobs: BTreeMap<String, u32>,
+    /// Array id → capacity_bytes (#73).
+    array_bytes: BTreeMap<String, u64>,
+    /// `arrays/{id}/grow` answers `slab_short` (a slab made before
+    /// stormblock#318).
+    slab_short: bool,
+    /// `/v1/volumes/{id}/expand` answers without growing (as stormblock's
+    /// does when its backing resize fails).
+    expand_noop: bool,
     log: Vec<String>,
 }
 
@@ -131,6 +155,7 @@ async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Jso
         };
         m.log.push(format!("clone {name} from {src}"));
         let id = add_engine_volume(&s, &mut m, &name, pin);
+        s.disks.lock().unwrap().sizes.insert(size_key(&node, &id), b["size_bytes"].as_u64().unwrap_or(0));
         return (StatusCode::OK, Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]})));
     }
     let pin = b["placement"]["array_id"].as_str().map(|x| x.to_string());
@@ -147,9 +172,11 @@ async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Jso
         m.next += 1;
         let id = format!("{node}-vol-{}", m.next);
         m.volumes.insert(id.clone(), (name.clone(), pin.clone(), 1));
+        let mut disks = s.disks.lock().unwrap();
         if let Some(a) = &pin {
-            s.disks.lock().unwrap().slabs.entry(a.clone()).or_default().push((id.clone(), name.clone()));
+            disks.slabs.entry(a.clone()).or_default().push((id.clone(), name.clone()));
         }
+        disks.sizes.insert(size_key(&node, &id), b["size_bytes"].as_u64().unwrap_or(0));
         id
     });
     (StatusCode::OK, Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]})))
@@ -350,6 +377,11 @@ async fn create_array(State(s): State<S>, Json(b): Json<Value>) -> Json<Value> {
         }
     }
     let out = array_json(&id, &members);
+    let cap = {
+        let disks = s.disks.lock().unwrap();
+        members.iter().map(|x| disks.sizes.get(&member_key(&x.path)).copied().unwrap_or(0)).min().unwrap_or(0)
+    };
+    m.array_bytes.insert(id.clone(), cap.saturating_sub(1 << 20));
     m.arrays.insert(id.clone(), members);
     m.log.push(format!("array {id}"));
     Json(out)
@@ -376,7 +408,11 @@ async fn get_array(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, J
         }
     }
     match m.arrays.get(&id) {
-        Some(ms) => (StatusCode::OK, Json(array_json(&id, ms))),
+        Some(ms) => {
+            let mut a = array_json(&id, ms);
+            a["capacity_bytes"] = json!(m.array_bytes.get(&id).copied().unwrap_or(0));
+            (StatusCode::OK, Json(a))
+        }
         None => (StatusCode::NOT_FOUND, Json(json!({}))),
     }
 }
@@ -491,6 +527,70 @@ async fn any_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+/// `/v1/volumes/{id}/expand` (#73): grow only.
+async fn v1_expand(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    let Some(name) = m.volumes.get(&id).map(|v| v.0.clone()) else {
+        return (StatusCode::NOT_FOUND, Json(json!({"message": id})));
+    };
+    let to = b["size_bytes"].as_u64().unwrap();
+    m.log.push(format!("expand {id} {to}"));
+    let key = size_key(&m.node, &id);
+    let mut disks = s.disks.lock().unwrap();
+    let size = disks.sizes.entry(key).or_default();
+    if !m.expand_noop && to > *size {
+        *size = to;
+    }
+    (StatusCode::OK, Json(json!({"id": id, "name": name, "size_bytes": to})))
+}
+
+/// `PATCH /api/v1/volumes/{id}/resize {new_size}`: a volume with no /v1
+/// record (adopted by a promote).
+async fn any_resize(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    if find_engine_volume(&m, &id).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({})));
+    }
+    let to: u64 = b["new_size"].as_str().unwrap().parse().unwrap();
+    m.log.push(format!("resize {id} {to}"));
+    let key = size_key(&m.node, &id);
+    s.disks.lock().unwrap().sizes.insert(key, to);
+    (StatusCode::OK, Json(json!({"id": id, "virtual_size_bytes": to})))
+}
+
+/// `GET /api/v1/volumes/{id}` by id or name: its served size.
+async fn any_get(State(s): State<S>, Path(key): Path<String>) -> (StatusCode, Json<Value>) {
+    let m = s.m.lock().unwrap();
+    let Some((id, _)) = find_engine_volume(&m, &key) else {
+        return (StatusCode::NOT_FOUND, Json(json!({})));
+    };
+    let size = s.disks.lock().unwrap().sizes.get(&size_key(&m.node, &id)).copied().unwrap_or(0);
+    (StatusCode::OK, Json(json!({"id": id, "virtual_size_bytes": size})))
+}
+
+/// `POST /api/v1/arrays/{id}/grow` (stormblock#318): up to the smallest
+/// member, 409 while there is nothing to grow into.
+async fn grow_array(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, Json<Value>) {
+    let mut m = s.m.lock().unwrap();
+    let Some(ms) = m.arrays.get(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({})));
+    };
+    let room = {
+        let disks = s.disks.lock().unwrap();
+        ms.iter().map(|x| disks.sizes.get(&member_key(&x.path)).copied().unwrap_or(0)).min().unwrap_or(0)
+    }
+    .saturating_sub(1 << 20);
+    let was = m.array_bytes.get(&id).copied().unwrap_or(0);
+    m.log.push(format!("grow {id}"));
+    if room <= was {
+        let msg = format!("array {id} has nothing to grow into");
+        return (StatusCode::CONFLICT, Json(json!({"error": msg, "message": msg})));
+    }
+    m.array_bytes.insert(id.clone(), room);
+    let short = m.slab_short.then_some("formatted with no room to grow (before #318)");
+    (StatusCode::OK, Json(json!({"id": id, "grown": true, "was": was, "capacity_bytes": room, "slab_grown": !m.slab_short, "slab_short": short})))
+}
+
 async fn capacity(State(s): State<S>) -> Json<Value> {
     let free = s.m.lock().unwrap().free.unwrap_or(50u64 << 30);
     Json(json!({"total_bytes": free.max(100u64 << 30), "free_bytes": free}))
@@ -504,6 +604,7 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
         .route("/v1/volumes", get(v1_list).post(v1_create))
         .route("/v1/volumes/{id}", get(v1_get).delete(v1_delete))
         .route("/v1/volumes/{id}/attach", post(v1_attach))
+        .route("/v1/volumes/{id}/expand", post(v1_expand))
         .route("/v1/volumes/{id}/detach", post(v1_detach))
         .route("/v1/volumes/{id}/fence", post(v1_fence))
         .route("/v1/volumes/{id}/raid-superblock", get(v1_superblock))
@@ -519,10 +620,12 @@ async fn mock_engine(node: &str, disks: Arc<Mutex<Disks>>) -> (String, Arc<Mutex
         .route("/api/v1/arrays/assemble", post(assemble))
         .route("/api/v1/arrays/{id}", get(get_array).delete(delete_array))
         .route("/api/v1/arrays/{id}/rebuild", put(set_rate))
+        .route("/api/v1/arrays/{id}/grow", post(grow_array))
         .route("/api/v1/arrays/{id}/members", post(add_member))
         .route("/api/v1/arrays/{id}/members/{m}", delete(remove_member))
         .route("/api/v1/volumes", get(engine_volumes))
-        .route("/api/v1/volumes/{id}", delete(any_delete))
+        .route("/api/v1/volumes/{id}", get(any_get).delete(any_delete))
+        .route("/api/v1/volumes/{id}/resize", axum::routing::patch(any_resize))
         .route("/api/v1/volumes/{id}/attach", post(any_attach).delete(any_detach))
         .with_state(s);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1671,4 +1774,102 @@ async fn backups_wait_for_the_engine_and_refuse_clones() {
     let (st, _) = delete_status(format!("{api}/api/v1/volumes/wv/backup")).await;
     assert_eq!(st, 200);
     assert!(state.fed.read().await.backups["wv"].policy.is_none());
+}
+
+/// #73: an expand grows every leg, then the head's array and its slab,
+/// then the served mirror; a leg the engine did not grow stops it at the
+/// array (409, recorded) and the same call resumes it; a slab too old to
+/// grow is refused and remembered; a single leg grows its leg; a clone
+/// grows only as far as its parent.
+#[tokio::test]
+async fn expand_grows_legs_then_the_array_then_the_served_volume() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, other, array) = create_mirror(&api, "ex").await;
+    let (gib, two) = (1u64 << 30, 2u64 << 30);
+    let before = mocks[&head].lock().unwrap().array_bytes[&array];
+    assert_eq!(before, gib - (1 << 20));
+    let (st, v) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "exc", "size_bytes": gib, "source": {"kind": "volume", "id": "ex"}}),
+    )
+    .await;
+    assert_eq!(st, 200, "{v}");
+
+    // A leg that answers without growing: the array grow refuses.
+    mocks[&other].lock().unwrap().expand_noop = true;
+    let (st, v) = call(format!("{api}/api/v1/volumes/ex/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 409, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("grow array"), "{v}");
+    {
+        let fed = state.fed.read().await;
+        let vol = &fed.volumes["ex"];
+        assert_eq!(vol.size_bytes, gib, "not moved until all three grew");
+        let x = vol.expanding.as_ref().unwrap();
+        assert_eq!((x.to_bytes, x.array_bytes_before, x.array_grown), (two, Some(before), false));
+        assert!(x.message.is_some());
+    }
+    assert_eq!(mocks[&head].lock().unwrap().array_bytes[&array], before);
+
+    // Fixed: the same call resumes.
+    mocks[&other].lock().unwrap().expand_noop = false;
+    let (st, v) = call(format!("{api}/api/v1/volumes/ex/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["size_bytes"], two, "{v}");
+    assert!(v.get("expanding").is_none(), "{v}");
+    assert_eq!(mocks[&head].lock().unwrap().array_bytes[&array], two - (1 << 20));
+    let mirror = state.fed.read().await.volumes["ex"].export.volume_id.clone().unwrap();
+    assert!(mocks[&head].lock().unwrap().log.contains(&format!("expand {mirror} {two}")));
+    assert_eq!(get_json(format!("{api}/api/v1/volumes/ex/replicas")).await["size_bytes"], two);
+
+    // Grow only; the same size again is the record, with no engine call.
+    let (st, _) = call(format!("{api}/api/v1/volumes/ex/expand"), json!({"size_bytes": gib})).await;
+    assert_eq!(st, 409);
+    let grows = |m: &Mocks| m[&head].lock().unwrap().log.iter().filter(|l| l.starts_with("grow ")).count();
+    let n = grows(&mocks);
+    let (st, v) = call(format!("{api}/api/v1/volumes/ex/expand"), json!({"size_bytes": two})).await;
+    assert_eq!((st, v["size_bytes"].as_u64()), (200, Some(two)));
+    assert_eq!(grows(&mocks), n);
+    let (st, _) = call(format!("{api}/api/v1/volumes/nope/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 404);
+
+    // A clone lives on ex's array: up to ex's size, not past it.
+    let (st, v) = call(format!("{api}/api/v1/volumes/exc/expand"), json!({"size_bytes": 3 * gib})).await;
+    assert_eq!(st, 409, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("expand ex first"), "{v}");
+    let (st, v) = call(format!("{api}/api/v1/volumes/exc/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["size_bytes"], two);
+
+    // A slab from before stormblock#318: refused, and remembered.
+    let (head2, _, _) = create_mirror(&api, "old").await;
+    mocks[&head2].lock().unwrap().slab_short = true;
+    let (st, v) = call(format!("{api}/api/v1/volumes/old/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 409, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("new array"), "{v}");
+    let n = mocks[&head2].lock().unwrap().log.iter().filter(|l| l.starts_with("grow ")).count();
+    let (st, _) = call(format!("{api}/api/v1/volumes/old/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 409);
+    assert_eq!(mocks[&head2].lock().unwrap().log.iter().filter(|l| l.starts_with("grow ")).count(), n);
+    {
+        let fed = state.fed.read().await;
+        assert_eq!(fed.volumes["old"].size_bytes, gib);
+        assert!(fed.volumes["old"].expanding.as_ref().unwrap().slab_short.is_some());
+    }
+
+    // A single leg is its served volume.
+    let (st, v) = call(format!("{api}/api/v1/volumes"), json!({"name": "one", "size_bytes": gib, "replicas": 1})).await;
+    assert_eq!(st, 200, "{v}");
+    let (st, v) = call(format!("{api}/api/v1/volumes/one/expand"), json!({"size_bytes": two})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["size_bytes"], two);
+
+    // A lost leg: refused before any engine is asked.
+    {
+        let mut fed = state.fed.write().await;
+        let v = fed.volumes.get_mut("ex").unwrap();
+        v.legs[1].state = stormstorage::model::LegState::Lost;
+        v.assembly = stormstorage::model::AssemblyState::Degraded;
+    }
+    let (st, v) = call(format!("{api}/api/v1/volumes/ex/expand"), json!({"size_bytes": 3 * gib})).await;
+    assert_eq!(st, 409, "{v}");
 }

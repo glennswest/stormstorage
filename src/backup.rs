@@ -149,11 +149,11 @@ pub async fn drop_snapshot(engine: &crate::engine::Engine, name: &str, id: Optio
 }
 
 async fn step(state: &Arc<AppState>, name: &str, now: SystemTime) -> anyhow::Result<()> {
-    let (b, at) = {
+    let (b, at, vol_bytes) = {
         let fed = state.fed.read().await;
         let Some(b) = fed.backups.get(name).cloned() else { return Ok(()) };
         let vol = fed.volumes.get(name).ok_or_else(|| anyhow::anyhow!("{name}: volume gone"))?;
-        (b, crate::orchestrate::data_at(state, &fed, vol)?)
+        (b, crate::orchestrate::data_at(state, &fed, vol)?, vol.size_bytes)
     };
     let policy = b.policy.clone().expect("filtered");
 
@@ -208,6 +208,18 @@ async fn step(state: &Arc<AppState>, name: &str, now: SystemTime) -> anyhow::Res
             r.attached_for = Some(for_node);
         })
         .await;
+        return Ok(());
+    }
+
+    // 3b. The volume was expanded (#73): its backup volume grows before
+    // the next ship, so a ship never runs past its end.
+    if b.job.is_none() && vol_bytes > b.size_bytes {
+        backup_engine
+            .expand_v1(&target, vol_bytes)
+            .await
+            .map_err(|e| anyhow::anyhow!("{node}: expand backup volume: {e:#}"))?;
+        update(state, name, |r| r.size_bytes = vol_bytes).await;
+        event(state, name, Severity::Info, format!("{name}: backup volume on {node} grown to {vol_bytes} bytes")).await;
         return Ok(());
     }
 

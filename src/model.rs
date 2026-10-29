@@ -415,6 +415,40 @@ pub struct DistVolume {
     /// array (or leg) holds its data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone_of: Option<CloneOf>,
+    /// An expand in flight (#73): legs, array and served volume are
+    /// growing to `to_bytes`; `size_bytes` moves once all three have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expanding: Option<Expansion>,
+}
+
+impl DistVolume {
+    /// The size a leg or served volume is made at: the volume's, or an
+    /// expand's target while one is in flight (#73), so a replacement leg
+    /// made mid-expand is not smaller than the legs already grown.
+    pub fn leg_bytes(&self) -> u64 {
+        self.expanding.as_ref().map_or(self.size_bytes, |x| x.to_bytes.max(self.size_bytes))
+    }
+}
+
+/// An expand of a volume (#73, stormblock#318), recorded before any
+/// engine is asked so a retry resumes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Expansion {
+    pub to_bytes: u64,
+    pub started_at: SystemTime,
+    /// The head array's capacity before its grow: a grow answered 409 with
+    /// the array above it had already grown (an earlier try).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array_bytes_before: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub array_grown: bool,
+    /// The engine's `slab_short`: the array's dedicated slab predates
+    /// stormblock#318 and cannot reach the new room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slab_short: Option<String>,
+    /// Why the last try stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// What a clone was made from (#49), in /v1's `source` shape.

@@ -1520,6 +1520,7 @@ mod tests {
             dual_attach: None,
             migration: None,
             clone_of: None,
+            expanding: None,
         }
     }
 
