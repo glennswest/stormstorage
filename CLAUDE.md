@@ -489,21 +489,41 @@ clippy `-D warnings` clean). Not run against a real fastetcd: the fleet
 fastetcd is stormcluster#55 (deployment), and nothing changes until a
 node's config says `backend = "etcd"`. #56 (one cluster instance) can use it.
 
-### Live migration of a VM's disks (#44, P3) — waits on stormblock#295
+### Live migration of a VM's disks (#44, P3) — in progress 2026-10-29
+stormblock v23.11.0 (#295) has the live mirror: `POST
+/api/v1/volumes/{id}/mirror {target: nvme-tcp URI}` on S (admin; S connects
+as the URI's `hostnqn=` if given), `GET /api/v1/volumes/{id}` → `mirror
+{target, state copying|synced|failed, bytes_total, bytes_remaining,
+message, started_at}`, `DELETE …/mirror` → `{stopped, flushed, state}`
+(switch-over and abort). A restart leaves it `failed`; nothing resumes.
 Owner (rustkube-node#159): RAID to the destination, let it catch up, then
-move the memory. A VM disk is a plain local volume on S, served over ublk
-to a running guest. Only S's engine sees its writes, so the mirror is
-stormblock's job (#295: `POST /api/v1/volumes/{id}/mirror {target
-nvme-tcp URI}`, state copying|synced|failed + bytes_remaining, DELETE =
-release/abort). Legs and RAID heads can't do it: they can't sit under an
-in-use volume, and a head on S isn't local to T. Plan here once #295 lands:
-`POST /api/v1/nodes/{S}/volumes/{id}/migrate {to: T}` (same-size thin
-volume on T, attached for S over nvme_tcp, start the mirror) →
-`GET …/migrations/{mid}` (starting|copying|synced|cut_over|completed|
-aborted|failed, bytes_remaining, T's volume for the kubelet) →
-`POST …/cutover` (stop the mirror, detach; S kept) → `…/complete` (retire
-S) or `…/abort` (delete T). Persisted, events, feed, auth, tests against a
-mock engine. Consumer: rustkube-node#40.
+move the memory. A VM disk is a plain local engine volume on S; it is not
+a distributed volume. Plan (`src/vmmigrate.rs`, `FedState.vm_migrations`
+by id `vm-<ms>-<n>`):
+- `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, name?}`: S's volume by
+  engine id or name (`GET /api/v1/volumes/{id}` on S: id, name, size,
+  `mirror` → 409 if already mirrored); one open migration per source
+  volume; T ≠ S, both healthy. T must not hold `name` (default S's volume
+  name) already → 409. Steps, each recorded: /v1 thin create on T → its
+  engine id → `attach_for_host` for `[legs] host_nqn` of S → mirror POST
+  on S with `drive_uri()` (carries `hostnqn=`). The first POST is all or
+  nothing (undo T, drop the record); a restart mid-way resumes (`starting`).
+- `GET /api/v1/migrations`, `GET /api/v1/migrations/{mid}`: the record
+  with a live read of S's mirror overlaid. The reconciler (recovery-active
+  instance) records copying/synced/failed + bytes; mirror gone → failed.
+- `POST …/{mid}/cutover` (guest paused): needs synced; DELETE mirror on S
+  must answer state synced + flushed, else failed (T not exact: abort).
+  Then withdraw S's host on T (retried by the reconciler if it fails) →
+  `cut_over`, answered with T's volume {node, name, id} for ublk on T.
+- `POST …/{mid}/complete` (from cut_over): delete S's volume → completed.
+- `POST …/{mid}/abort` (any state but completed): stop the mirror, withdraw,
+  delete T's volume → aborted; S untouched. Retried while `aborting`.
+- `POST …/{mid}/retry` (failed, before cut-over): forget S's mirror, start
+  it again (T's volume reused; the copy starts over).
+- Terminal records (completed/aborted) dropped after a day. Events, feed
+  (`vmmig:<mid>`), auth (mutations), docs. Tests: tests/vmmigrate.rs with
+  two mock engines.
+Consumer: rustkube-node#40.
 
 ### Head leg back from lost (#26, P1) — DONE 2026-10-06
 A head that misses `fail_threshold` polls marks its own leg lost and the
