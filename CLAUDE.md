@@ -909,6 +909,26 @@ clippy -D warnings clean). Re-verified on 85b18b7 (2026-10-13);
 closed. Golden golden-stormstorage-7d586161ae40 (stormcos#428); live proof
 is server2's reinstall over the bad file.
 
+### Expand a volume (#73, P3) — in progress 2026-10-29
+stormblock v23.9.0 (#318): `POST /api/v1/arrays/{id}/grow` (admin, no body)
+after every leg grew on its own engine; 409 while a leg has not grown, a
+member is out, a rebuild runs; `slab_short` when the dedicated slab
+predates #318 (its volumes cannot use the room). Plan:
+`POST /api/v1/volumes/{name}/expand {size_bytes}` (grow only: smaller →
+409, same with nothing in flight → the record). Refused while fenced,
+busy, replacing, windowed, migrating, revoking/gone, not assembled, a leg
+not created or its node unhealthy. Records `expanding {to_bytes,
+array_bytes_before, slab_short, message}` first (persisted), so a retry
+resumes and replacement legs/mirror use `max(size, to)`. Steps: every leg
+`/v1/volumes/{id}/expand`; head `arrays/{id}/grow` (a 409 with the array
+already above `array_bytes_before` = done earlier; `slab_short` → 409 and
+kept); served volume `/v1/volumes/{id}/expand` (adopted:
+`PATCH /api/v1/volumes/{id}/resize`), checked by its engine size; then
+`size_bytes` = to, `expanding` cleared, event, replicate. Single leg: its
+leg only. Clone: its own served volume, refused past the parent's size.
+A backup target smaller than its volume is grown before the next ship.
+Tests: tests/replication.rs mock engine (leg expand, grow, resize).
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
