@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-10-29 (#73)
+- **feat:** `POST /api/v1/volumes/{name}/expand {size_bytes}` grows a volume, for stormblock-csi's ExpandVolume. Every leg grows on its own engine (`/v1/volumes/{id}/expand`), then the head's RAID1 array and its dedicated slab (`POST /api/v1/arrays/{id}/grow`, stormblock#318, v23.9.0), then the served `<name>-mirror` (an adopted one through `PATCH …/resize`), whose engine size is checked. The target is recorded first (`expanding`), so a stopped expand resumes on the same call and a replacement leg made meanwhile is carved at the target; `size_bytes` moves only when all three have grown. Grow only. A single leg grows its leg; a clone grows up to its parent's size. Refused (409) on a fenced, degraded or busy volume, a leg its engine did not grow, and an array slab from before #318 (`slab_short`). A backup volume grows before its next ship. Tests: tests/replication.rs (mock engines with sizes and the grow route) and unit tests of the refusals.
+
 ### 2026-10-28 (docs refresh)
 - **docs:** Refreshed from the code since 2026-10-16: the only change is a research note, so no behavior docs moved. README's shipped config now lists `[kubernetes] token_file`/`ca_file` and the `/data/stormcert` mount (checked against `stormcentral component export`, #90). CLAUDE.md no longer says builds need `SC_BUILD_VM=1` or wait on stormcentral#521 (#66).
 

@@ -442,8 +442,11 @@ Snapshots, group snapshots (one node) and copy-on-write clones are
 served from here (#49, owner decisions 2026-10-09). They live on the node
 that serves the volume's data, so a clone shares its source's head and
 legs, and the source cannot be deleted under it. Full copies onto new
-legs wait on stormblock#295, expand waits on stormblock#318, and
-`encrypted`/`qos_class` are refused until stormblock#319. What it still
+legs wait on stormblock#295, and `encrypted`/`qos_class` are refused
+until stormblock#319. Expand (#73) grows every leg on its own engine, then
+the head's array and its slab (stormblock#318), then the served volume;
+`size_bytes` moves once all three have, and a clone grows only as far as
+its parent. What it still
 needs from here: #56 (one
 elected cluster stormstorage that a multi-node foreign cluster points at,
 with stormcos#354). Single-node clusters point the driver at the node's
@@ -542,6 +545,7 @@ POST /api/v1/volumes/{name}/fence     {expected_epoch} CAS → {epoch}; fences e
 POST /api/v1/volumes/{name}/promote   {target_node, fenced_epoch} — move the head
 POST /api/v1/volumes/{name}/prestage  {node?, from?, bandwidth_class?} — replace a slave
 PUT  /api/v1/volumes/{name}/bandwidth-class  {bandwidth_class} — change the rebuild cap class (#60)
+POST /api/v1/volumes/{name}/expand            {size_bytes} — grow legs, head array + slab, served volume (#73)
 POST /api/v1/volumes/{name}/dual-attach        {target_node, ttl_secs}
 POST /api/v1/volumes/{name}/dual-attach/close  {epoch, outcome: commit|abort}
 GET  /api/v1/stale-heads              former heads to clean up

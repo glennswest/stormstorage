@@ -688,6 +688,7 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
 | POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |
 | PUT | `/api/v1/volumes/{name}/bandwidth-class` | `{bandwidth_class}` (`low`, `normal`, `high`, `unthrottled`) → the volume plus `rebuild_cap {bytes_per_sec, applied, pending, message?}` (#60). Records the class, which later prestages, re-legs and promotes use, and puts its cap on the head's array at once. Idempotent. With the head unreachable it is recorded with `rate_pending` and applied when the head answers. |
+| POST | `/api/v1/volumes/{name}/expand` | `{size_bytes}` → the volume (#73, stormblock-csi's ExpandVolume). Grow only: a smaller size is 409, the same size with nothing in flight is the record. In order: every leg on its own engine (`POST /v1/volumes/{id}/expand`), the head's array and its dedicated slab (`POST /api/v1/arrays/{id}/grow`, stormblock ≥ 23.9.0, admin credential), then the served volume (`/v1` expand; an adopted one `PATCH /api/v1/volumes/{id}/resize`), checked by its engine size. `size_bytes` moves only once all three have grown; until then `expanding {to_bytes, array_bytes_before, array_grown, slab_short, message}` is on the record, and the same call resumes it (a replacement leg made meanwhile is carved at the target). A single leg grows its leg; a clone grows its own volume, up to its parent's size (expand the parent first). 409 while fenced, degraded, pending, replacing, windowed, migrating, being deleted or gone, a node not answering, a leg the engine did not grow (the array grow refuses), or an array slab from before stormblock#318 (`slab_short`: its volumes need a new array). A backup volume (#46) grows before its next ship. |
 | POST | `/api/v1/volumes/{name}/prestage` | `{node?, from?, bandwidth_class?}` → `{replacing, to, bandwidth_class}`. Replaces a slave leg; 409 for the head as `node` or `from`. |
 | POST | `/api/v1/volumes/{name}/dual-attach` | `{target_node, ttl_secs}` → `{volume_id, epoch, target_node, expires_at_ms}`. Target must hold a slave; 409 for another target while one is open. |
 | POST | `/api/v1/volumes/{name}/dual-attach/close` | `{epoch, outcome: commit\|abort}`. Commit = fence + promote the target; 412 on the wrong epoch, 409 with none open. |
@@ -913,8 +914,8 @@ done. The open work:
   fleet fastetcd itself is stormcluster#55;
 - stormblock-csi (#36, settled): its controller talks to stormstorage
   only (stormblock-csi v0.4.0). Snapshots, group snapshots and clones
-  are in (#49). What it still needs from here is #73 (expand, after
-  stormblock#318) and #56 (one elected cluster instance for multi-node);
+  are in (#49), and expand (#73, stormblock#318). What it still needs
+  from here is #56 (one elected cluster instance for multi-node);
 - #46: point-in-time backups are in; the copy waits on
   stormblock#399/#400;
 - #72: parity volumes (needs a parity engine on the head).
