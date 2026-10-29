@@ -247,7 +247,7 @@ async fn mirror_sync_cut_over_complete() {
     // and S mirrors to it presenting that host NQN.
     let (t_id, t_vol) = {
         let t = fx.t.lock().unwrap();
-        let (id, v) = t.vols.iter().next().expect("a volume on T").clone();
+        let (id, v) = t.vols.iter().next().expect("a volume on T");
         (id.clone(), v.clone())
     };
     assert_eq!(t_vol.name, "ns.vm-disk");
@@ -308,10 +308,11 @@ async fn abort_leaves_the_source_as_it_was() {
     let (st, a) = call(reqwest::Method::POST, format!("{}/api/v1/migrations/{id}/abort", fx.api), None).await;
     assert_eq!((st, a["state"].clone()), (200, json!("aborted")), "{a}");
     assert!(fx.t.lock().unwrap().vols.is_empty(), "T's volume deleted");
-    let s = fx.s.lock().unwrap();
-    assert!(s.vols["s-disk-uuid"].mirror.is_none(), "S's mirror stopped");
-    assert!(!s.log.iter().any(|l| l.starts_with("delete ")), "S's volume untouched: {:?}", s.log);
-    drop(s);
+    {
+        let s = fx.s.lock().unwrap();
+        assert!(s.vols["s-disk-uuid"].mirror.is_none(), "S's mirror stopped");
+        assert!(!s.log.iter().any(|l| l.starts_with("delete ")), "S's volume untouched: {:?}", s.log);
+    }
     // A finished migration does not hold the volume: it can go again.
     start(&fx).await;
 }
