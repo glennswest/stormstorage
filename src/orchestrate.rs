@@ -918,6 +918,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
     crate::migrate::run(state, now).await;
     crate::rebalance::run(state, now).await;
     crate::backup::run(state, now).await;
+    crate::vmmigrate::run(state).await;
     if state.recovery_active() {
         crate::head::retry_pending_rates(state).await;
     }

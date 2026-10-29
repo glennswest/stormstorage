@@ -127,7 +127,7 @@ async fn update<T>(state: &Arc<AppState>, name: &str, f: impl FnOnce(&mut Backup
     Some(out)
 }
 
-fn engine_on(state: &Arc<AppState>, fed: &FedState, node: &str) -> anyhow::Result<crate::engine::Engine> {
+pub(crate) fn engine_on(state: &Arc<AppState>, fed: &FedState, node: &str) -> anyhow::Result<crate::engine::Engine> {
     let n = fed.nodes.get(node).ok_or_else(|| anyhow::anyhow!("node {node:?} not in registry"))?;
     if !n.status.healthy {
         anyhow::bail!("{node} is unreachable");

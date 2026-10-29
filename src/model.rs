@@ -558,6 +558,9 @@ pub struct FedState {
     /// is deleted: undoing a delete is what they are for.
     #[serde(default)]
     pub backups: BTreeMap<String, Backup>,
+    /// Live migrations of node volumes (VM disks) by id (#44).
+    #[serde(default)]
+    pub vm_migrations: BTreeMap<String, VmMigration>,
 }
 
 impl FedState {
@@ -1005,4 +1008,75 @@ pub struct Backup {
 /// The backup volume's engine name for `volume` (#46).
 pub fn backup_target_name(volume: &str) -> String {
     format!("{volume}-backup")
+}
+
+/// Where a live migration of a node volume is (#44).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmMigrationState {
+    /// Making the target volume, serving it to S, starting S's mirror.
+    #[default]
+    Starting,
+    /// S copies the volume to T; every write goes to both.
+    Copying,
+    /// T has every byte; writes are mirrored synchronously.
+    Synced,
+    /// The mirror stopped after the last write landed and T was flushed:
+    /// T's volume is the disk now. S's is kept until complete.
+    CutOver,
+    /// S's volume is retired.
+    Completed,
+    /// T's volume is deleted; S's is as it was.
+    Aborted,
+    /// The mirror failed or a step did (`message`): retry or abort.
+    Failed,
+}
+
+impl VmMigrationState {
+    pub fn terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Aborted)
+    }
+}
+
+/// A live migration of an in-use node volume from S to T (#44): T gets a
+/// fresh thin volume, served to S over NVMe/TCP, and S's engine mirrors
+/// the volume to it (stormblock#295). At the switch-over the mirror stops
+/// and T's volume is T's own local volume.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VmMigration {
+    pub id: String,
+    pub source_node: String,
+    /// S's engine-local volume id.
+    pub source_volume_id: String,
+    pub source_name: String,
+    pub size_bytes: u64,
+    pub target_node: String,
+    /// The volume's name on T (default: S's name).
+    pub target_name: String,
+    /// T's /v1 id.
+    #[serde(default)]
+    pub target_volume_id: Option<String>,
+    /// T's engine-local id: what the kubelet attaches over ublk on T.
+    #[serde(default)]
+    pub target_local_id: Option<String>,
+    /// T's volume served to S's host NQN; None once withdrawn.
+    #[serde(default)]
+    pub target_attach: Option<crate::engine::AttachedLeg>,
+    /// The URI S's mirror was started with.
+    #[serde(default)]
+    pub mirror_target: Option<String>,
+    #[serde(default)]
+    pub state: VmMigrationState,
+    #[serde(default)]
+    pub bytes_total: u64,
+    #[serde(default)]
+    pub bytes_remaining: u64,
+    #[serde(default)]
+    pub message: Option<String>,
+    /// An abort asked and not finished yet (an engine did not answer).
+    #[serde(default)]
+    pub aborting: bool,
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub updated_at_ms: i64,
 }

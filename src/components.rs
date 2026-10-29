@@ -602,7 +602,58 @@ fn build(
             out.push(node_volume_component(node, v));
         }
     }
+    for m in fed.vm_migrations.values() {
+        out.push(vm_migration_component(m));
+    }
     out
+}
+
+/// A live migration of a node volume (#44): where it goes, how far the
+/// copy is, and the volumes and nodes on both sides.
+fn vm_migration_component(m: &crate::model::VmMigration) -> ComponentSummary {
+    use crate::model::VmMigrationState as S;
+    let health = match m.state {
+        S::Failed => Health::Error,
+        S::Starting | S::Copying => Health::Warn,
+        _ if m.aborting => Health::Warn,
+        _ => Health::Ok,
+    };
+    let state = serde_json::to_value(m.state).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    let mut metrics = vec![
+        Metric::new("state", if m.aborting { format!("{state} (aborting)") } else { state }).tone("accent"),
+        Metric::new("size", stormview::format_bytes(m.size_bytes)),
+    ];
+    if matches!(m.state, S::Copying | S::Synced) {
+        metrics.push(Metric::new("to copy", stormview::format_bytes(m.bytes_remaining)));
+    }
+    let mut targets = vec![node_volume_id(&m.source_node, &m.source_volume_id)];
+    if let Some(t) = &m.target_local_id {
+        targets.push(node_volume_id(&m.target_node, t));
+    }
+    ComponentSummary {
+        id: format!("vmmig:{}", m.id),
+        kind: "migration".into(),
+        label: format!("{} → {}", m.source_name, m.target_node),
+        health,
+        detail: format!(
+            "{} {} → {} {}{}",
+            m.source_node,
+            m.source_name,
+            m.target_node,
+            m.target_name,
+            m.message.as_deref().map(|x| format!(" · {x}")).unwrap_or_default()
+        ),
+        metrics,
+        actions: Vec::new(),
+        relations: vec![
+            Relation::has_many("volumes", targets),
+            Relation::has_many(
+                "nodes",
+                vec![format!("node:{}", m.source_node), format!("node:{}", m.target_node)],
+            ),
+        ],
+        link: None,
+    }
 }
 
 #[cfg(test)]

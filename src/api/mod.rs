@@ -4,6 +4,7 @@
 pub mod auth;
 mod backups;
 mod snapshots;
+mod vmmigrations;
 
 use crate::config::{Config, NodeConfig, PoolConfig};
 use crate::engine::Engine;
@@ -237,6 +238,13 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/replication/status", get(replication_status))
         .route("/api/v1/nodes", get(list_nodes))
         .route("/api/v1/nodes/{name}/inventory", get(node_inventory))
+        .route("/api/v1/nodes/{name}/volumes/{id}/migrate", post(vmmigrations::start))
+        .route("/api/v1/migrations", get(vmmigrations::list))
+        .route("/api/v1/migrations/{id}", get(vmmigrations::get))
+        .route("/api/v1/migrations/{id}/cutover", post(vmmigrations::cutover))
+        .route("/api/v1/migrations/{id}/complete", post(vmmigrations::complete))
+        .route("/api/v1/migrations/{id}/abort", post(vmmigrations::abort))
+        .route("/api/v1/migrations/{id}/retry", post(vmmigrations::retry))
         .route("/api/v1/topology", get(topology))
         .route("/api/v1/pools", get(list_pools))
         .route("/api/v1/pools/{name}/rebalance", get(pool_rebalance))

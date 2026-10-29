@@ -568,16 +568,49 @@ impl Engine {
         Ok(())
     }
 
-    /// DELETE /api/v1/volumes/{id} — any engine volume.
+    /// DELETE /api/v1/volumes/{id} — any engine volume. 404 = gone; any
+    /// other failure carries the engine's message (an attached volume is
+    /// refused).
     pub async fn delete_any_volume(&self, id: &str) -> anyhow::Result<()> {
-        let resp = self
-            .req(reqwest::Method::DELETE, &format!("/api/v1/volumes/{id}"))
-            .send()
-            .await?;
-        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::NOT_FOUND {
-            anyhow::bail!("delete {id}: {}", resp.status());
+        let path = format!("/api/v1/volumes/{id}");
+        let resp = self.req(reqwest::Method::DELETE, &path).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
         }
-        Ok(())
+        Self::read_post(&path, resp).await.map(|_| ())
+    }
+
+    /// GET /api/v1/volumes/{id} by engine id or name: the engine's view of
+    /// one volume (`id`, `name`, `virtual_size_bytes`, `mirror`, …).
+    pub async fn get_any_volume(&self, id_or_name: &str) -> anyhow::Result<Value> {
+        let path = format!("/api/v1/volumes/{id_or_name}");
+        let resp = self.get(&path).send().await?;
+        check_refused(&resp, &path)?;
+        if !resp.status().is_success() {
+            return Err(HttpStatus { path, status: resp.status(), message: "no such volume".into() }.into());
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// POST /api/v1/volumes/{id}/mirror {target} (stormblock#295, v23.11.0):
+    /// mirror the volume, in use, to `target` (an `nvme-tcp://` URI; its
+    /// `hostnqn=` is who this engine connects as). An admin verb: the
+    /// volume's bytes leave the engine. 202 with the mirror's status.
+    pub async fn start_mirror(&self, id: &str, target: &str) -> anyhow::Result<Value> {
+        self.admin_post(&format!("/api/v1/volumes/{id}/mirror"), serde_json::json!({ "target": target }))
+            .await
+    }
+
+    /// DELETE /api/v1/volumes/{id}/mirror: every write in flight lands on
+    /// both, the target is flushed, the mirror is dropped (`{stopped,
+    /// flushed, state, …}`). `None`: no mirror (404).
+    pub async fn stop_mirror(&self, id: &str) -> anyhow::Result<Option<Value>> {
+        let path = format!("/api/v1/volumes/{id}/mirror");
+        let resp = self.admin_send(reqwest::Method::DELETE, &path, None).await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Self::read_post(&path, resp).await.map(Some)
     }
 
     /// The /v1 epoch of a volume (GET /v1/volumes/{id}).

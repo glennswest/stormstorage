@@ -14,7 +14,7 @@
 //!   thirds of it steps down, and its key goes with the lease.
 //! * **Writes.** Only the leader writes. Each durable record has its own
 //!   key (`volumes/<name>`, `snapshots/<name>`, `group_snapshots/<name>`,
-//!   `backups/<name>`, `nodes/<name>` for registered nodes, `orphans`,
+//!   `backups/<name>`, `vm_migrations/<id>`, `nodes/<name>` for registered nodes, `orphans`,
 //!   `stale_heads`); `persist()` sends what changed since the last write,
 //!   plus `meta` {revision, by, at}, in a transaction guarded by
 //!   `create_revision(leader) == the leader's own`, so a deposed leader's
@@ -270,6 +270,9 @@ pub fn records_of(fed: &FedState) -> BTreeMap<String, String> {
     for (n, v) in &fed.backups {
         put(&mut m, format!("backups/{n}"), v);
     }
+    for (n, v) in &fed.vm_migrations {
+        put(&mut m, format!("vm_migrations/{n}"), v);
+    }
     for n in fed.nodes.values().filter(|n| n.status.source == NodeSource::Registered) {
         put(&mut m, format!("nodes/{}", n.config.name), &n.config);
     }
@@ -300,6 +303,9 @@ pub fn apply_records(fed: &mut FedState, records: &BTreeMap<String, String>) -> 
             "backups" => {
                 next.backups.insert(name.into(), serde_json::from_str(v).map_err(bad)?);
             }
+            "vm_migrations" => {
+                next.vm_migrations.insert(name.into(), serde_json::from_str(v).map_err(bad)?);
+            }
             "nodes" => registered.push(serde_json::from_str::<NodeConfig>(v).map_err(bad)?),
             "orphans" => next.orphans = serde_json::from_str(v).map_err(bad)?,
             "stale_heads" => next.stale_heads = serde_json::from_str(v).map_err(bad)?,
@@ -311,6 +317,7 @@ pub fn apply_records(fed: &mut FedState, records: &BTreeMap<String, String>) -> 
     fed.snapshots = next.snapshots;
     fed.group_snapshots = next.group_snapshots;
     fed.backups = next.backups;
+    fed.vm_migrations = next.vm_migrations;
     fed.orphans = next.orphans;
     fed.stale_heads = next.stale_heads;
     let names: std::collections::BTreeSet<String> = registered.iter().map(|c| c.name.clone()).collect();

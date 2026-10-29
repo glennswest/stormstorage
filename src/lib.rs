@@ -22,5 +22,6 @@ pub mod refusal;
 pub mod registry;
 pub mod replicate;
 pub mod store;
+pub mod vmmigrate;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
