@@ -427,7 +427,7 @@ stormview components feed on **:9093**.
   `<prefix>leader` on a lease of `lease_ttl_secs`, renewed every third of
   it, and steps down when it cannot renew for two thirds of it. Only the
   leader writes: each durable record has its own key (`volumes/<name>`,
-  `snapshots/…`, `group_snapshots/…`, `backups/…`, `nodes/<name>` for
+  `snapshots/…`, `group_snapshots/…`, `backups/…`, `vm_migrations/…`, `nodes/<name>` for
   registered nodes, `orphans`, `stale_heads`, plus `meta`), and what
   changed goes in one transaction guarded by the leader key still being
   its own, so a deposed leader writes nothing. Only the leader runs the
@@ -505,6 +505,36 @@ stormview components feed on **:9093**.
   - **Backups outlive their volume:** a deleted volume's points stay
     (`source_deleted`), so a delete can be undone by a restore. A new
     volume of that name is refused (409) until they are purged.
+
+- **Live migration of a VM's disks (#44).** A VM disk is a plain local
+  engine volume on node S, attached over ublk to a running guest; it is
+  not a distributed volume. The copy is S's engine's (the live mirror of
+  stormblock#295, v23.11.0); stormstorage drives it, and the kubelet
+  (rustkube-node#40) moves the memory:
+  1. `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to: T, name?}` (S's
+     engine id or volume name) makes a same-size thin volume on T, named
+     like S's unless `name` says otherwise, serves it to S's host NQN
+     (`[legs] host_nqn` of S) over NVMe/TCP, and starts S's mirror to it
+     (the URI's `hostnqn=` is who S connects as). All or nothing: a
+     refusal undoes T's volume. 409 when S's volume is already mirrored
+     or migrating, or T holds a volume of that name.
+  2. `GET /api/v1/migrations/{mid}`: `state` `starting` → `copying` →
+     `synced` (T has every byte; writes reach both), `bytes_remaining`,
+     and `target {node, name, id}`. It reads S's mirror live; the
+     reconciler records it each poll.
+  3. `POST …/{mid}/cutover`, with the guest paused: needs `synced`. S
+     stops the mirror after the writes in flight land and T is flushed;
+     an answer other than synced + flushed fails the migration (resume on
+     S, then retry or abort). S's attach on T is withdrawn; T's volume is
+     T's own (`cut_over`). S's volume is kept.
+  4. `POST …/{mid}/complete` retires S's volume (`completed`);
+     `POST …/{mid}/abort` (any state but completed) stops the mirror and
+     deletes T's volume, leaving S as it was. An engine that does not
+     answer leaves the abort `aborting`; the reconciler finishes it.
+  - The mirror does not survive an engine restart (it reads `failed`):
+    `POST …/{mid}/retry` forgets it and starts it again on the same
+    target volume. Records are kept (replicated, in the store), and
+    completed/aborted ones are dropped a day later. Feed: `vmmig:<mid>`.
 
 **Not done yet** (tracked in issues, see [Status](#status)): moving a head by handover (stormblock#296),
 which is what a tier migration of the head's own leg waits on.
@@ -701,10 +731,13 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes/{name}/migrate` | Body `{pool}`. Tier migration (#32): every leg moves into that pool, one at a time; the head's own leg waits on a handover (stormblock#296). Returns the `migration`. 404 for an unknown volume or pool, 409 when it cannot start (see *Tier migration*). |
 | DELETE | `/api/v1/volumes/{name}/migrate` | Cancel the tier migration: `{cancelled}`. Legs already moved stay. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
+| POST | `/api/v1/nodes/{node}/volumes/{id}/migrate` | `{to, name?}` → 202 and the migration (#44): mirror the node volume `id` (engine id or name) on `node`, in use, to a new volume on `to`. 400 for `to` = `node`; 404 for an unknown node or volume; 409 when either node does not answer, the volume is mirrored or migrating, `to` holds a volume of that name, or S's engine refuses the mirror (a secret volume). |
+| GET | `/api/v1/migrations` | `{migrations: [...]}`. `GET /api/v1/migrations/{id}`: `{id, source_node, source_volume_id, source_name, size_bytes, target_node, target_name, target_volume_id, target_local_id, target_attach, mirror_target, state (starting/copying/synced/cut_over/completed/aborted/failed), bytes_total, bytes_remaining, message, aborting, started_at_ms, updated_at_ms, target {node, name, id}}`, with S's mirror read live. |
+| POST | `/api/v1/migrations/{id}/cutover` | The switch-over (guest paused): 409 unless `synced`; S's mirror stopped (synced and flushed, else `failed`), S's attach on T withdrawn → `cut_over`. Idempotent. `…/complete` (from `cut_over`) deletes S's volume; `…/abort` (not after `completed`) stops the mirror and deletes T's volume; `…/retry` (from `failed`, before the cut-over) starts the mirror again. 409 while another step of it runs. |
 | GET | `/api/v1/orphans` | Leg volumes left on unreachable nodes: `{orphans: [{node, volume_id, master_node, of_volume, reason, since}]}`. Reaped when the node answers. |
 | GET | `/api/v1/events?since=<seq>` | Event ring (4096 entries, in memory): `{latest_seq, events}`. |
 | GET | `/api/v1/summary` | stormd card: `{health, detail, metrics}`. |
-| GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (an `export` metric, Publish/Republish and delete actions) and node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner). |
+| GET | `/api/v1/components` | stormview feed: `system`, policy pools, `tier:<tier>`, nodes, slab pools `pool:<node>/<slab>` (relations: node, tier, volumes), distributed volumes `volume:<name>` (an `export` metric, Publish/Republish and delete actions), node volumes `nvol:<node>/<id>` (relations: node, pools; detail names the owner) and VM-disk migrations `vmmig:<id>` (state, bytes to copy; relations: both volumes and nodes). |
 | GET (WS) | `/ws/components` | The same feed. It is checked every 2 s and pushed when it changes. |
 | POST | `/api/v1/replicate` | Peer push, `{revision, volumes, registered, orphans, stale_heads}`. Applied only if newer. 409 with `[store] backend = "etcd"`. |
 | GET | `/api/v1/replication/status` | `{revision, peers}`. |
@@ -730,7 +763,9 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
   `GET|POST drives`, `DELETE drives/{id}`, `POST arrays`,
   `POST arrays/assemble` (promote), `GET|DELETE arrays/{id}`,
   `PUT arrays/{id}/rebuild` (bandwidth class),
-  `POST arrays/{id}/members`, `DELETE arrays/{id}/members/{member}`.
+  `POST arrays/{id}/members`, `DELETE arrays/{id}/members/{member}`,
+  `GET volumes/{id}` and `POST|DELETE volumes/{id}/mirror` (S's live
+  mirror for a VM-disk migration, #44; admin credential).
 
 Assembly needs a stormblock with stormblock#73 (nvme-tcp drives as RAID
 members, 2026-08-28 or later) and an engine NVMe-oF target that is
@@ -919,5 +954,7 @@ done. The open work:
 - #46: point-in-time backups are in; the copy waits on
   stormblock#399/#400;
 - #72: parity volumes (needs a parity engine on the head).
+- #44: VM-disk migration is in (mock-engine tested); the kubelet half is
+  rustkube-node#40.
 - stormfs reads stormstorage's node registry (`GET /api/v1/nodes`); no
   forwarding to a stormfs registry (#35, owner 2026-10-09).

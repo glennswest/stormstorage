@@ -452,6 +452,33 @@ elected cluster stormstorage that a multi-node foreign cluster points at,
 with stormcos#354). Single-node clusters point the driver at the node's
 own stormstorage (`$(HOST_IP):9093`).
 
+### Live migration of a VM's disks (#44) — *implemented 2026-10-29*
+
+Owner (rustkube-node#159): "raid it to destination and let it catchup, and
+then you can start". A VM's disk is a plain local engine volume on node S,
+attached over ublk to a running guest, so it is not a DistVolume, and legs
+or a RAID head cannot do the job: they cannot sit under a volume that is
+in use, and after the migration the disk must be local on T, not read
+through S. Only S's engine sees the guest's writes, so the copy is S's
+(the live mirror, stormblock#295, v23.11.0). stormstorage orchestrates it,
+per volume, as `src/vmmigrate.rs`:
+
+- T gets a fresh thin `/v1` volume of the same size, served to S's host
+  NQN alone (`[legs] host_nqn` of S, as for legs, #27). S's mirror is
+  started with that drive URI, whose `hostnqn=` S connects as.
+- `copying → synced` comes from S's `GET /api/v1/volumes/{id}` `mirror`.
+- The switch-over is S's `DELETE …/mirror` with the guest paused: the
+  writes in flight land on both, T is flushed. Only an answer of `synced`
+  and flushed counts; T's attach for S is then withdrawn, and T's volume
+  is T's own for the kubelet. S's volume stays until `complete`, so a
+  failed memory move falls back to S (`abort` deletes T's volume).
+- Each step is recorded in `FedState.vm_migrations` before the next
+  (replicated, a store key per record), so a restart resumes a start. The
+  mirror does not survive an engine restart (`failed`); `retry` starts it
+  again on the same target.
+
+A node evacuation (stormcluster#53) is this verb per volume.
+
 ### Redundancy of stormstorage itself
 
 Control plane only — if stormstorage is down, data keeps flowing
@@ -599,7 +626,8 @@ stormconsole#53).
    DistVolumes (owner, stormblock#179 option b); enforcement at the legs
    is in the engine (stormblock#6); handover from a live head waits on
    stormblock#296. Point-in-time backups (#46):
-   built; the copy waits on stormblock#399/#400.
+   built; the copy waits on stormblock#399/#400. VM-disk migration
+   (#44) over the engine's live mirror (stormblock#295): in.
 5. **HA** (#34): in — state in a fleet fastetcd, one leader elected by
    lease, followers forward writes. The fleet fastetcd is stormcluster#55.
 

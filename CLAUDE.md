@@ -489,7 +489,7 @@ clippy `-D warnings` clean). Not run against a real fastetcd: the fleet
 fastetcd is stormcluster#55 (deployment), and nothing changes until a
 node's config says `backend = "etcd"`. #56 (one cluster instance) can use it.
 
-### Live migration of a VM's disks (#44, P3) — in progress 2026-10-29
+### Live migration of a VM's disks (#44, P3) — DONE 2026-10-29
 stormblock v23.11.0 (#295) has the live mirror: `POST
 /api/v1/volumes/{id}/mirror {target: nvme-tcp URI}` on S (admin; S connects
 as the URI's `hostnqn=` if given), `GET /api/v1/volumes/{id}` → `mirror
@@ -524,6 +524,9 @@ by id `vm-<ms>-<n>`):
   (`vmmig:<mid>`), auth (mutations), docs. Tests: tests/vmmigrate.rs with
   two mock engines.
 Consumer: rustkube-node#40.
+Done: 6d7580c (+ 26d0ee2 test lint) + docs; sc-build passes (`--locked` build + test + clippy
+-D warnings: 96 unit incl. 4 vmmigrate, tests/vmmigrate.rs 5/5). Not run
+on real engines (a two-engine live run would be an e2e like e2e-export).
 
 ### Head leg back from lost (#26, P1) — DONE 2026-10-06
 A head that misses `fail_threshold` polls marks its own leg lost and the

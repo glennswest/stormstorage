@@ -19,7 +19,7 @@ are acked without it, and it trails by a bounded lag.
   replay from.
 - **`/v1` snapshots** of a volume (`POST /v1/snapshots`). There is no API
   that diffs two snapshots and no engine-to-engine copy of changed extents.
-- **Live mirror, stormblock#295** (open): mirror an in-use volume to a
+- **Live mirror, stormblock#295** (landed in v23.11.0; used by #44): mirror an in-use volume to a
   volume on another engine, `copying → synced`, with `bytes_remaining`.
   It was asked for VM-disk migration (#44), not for a standing copy.
 - **`cluster/replication.rs`**: the engine's older per-volume sync/async
