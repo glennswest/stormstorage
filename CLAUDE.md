@@ -956,7 +956,7 @@ Done: 133534e (+ 584718f docs); sc-build passes (`--locked`, 92 unit incl.
 (a head over NVMe/TCP legs grown on their engines is unproven on metal on
 stormblock's side too).
 
-### Engine client over https with the node CA (#96, stormcos#374) — in progress
+### Engine client over https with the node CA (#96, stormcos#374) — DONE 2026-11-04
 stormblock's :9090 is moving to TLS (stormblock#203, `tls_mode = "optional"`
 while callers move, #525). stormcos flips each caller's URL and CA in its
 config; nothing switches from here. Plan:
@@ -982,6 +982,13 @@ config; nothing switches from here. Plan:
   (`SC_TOOLS=stormblock`).
 - Then: say the keys on stormcos#374 (the unit already has
   `/data/stormcert/ca.crt`), close #96, golden.
+Done: 47fa296, 758aeab; sc-build on 758aeab passes (`--locked` build + test +
+clippy -D warnings: 97 unit, tests/engine_tls.rs 9/9).
+`SC_TOOLS=stormblock sc-build scripts/e2e-engine-tls.sh` PASSED against
+stormblock 4f0b9c4 with `tls_mode = optional`. Its first run found that a node
+that never answered said nothing about why (fixed, 758aeab). Not seen on a
+node yet: stormcos sets the keys. A client pair (stormcos#374 item 2) is not
+used; the token stays the credential.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
