@@ -6,6 +6,7 @@
 ### 2026-11-04 (#96)
 - **feat:** Engines over https, for stormcos#374 (stormblock#203). An `https://` `engine_url` is verified against `[[nodes]] ca_file`, else the new `[engine_tls] ca_file`, and only that file: never the built-in roots, no skip-verify key, no fallback to plain, no redirect to plain. With no usable CA the handshake fails, no request is sent, and one WARN per engine says why. The file is read for each engine client, so a renewed CA needs no restart. `http://` is unchanged.
 - **feat:** `[engine_tls] address_scheme` (`http` by default, or `https`) is the scheme for an engine known only by its address: a cluster peer's `mgmt_addr`, a heartbeat's `node_addr`.
+- **fix:** A node that never answered now gets one WARN and one `node` event at `fail_threshold`, with the cause. Before, only the healthy → unhealthy flip said anything, so a CA that does not verify a newly configured engine left it silently down. Found by the first run of `scripts/e2e-engine-tls.sh`.
 - **test:** tests/engine_tls.rs runs the client against a stand-in serving real TLS, with openssl-made certificates: the right CA, another CA, another name, no or bad CA, a bundle, a renewed file, http, the poller, local adoption, the heartbeat's scheme. `scripts/e2e-engine-tls.sh` does the same against a real engine with `tls_cert` (`SC_TOOLS=stormblock`).
 
 ### 2026-10-29 (#44)

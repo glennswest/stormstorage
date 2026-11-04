@@ -85,7 +85,11 @@ pub async fn poll_once(state: &Arc<AppState>) {
                 if !healthy {
                     state.inventory.write().await.remove(&name);
                 }
-                if flipping {
+                // A node that never answered has no healthy → unhealthy flip
+                // to report, and its cause may be ours to fix: a CA that
+                // does not verify it (#96). Once, at the threshold.
+                if flipping || failures == state.config.poll.fail_threshold {
+                    tracing::warn!(node = %name, "engine unusable after {failures} polls: {e:#}");
                     state.events.write().await.push(
                         Some(name.clone()),
                         Severity::Error,

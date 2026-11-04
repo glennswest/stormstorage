@@ -278,10 +278,13 @@ async fn the_poller_and_engine_for_use_the_configured_ca() {
 
     let mut config = no_local();
     config.engine_tls.ca_file = Some(ca.display().to_string());
+    config.poll.fail_threshold = 1;
     let state = Arc::new(AppState::new(config, registered(&url, Some(&other)), None));
     assert!(!healthy_after_poll(&state).await, "the node's own CA, not the fleet's");
     let node = state.fed.read().await.nodes["n"].clone();
     assert_eq!(node.status.consecutive_failures, 1);
+    let said = serde_json::to_string(&state.events.read().await.since(0)).unwrap();
+    assert!(said.to_lowercase().contains("certificate"), "a node that never answered says why: {said}");
     assert!(state.engine_for(&node).capacity().await.is_err(), "engine_for verifies the same way");
 }
 
