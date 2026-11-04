@@ -483,6 +483,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             replication: ReplicationConfig::default(),
             local: LocalConfig::default(),
+            engine_tls: EngineTlsConfig::default(),
             recovery: RecoveryConfig::default(),
             legs: LegsConfig::default(),
             kubernetes: KubeConfig::default(),

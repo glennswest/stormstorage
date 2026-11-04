@@ -819,6 +819,19 @@ golden and sets `STORMBLOCK_BIN` (stormcentral#168):
 SC_TOOLS=stormblock sc-build scripts/e2e-releg.sh
 ```
 
+### Live test: engine over TLS
+
+`scripts/e2e-engine-tls.sh` runs one real engine with `tls_cert`, `tls_key`
+and `tls_mode = "optional"`, using certificates it makes with openssl. Over
+https with the node CA, the node is healthy, a volume is created and deleted,
+and the engine counts no plain request. With another CA the node stays
+unhealthy, an event names the certificate, and nothing falls back to plain.
+Over `http://` it still works, and the engine counts it:
+
+```
+SC_TOOLS=stormblock sc-build scripts/e2e-engine-tls.sh
+```
+
 ### Live test: consumer serving
 
 `scripts/e2e-export.sh` runs three storage engines and a fourth engine,
