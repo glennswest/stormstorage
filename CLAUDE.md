@@ -956,6 +956,33 @@ Done: 133534e (+ 584718f docs); sc-build passes (`--locked`, 92 unit incl.
 (a head over NVMe/TCP legs grown on their engines is unproven on metal on
 stormblock's side too).
 
+### Engine client over https with the node CA (#96, stormcos#374) — in progress
+stormblock's :9090 is moving to TLS (stormblock#203, `tls_mode = "optional"`
+while callers move, #525). stormcos flips each caller's URL and CA in its
+config; nothing switches from here. Plan:
+- `[engine_tls] ca_file` (PEM, a bundle is fine) for every `https://` engine,
+  `[[nodes]] ca_file` per node before it (SNO clusters have their own CA).
+  `Engine::new` takes the file. An https client trusts **only** that file
+  (`tls_built_in_root_certs(false)`), refuses plain redirects (`https_only`),
+  and is built per Engine like today, so a renewed CA is picked up. No CA, an
+  unreadable one or garbage: a client with no roots (fails closed, no request
+  sent), one WARN per engine URL per change. No skip-verify key.
+- `http://` engines: unchanged, the CA is not read.
+- A bare address (a cluster peer's `mgmt_addr`, a heartbeat's `node_addr`) has
+  no scheme: `[engine_tls] address_scheme = "http"` (default) or `"https"`. Not
+  derived from the CA: a peer on an older release has no pair yet, and an
+  https poll of it would mark it lost and re-leg its volumes. The engine's
+  plain-request count shows who is left, so stormcos sets it before `required`.
+- Client certificates are not in #96's ask (the token stays the credential).
+- Tests: tests/engine_tls.rs, a TLS stand-in (tokio-rustls, certificates by
+  the openssl CLI as stormcert makes them; rustls + tokio-rustls are already in
+  the lock): right CA, other CA, wrong name, no/garbage CA, http still works,
+  a node polled healthy through AppState, address scheme.
+  `scripts/e2e-engine-tls.sh`: a real engine with `tls_cert`
+  (`SC_TOOLS=stormblock`).
+- Then: say the keys on stormcos#374 (the unit already has
+  `/data/stormcert/ca.crt`), close #96, golden.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
