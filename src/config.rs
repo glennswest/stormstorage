@@ -14,6 +14,7 @@ pub struct Config {
     pub api: ApiConfig,
     pub replication: ReplicationConfig,
     pub local: LocalConfig,
+    pub engine_tls: EngineTlsConfig,
     pub recovery: RecoveryConfig,
     pub legs: LegsConfig,
     pub kubernetes: KubeConfig,
@@ -331,6 +332,38 @@ pub fn is_this_machine(url: &str) -> bool {
             || (!host.contains('.') && host.eq_ignore_ascii_case(me.split('.').next().unwrap_or(""))))
 }
 
+/// Reaching engines over https (#96, stormcos#374). There is no key to
+/// skip verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EngineTlsConfig {
+    /// PEM file (a bundle is fine) that verifies every `https://` engine
+    /// without a `ca_file` of its own, in place of any built-in root. Read
+    /// each time an engine client is made, so a renewed CA is picked up.
+    /// Unset or unusable: https engines are refused, no request is sent.
+    pub ca_file: Option<String>,
+    /// The scheme for an engine known only by its address: a cluster peer's
+    /// `mgmt_addr`, a heartbeat's `node_addr`. `http` (default) or `https`.
+    /// Its own key, not implied by `ca_file`: a peer on an older release
+    /// has no pair yet, and failing https polls would mark it lost.
+    pub address_scheme: String,
+}
+
+impl Default for EngineTlsConfig {
+    fn default() -> Self {
+        Self { ca_file: None, address_scheme: "http".into() }
+    }
+}
+
+impl EngineTlsConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        match self.address_scheme.as_str() {
+            "http" | "https" => Ok(()),
+            other => anyhow::bail!("engine_tls.address_scheme {other:?}: must be \"http\" or \"https\""),
+        }
+    }
+}
+
 /// The node's Kubernetes apiserver, read for each node volume's PV and
 /// PVC (#28). The family default, as stormconsole's: the apiserver on
 /// loopback, its TLS not verified there.
@@ -586,6 +619,10 @@ pub struct NodeConfig {
     /// `api_token`, before the `[local]` tokens.
     #[serde(default)]
     pub token_file: Option<String>,
+    /// The CA for this engine when it is `https://` and its cluster has a
+    /// CA of its own (#96). Before `[engine_tls] ca_file`.
+    #[serde(default)]
+    pub ca_file: Option<String>,
     /// Failure-domain labels, rung → value (site/rack/cluster/…).
     /// "node" defaults to `name`; "cluster" defaults to `name` too (SNO).
     #[serde(default)]
@@ -721,6 +758,7 @@ impl Config {
             }
         }
         self.legs.validate()?;
+        self.engine_tls.validate()?;
         self.store.validate(!self.replication.peers.is_empty())?;
         if self.poll.interval_secs == 0 {
             anyhow::bail!("poll.interval_secs must be non-zero");
@@ -736,7 +774,7 @@ impl Config {
 fn unknown_top_level_keys(text: &str) -> Vec<String> {
     const KNOWN: &[&str] = &[
         "listen_addr", "data_dir", "federation", "poll", "api", "replication",
-        "local", "recovery", "legs", "kubernetes", "placement", "store", "nodes", "pools",
+        "local", "engine_tls", "recovery", "legs", "kubernetes", "placement", "store", "nodes", "pools",
     ];
     match text.parse::<toml::Table>() {
         Ok(t) => t.keys().filter(|k| !KNOWN.contains(&k.as_str())).cloned().collect(),
@@ -747,6 +785,29 @@ fn unknown_top_level_keys(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_tls_keys() {
+        let c: Config = toml::from_str(
+            r#"
+            [engine_tls]
+            ca_file = "/data/stormcert/ca.crt"
+            address_scheme = "https"
+            [[nodes]]
+            name = "a"
+            engine_url = "https://a:9090"
+            ca_file = "/etc/other-ca.pem"
+            "#,
+        )
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(c.engine_tls.ca_file.as_deref(), Some("/data/stormcert/ca.crt"));
+        assert_eq!(c.nodes[0].ca_file.as_deref(), Some("/etc/other-ca.pem"));
+        assert!(Config::unknown_top_level_keys("[engine_tls]\n").is_empty());
+        assert_eq!(Config::default().engine_tls.address_scheme, "http");
+        let bad: Config = toml::from_str("[engine_tls]\naddress_scheme = \"ftp\"\n").unwrap();
+        assert!(bad.validate().is_err());
+    }
 
     #[test]
     fn defaults_validate() {

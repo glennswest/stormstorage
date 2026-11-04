@@ -23,7 +23,7 @@ pub async fn poll_once(state: &Arc<AppState>) {
     if state.config.local.enabled {
         adopt_local(state).await;
     }
-    let snapshot: Vec<(String, String, Option<String>)> = {
+    let snapshot: Vec<(String, String, Option<String>, Option<String>)> = {
         let fed = state.fed.read().await;
         fed.nodes
             .values()
@@ -32,12 +32,13 @@ pub async fn poll_once(state: &Arc<AppState>) {
                     n.config.name.clone(),
                     n.config.engine_url.clone(),
                     state.engine_token(&n.config),
+                    state.engine_ca(&n.config).map(str::to_string),
                 )
             })
             .collect()
     };
-    for (name, url, token) in snapshot {
-        let engine = Engine::new(&url, token.clone());
+    for (name, url, token, ca) in snapshot {
+        let engine = Engine::new(&url, token.clone(), ca.as_deref());
         let result = call_capacity(state, Some(&name), &engine, token.as_deref()).await;
         let reachable = result.is_ok();
         let mut fed = state.fed.write().await;
@@ -268,7 +269,7 @@ async fn refresh_io(state: &Arc<AppState>, name: &str, engine: &Engine) {
 pub async fn adopt_local(state: &Arc<AppState>) {
     let local = &state.config.local;
     let token = local.token();
-    let engine = Engine::new(&local.engine_url, token.clone());
+    let engine = Engine::new(&local.engine_url, token.clone(), state.config.engine_tls.ca_file.as_deref());
     if backing_off(state, &engine, token.as_deref()).is_some() {
         return; // It refuses this token (#38); the poll says so.
     }
@@ -310,6 +311,7 @@ pub async fn adopt_local(state: &Arc<AppState>) {
         // (`AppState::engine_token`), never copied into the state file.
         api_token: None,
         token_file: None,
+        ca_file: None,
         labels: Default::default(),
         tier: local.tier.clone(),
     }];
@@ -318,9 +320,10 @@ pub async fn adopt_local(state: &Arc<AppState>) {
             for p in d.cluster_peers() {
                 wanted.push(NodeConfig {
                     name: p.node_name.clone(),
-                    engine_url: crate::api::engine_url_from(&p.mgmt_addr),
+                    engine_url: crate::api::engine_url_from(&p.mgmt_addr, &state.config.engine_tls.address_scheme),
                     api_token: None,
                     token_file: None,
+                    ca_file: None,
                     labels: Default::default(),
                     tier: local.tier.clone(),
                 });

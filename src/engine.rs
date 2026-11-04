@@ -3,6 +3,7 @@
 
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 #[derive(Clone)]
@@ -163,17 +164,73 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// RAID; on a loaded box that took 47 s for 512 MiB.
 const MUTATE_TIMEOUT: Duration = Duration::from_secs(300);
 
-impl Engine {
-    pub fn new(url: &str, token: Option<String>) -> Self {
-        Self {
-            url: url.trim_end_matches('/').to_string(),
-            token,
-            admin: None,
-            http: reqwest::Client::builder()
-                .timeout(READ_TIMEOUT)
-                .build()
-                .expect("reqwest client"),
+/// Whether `url` is plain HTTP. Anything else gets the verifying client.
+fn is_plain(url: &str) -> bool {
+    url.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("http://"))
+}
+
+/// The certificates in `ca_file`, or why there are none to trust.
+fn read_ca(ca_file: Option<&str>) -> anyhow::Result<Vec<reqwest::Certificate>> {
+    let path = ca_file.ok_or_else(|| anyhow::anyhow!("no CA configured ([engine_tls] ca_file)"))?;
+    let pem = std::fs::read(path).map_err(|e| anyhow::anyhow!("CA file {path}: {e}"))?;
+    let certs = reqwest::Certificate::from_pem_bundle(&pem)
+        .map_err(|e| anyhow::anyhow!("CA file {path}: {e}"))?;
+    anyhow::ensure!(!certs.is_empty(), "CA file {path}: no certificate in it");
+    Ok(certs)
+}
+
+/// The client for an engine (#96). Plain HTTP as it always was. For https,
+/// only `ca_file` is trusted, never the built-in roots, and a redirect
+/// cannot take the token to plain. Without a usable CA the client has no
+/// roots at all: every handshake fails and no request is sent. There is no
+/// way to skip verification, and no falling back to plain.
+///
+/// Engines are built per call, so a renewed CA is used from the next one.
+fn client_for(url: &str, ca_file: Option<&str>) -> reqwest::Client {
+    let plain = || reqwest::Client::builder().timeout(READ_TIMEOUT);
+    if is_plain(url) {
+        return plain().build().expect("reqwest client");
+    }
+    let verifying = || plain().tls_built_in_root_certs(false).https_only(true);
+    let built = read_ca(ca_file).and_then(|certs| {
+        let with_ca = certs.into_iter().fold(verifying(), |b, c| b.add_root_certificate(c));
+        with_ca.build().map_err(|e| anyhow::anyhow!("CA file {}: {e:#}", ca_file.unwrap_or("")))
+    });
+    match built {
+        Ok(client) => {
+            note_ca_problem(url, None);
+            client
         }
+        Err(e) => {
+            note_ca_problem(url, Some(format!("{e:#}")));
+            verifying().build().expect("reqwest client")
+        }
+    }
+}
+
+/// One WARN per engine URL when its CA problem changes: a certificate error
+/// on every poll would not say the CA file is what is wrong.
+fn note_ca_problem(url: &str, problem: Option<String>) {
+    static SEEN: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    match problem {
+        None => {
+            seen.remove(url);
+        }
+        Some(p) if seen.get(url) != Some(&p) => {
+            tracing::warn!(engine = url, "engine over https refuses every call until this is fixed: {p}");
+            seen.insert(url.to_string(), p);
+        }
+        Some(_) => {}
+    }
+}
+
+impl Engine {
+    /// `ca_file` verifies an `https://` engine (#96) and is not read for an
+    /// `http://` one.
+    pub fn new(url: &str, token: Option<String>, ca_file: Option<&str>) -> Self {
+        let url = url.trim_end_matches('/').to_string();
+        Self { http: client_for(&url, ca_file), url, token, admin: None }
     }
 
     /// Present `admin` on the destructive verbs (#47).
@@ -1224,7 +1281,7 @@ mod tests {
         assert_eq!(old.host_nqn, None);
         assert!(!serde_json::to_string(&old).unwrap().contains("host_nqn"));
 
-        let e = Engine::new("http://192.168.8.150:9090", None);
+        let e = Engine::new("http://192.168.8.150:9090", None, None);
         assert_eq!(e.host(), "192.168.8.150");
     }
 

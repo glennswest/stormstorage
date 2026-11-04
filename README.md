@@ -26,6 +26,15 @@ stormview components feed on **:9093**.
   (volume create, attach, arrays, deletes) after 300 s, since an array
   create formats a slab through the RAID and a loaded engine can take
   far longer than a poll should wait.
+- **Engine over https (#96, stormcos#374).** An `https://` engine URL is
+  verified against a CA file you configure, and only that file: `ca_file` in
+  `[[nodes]]`, else `[engine_tls] ca_file`. The built-in roots are not used
+  and there is no key to skip verification. With no usable CA, a certificate
+  from another CA or for another name, the handshake fails and no request (no
+  token) is sent; it is never retried in plain. The file is read each time
+  an engine client is made, so a renewed CA needs no restart. `http://` URLs
+  keep working, and do not read it. The engine's client-certificate
+  credential is not used: the token stays the credential.
 - **Engine token (#38, #12).** Every engine call presents a bearer token.
   The node's own `api_token` or `token_file` from `[[nodes]]` comes first.
   Otherwise stormblock's own rule applies (`token_for`, stormblock#107).
@@ -593,6 +602,8 @@ worked example.
 | `[local] shared_token_file` | unset | File holding the cluster's **shared** engine token (stormblock's `management.api_token`), presented to every engine, peers included (#12). `$STORMBLOCK_API_TOKEN` wins over it. The `token_file` search above finds a token the engine minted for itself, which goes only to an engine on this machine. |
 | `[local] admin_token_file` | unset | The engine's **admin** token file, presented on its destructive verbs (array create/delete, members, drive close; stormblock#274, #47), and only to an engine on this machine. `$STORMBLOCK_ADMIN_TOKEN` wins over it. There is no default: stormblock keeps its admin token (`/run/stormblock-admin/admin_token`) out of what services mount. Without either, the `[kubernetes]` bearer is presented, and the engine reviews it against `storage-admin`. |
 | `[local] tier` | unset | Tier role given to adopted nodes. |
+| `[engine_tls] ca_file` | unset | PEM file (a bundle is fine) that verifies every `https://` engine with no `ca_file` of its own (#96). On a node: `/data/stormcert/ca.crt`, which the unit already mounts. Unset or unusable: https engines are refused and logged once per engine, no request is sent. |
+| `[engine_tls] address_scheme` | `"http"` | Scheme for an engine known only by its address: a cluster peer's `mgmt_addr`, a heartbeat's `node_addr`. `"http"` or `"https"`; anything else stops the start. Set it before the engines' `required` switch. It is not implied by `ca_file`, because a peer on an older release has no pair yet and failing polls would mark it lost. A full URL in the address keeps its own scheme. |
 | `[recovery] enabled` | unset | Replace lost legs automatically. Unset means on for a lone instance and off when `[replication] peers` is set. With peers, set it `true` on exactly one instance. With `[store] backend = "etcd"` the elected leader acts (`false` turns it off everywhere). When off, legs are still marked lost. |
 | `[recovery] cooldown_secs` | `300` | Wait after a failed re-leg or assembly attempt before the next automatic one. |
 | `[recovery] rebuild_timeout_secs` | `3600` | How long a new member's rebuild may make no progress (state or `rebuilt_bytes` unchanged) before the replacement is undone. Not a limit on the whole rebuild (#65). |
@@ -615,9 +626,10 @@ worked example.
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | required | Node name, also its registry key. |
-| `engine_url` | required | stormblock management base URL, e.g. `http://192.168.8.150:9090`. |
+| `engine_url` | required | stormblock management base URL, e.g. `http://192.168.8.150:9090` or `https://192.168.8.150:9090`. |
 | `api_token` | unset | Bearer token for that engine's API. Unset: `token_file`, then the `[local]` rule (shared token; minted token only for an engine on this machine, #12). |
 | `token_file` | unset | File holding that engine's token, read on every call (#12). |
+| `ca_file` | unset | The CA for this engine when it is `https://`, for a cluster with a CA of its own (#96). Before `[engine_tls] ca_file`. |
 | `labels` | `{}` | Rung → value. `node` and `cluster` default to `name` (SNO). Config labels override the labels the engine reports. |
 | `tier` | unset | Free-form tier role (`high`, `medium`, `backup`, …). |
 

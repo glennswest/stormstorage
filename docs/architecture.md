@@ -108,6 +108,12 @@ skipped poll counts as failed, the first refusal is one WARN plus an
 `auth` event, and later ones are summarised at most every 5 min. A changed
 token is tried at once.
 
+An engine may be `https://` (*implemented, #96*). It is verified against
+`[[nodes]] ca_file`, else `[engine_tls] ca_file`, and nothing else; a
+server that fails that gets no request, and there is no fallback to plain.
+Bare addresses (cluster peers, heartbeats) take `[engine_tls]
+address_scheme`.
+
 ### The federation tree
 
 Physical chain (what fails together) and logical overlay (who groups with

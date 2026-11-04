@@ -37,6 +37,12 @@ thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# The TLS stand-in engine of tests/engine_tls.rs (#96); both are in the lock
+# already, through reqwest.
+[dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+
 [profile.release]
 lto = true
 codegen-units = 1

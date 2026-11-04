@@ -154,9 +154,16 @@ impl AppState {
         }
     }
 
-    pub(crate) fn engine_for(&self, node: &Node) -> Engine {
-        Engine::new(&node.config.engine_url, self.engine_token(&node.config))
+    pub fn engine_for(&self, node: &Node) -> Engine {
+        Engine::new(&node.config.engine_url, self.engine_token(&node.config), self.engine_ca(&node.config))
             .with_admin(self.admin_credential(&node.config.engine_url))
+    }
+
+    /// The CA that verifies a node's engine over https (#96): the node's
+    /// own, else `[engine_tls] ca_file`.
+    pub fn engine_ca<'a>(&'a self, node: &'a NodeConfig) -> Option<&'a str> {
+        let set = |f: &'a Option<String>| f.as_deref().filter(|p| !p.trim().is_empty());
+        set(&node.ca_file).or_else(|| set(&self.config.engine_tls.ca_file))
     }
 
     /// What to present for the engine's destructive verbs (#47,
@@ -1458,13 +1465,15 @@ struct Announce {
     volumes: Vec<serde_json::Value>,
 }
 
-pub(crate) fn engine_url_from(node_addr: &str) -> String {
+/// An engine's URL from what it announces. A bare address takes `scheme`
+/// (`[engine_tls] address_scheme`, #96); a full URL keeps its own.
+pub(crate) fn engine_url_from(node_addr: &str, scheme: &str) -> String {
     if node_addr.contains("://") {
         node_addr.trim_end_matches('/').to_string()
     } else if node_addr.contains(':') {
-        format!("http://{node_addr}")
+        format!("{scheme}://{node_addr}")
     } else {
-        format!("http://{node_addr}:9090")
+        format!("{scheme}://{node_addr}:9090")
     }
 }
 
@@ -1472,7 +1481,7 @@ async fn register_node(
     State(s): State<Arc<AppState>>,
     Json(a): Json<Announce>,
 ) -> Json<serde_json::Value> {
-    let url = engine_url_from(&a.node_addr);
+    let url = engine_url_from(&a.node_addr, &s.config.engine_tls.address_scheme);
     let mut fed = s.fed.write().await;
     let is_new = !fed.nodes.contains_key(&a.hostname);
     let node = fed.nodes.entry(a.hostname.clone()).or_insert_with(|| Node {
@@ -1481,6 +1490,7 @@ async fn register_node(
             engine_url: url.clone(),
             api_token: None,
             token_file: None,
+            ca_file: None,
             labels: Default::default(),
             tier: None,
         },
@@ -1519,7 +1529,7 @@ async fn deregister_node(
     State(s): State<Arc<AppState>>,
     Json(d): Json<Deregister>,
 ) -> Json<serde_json::Value> {
-    let url = engine_url_from(&d.node_addr);
+    let url = engine_url_from(&d.node_addr, &s.config.engine_tls.address_scheme);
     let mut fed = s.fed.write().await;
     let mut name = None;
     for n in fed.nodes.values_mut() {
@@ -1649,10 +1659,13 @@ mod tests {
 
     #[test]
     fn engine_url_derivation() {
-        assert_eq!(engine_url_from("10.0.0.1:9090"), "http://10.0.0.1:9090");
-        assert_eq!(engine_url_from("10.0.0.1"), "http://10.0.0.1:9090");
+        assert_eq!(engine_url_from("10.0.0.1:9090", "https"), "https://10.0.0.1:9090");
+        assert_eq!(engine_url_from("10.0.0.1", "https"), "https://10.0.0.1:9090");
+        assert_eq!(engine_url_from("http://x:9090/", "https"), "http://x:9090", "a full URL keeps its scheme");
+        assert_eq!(engine_url_from("10.0.0.1:9090", "http"), "http://10.0.0.1:9090");
+        assert_eq!(engine_url_from("10.0.0.1", "http"), "http://10.0.0.1:9090");
         assert_eq!(
-            engine_url_from("http://x:9090/"),
+            engine_url_from("http://x:9090/", "http"),
             "http://x:9090"
         );
     }

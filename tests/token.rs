@@ -93,6 +93,7 @@ fn registered(url: &str) -> FedState {
                 engine_url: url.into(),
                 api_token: None,
                 token_file: None,
+                ca_file: None,
                 labels: Default::default(),
                 tier: None,
             },
@@ -258,7 +259,7 @@ async fn destructive_verbs_carry_the_admin_credential() {
     for gated in [true, false] {
         let seen: Seen = Default::default();
         let url = gated_engine(seen.clone(), gated).await;
-        let e = Engine::new(&url, Some("node".into())).with_admin(Some("admin".into()));
+        let e = Engine::new(&url, Some("node".into()), None).with_admin(Some("admin".into()));
         e.create_raid1(&["d1".into(), "d2".into()]).await.unwrap();
         e.array_add_member("arr", "d3").await.unwrap();
         e.array_remove_member("arr", "m1").await.unwrap();
