@@ -150,7 +150,7 @@ The source is `src/registry.rs`, `src/placement.rs`,
 
 | | Issue |
 |---|---|
-| Handover from a live RAID head (planned promote, dual-attach commit) | stormblock#296 |
+| Handover from a live RAID head (planned promote, dual-attach commit) | #100 (stormblock#296 landed) |
 | Sync evidence from leg superblocks while the head is gone | #48 → stormblock#309 |
 | HA on a real fleet fastetcd (code is in) | #34 → stormcluster#55 |
 
@@ -238,8 +238,8 @@ write without the token when `api_token` is set.
 - **Biggest risks today:**
   - re-leg (#1), serving to named consumer hosts (#2, #51) and
     replication on the head (#33) passed live against stormblock 20.0.0
-    engines (2026-10-13). A handover from a live head still waits on
-    stormblock#296;
+    engines (2026-10-13). A handover from a live head still waits on #100
+    (stormblock#296 landed);
   - none of it has run on a node's fleet yet.
 - **Next:** a release on the test machines; turning on automatic re-head once a lost head
   is fenced by cluster membership (#14 is in, off by default).

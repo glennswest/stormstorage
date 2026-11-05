@@ -232,7 +232,7 @@ optimization.
   #14*): the legs are plain volumes. `promote` opens the surviving legs on
   a leg's node and re-imports the same array from their superblocks
   (`POST /api/v1/arrays/assemble`), with the served volume on its slab.
-  From a head that is still alive it waits on stormblock#296. See
+  From a head that is still alive it waits on #100 (stormblock#296 has landed, v23.7.0; the call is not made yet). See
   [replication.md](replication.md).
 - **Implemented (v0.3.0)**: stormblock#73 landed (2026-08-28) — the
   engine attaches `nvme-tcp://` URIs as drives and RAID members. Assembly
@@ -396,7 +396,7 @@ PVE = backup). Tier migration = leg moves between pools:
 time into the destination pool through the leg-move sequence (new leg,
 rebuild, old leg retired). When every leg is there, the volume's pool
 changes. The head's own leg moves by promote only. A handover from a live
-head waits on stormblock#296, so until then a migration ends
+head waits on #100 (stormblock#296 landed), so until then a migration ends
 `waiting_handover` with every other leg moved. The backup tier is
 asymmetric by design: it holds point-in-time backups (snapshots shipped
 on an interval, N kept), not a synchronous mirror member. See
@@ -448,8 +448,8 @@ Snapshots, group snapshots (one node) and copy-on-write clones are
 served from here (#49, owner decisions 2026-10-09). They live on the node
 that serves the volume's data, so a clone shares its source's head and
 legs, and the source cannot be deleted under it. Full copies onto new
-legs wait on stormblock#295, and `encrypted`/`qos_class` are refused
-until stormblock#319. Expand (#73) grows every leg on its own engine, then
+legs are not built (the live mirror, stormblock#295, could carry them), and `encrypted`/`qos_class` are refused
+because stormstorage does not carry them (stormblock#319 closed: the engine refuses `encrypted` itself). Expand (#73) grows every leg on its own engine, then
 the head's array and its slab (stormblock#318), then the served volume;
 `size_bytes` moves once all three have, and a clone grows only as far as
 its parent. What it still
@@ -626,12 +626,12 @@ stormconsole#53).
    API auth (#6), the test container (#8), and the engine token on every
    call with a back-off for an engine that refuses it (#38).
 3. **Rebalance + tier migration** (#30, #31, #32): in. Moving the
-   head's own leg waits on a live handover (stormblock#296).
+   head's own leg waits on a live handover (#100: stormblock#296 landed).
 4. **Replication on the RAID head** (#33, *done*, live-verified
    2026-10-13): sync state, fence, promote, prestage, dual-attach over
    DistVolumes (owner, stormblock#179 option b); enforcement at the legs
    is in the engine (stormblock#6); handover from a live head waits on
-   stormblock#296. Point-in-time backups (#46):
+   #100 (stormblock#296 landed in v23.7.0). Point-in-time backups (#46):
    built; the copy waits on stormblock#399/#400. VM-disk migration
    (#44) over the engine's live mirror (stormblock#295): in.
 5. **HA** (#34): in — state in a fleet fastetcd, one leader elected by

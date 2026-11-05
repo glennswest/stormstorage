@@ -218,7 +218,7 @@ the head onto `target_node`:
   its members. That does not exist yet: deleting the array is refused
   while the served volume is pinned to it, and closing its drives writes
   failure marks into the surviving legs' superblocks. This is
-  **stormblock#296**. Promote proceeds when the old head is gone
+  **stormblock#296** (landed in v23.7.0 as `arrays/{id}/release`; stormstorage calls it only once #100 is done). Promote proceeds when the old head is gone
   (failover).
 
 The steps (the volume's claim is held, so no re-leg or assembly runs
@@ -259,7 +259,7 @@ volume of that id. If the former head still holds the array (a
 partition, not a restart), it is **left alone** and reported once as an
 error event: closing its drives would write into the legs. The legs
 refuse its writes (fenced, stormblock#6), and it can let go only once
-stormblock#296 lands.
+#100 uses stormblock#296 (landed).
 
 **Automatic re-head (#14)** is opt-in and **off by default**
 (`[recovery] rehead`, owner 2026-10-06). Turn it on only once a lost head
@@ -315,7 +315,7 @@ applies the class when it builds the array. The rates are `[recovery] rate_low` 
   `epoch` must be the window's (412 otherwise). `abort` closes it with the
   head unchanged. `commit` closes it, then fences at that epoch and
   promotes the target. With the old head alive, that promote is refused
-  until stormblock#296 (above), and the volume is left fenced.
+  until #100 (above), and the volume is left fenced.
 - A window past its expiry is closed by the reconciler (abort), with an
   event.
 
@@ -340,7 +340,7 @@ engines (`tests/replication.rs`) and in unit tests (`src/head.rs`).
 - Sync evidence from superblocks while the head is gone (#48) waits on
   stormblock#309: until then a lost head's legs read `detached`.
 - Handover from a live head (planned promote, dual-attach commit):
-  stormblock#296.
+  #100 (stormblock#296 landed).
 - Automatic re-head (#14) is in, opt-in; turning it on waits on fencing
   through cluster membership (stormcluster).
 - Async catch-up legs for the backup tier: not started. Today every leg

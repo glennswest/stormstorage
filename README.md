@@ -180,7 +180,7 @@ stormview components feed on **:9093**.
   - **A clone, or a restore,** is `POST /api/v1/volumes` with `source
     {kind: snapshot|volume, id}`. It is a copy-on-write clone on the
     source's node (owner, 2026-10-09; full copies onto legs of its own
-    wait on stormblock#295).
+    are not built; the engine's live mirror, stormblock#295, could carry them).
     - It is at least the source's size. It has `assembly: clone`, no
       legs, and `clone_of {source, parent}`, and it is served as itself.
       Its `health` and `raid` are its parent's.
@@ -191,10 +191,10 @@ stormview components feed on **:9093**.
       `extent_size_bytes` given with `source` are a 400.
     - A volume with clones or snapshots on its data cannot be deleted
       (409).
-  - **`encrypted: true` or `qos_class`** on create is a 501 until
-    stormblock#319: the engine would only record them.
-  - **Expand** waits on stormblock#318 (growing a RAID1 array and its
-    slab).
+  - **`encrypted: true` or `qos_class`** on create is a 501: stormstorage
+    does not carry them to the engine (stormblock refuses `encrypted: true`
+    with 422 and validates `qos_class`, stormblock#319, #232).
+  - **Expand** is built (#73, stormblock#318, v23.9.0); see its route below.
 - **Tier migration (#32).** `POST /api/v1/volumes/{name}/migrate {pool}`
   moves every leg of an assembled volume into another pool, for example
   from the 3.5" cluster's pool to the 2.5" one. It is refused (409) when
@@ -209,7 +209,7 @@ stormview components feed on **:9093**.
   to the best node of the pool in a domain distinct from the legs that
   stay. It uses the leg-move sequence (reason `tier migration`), so the
   volume never has fewer copies. **The head's own leg moves by promote
-  only**, and a handover from a live head needs stormblock#296. So once
+  only**, and a handover from a live head needs the engine's `arrays/{id}/release` (stormblock#296, landed; used from here once #100 is done). So once
   only that leg is outside the pool, the migration is `waiting_handover`,
   with an event saying so. When every leg is in the pool, the volume's
   `pool` and `rung` become the destination's and the migration is
@@ -478,7 +478,7 @@ stormview components feed on **:9093**.
   surviving leg's node and re-imports the same array from the legs'
   superblocks. `prestage` replaces a slave at the volume's
   `bandwidth_class`. Dual-attach windows commit by fence + promote.
-  A handover from a head that is still alive waits on stormblock#296.
+  A handover from a head that is still alive is refused until #100 uses stormblock#296's `arrays/{id}/release` (landed in v23.7.0).
   The legs enforce the fence (stormblock#6): a fence revokes the old
   head's attachments and a stale attach is a 412, to the contract in
   [docs/replication.md](docs/replication.md). Live-verified against
@@ -545,7 +545,7 @@ stormview components feed on **:9093**.
     target volume. Records are kept (replicated, in the store), and
     completed/aborted ones are dropped a day later. Feed: `vmmig:<mid>`.
 
-**Not done yet** (tracked in issues, see [Status](#status)): moving a head by handover (stormblock#296),
+**Not done yet** (tracked in issues, see [Status](#status)): moving a head by handover (#100: stormblock#296 has landed, the call is not made yet),
 which is what a tier migration of the head's own leg waits on.
 
 ## Running
@@ -719,7 +719,7 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, source?: {kind: snapshot|volume, id}, hosts?: [{host_nqn, dhchap?}]}` (`source`: a copy-on-write clone, #49; `encrypted`/`qos_class`: 501 until stormblock#319; `raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, source?: {kind: snapshot|volume, id}, hosts?: [{host_nqn, dhchap?}]}` (`source`: a copy-on-write clone, #49; `encrypted`/`qos_class`: 501, not carried to the engine; `raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
 | GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `extent_size_bytes` (when asked at create), `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`), and `raid {level, members, health, rebuilding}` (#68). `GET /api/v1/volumes` lists the same. |
 | POST | `/api/v1/snapshots` | Snapshot `{name, volume_id}` on the node serving the volume (#49): /v1's `Snapshot` (`id` = name) plus `parent`, `node`, `engine_name`, `engine_id`. Idempotent on name. |
 | GET | `/api/v1/snapshots` | Bare array (as /v1); `?name=`, `?source_volume=`. `GET /api/v1/snapshots/{id}` one, `DELETE` removes it (409 for a group's member). |
@@ -728,7 +728,7 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes/{name}/backup/points/{point}/restore` | `{name}`: a new single-leg volume on the backup node holding that point (also for a deleted volume's backups). `DELETE …/backup/points/{point}` drops a point. `GET /api/v1/backups` lists every backup. |
 | GET | `/api/v1/volumes/{name}/replicas` | The volume in `/v1`'s replica shape (#33): `{id, name, size_bytes, epoch, fenced, health, raid, replicas[{node, role, sync}], bandwidth_class, extent_size_bytes, head, dual_attach, sync_read_at, sync_source, head_read_at, rebuild_bytes_per_sec}`. With the head unreachable, sync is read from the legs' superblocks (#48). |
 | POST | `/api/v1/volumes/{name}/fence` | `{expected_epoch}` → `{epoch, legs_fenced, legs_not_fenced}`. CAS: 412 `{code: "stale_epoch", current_epoch}` on a mismatch; 409 unless mirrored. |
-| POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (stormblock#296); 502 when the legs do not assemble there. |
+| POST | `/api/v1/volumes/{name}/promote` | `{target_node, fenced_epoch}` → the volume, headed on the target. 412 unless fenced at that epoch; 409 with a window open, a replacement running, no leg on the target, or the old head still alive (#100: stormblock#296 landed, not called yet); 502 when the legs do not assemble there. |
 | PUT | `/api/v1/volumes/{name}/bandwidth-class` | `{bandwidth_class}` (`low`, `normal`, `high`, `unthrottled`) → the volume plus `rebuild_cap {bytes_per_sec, applied, pending, message?}` (#60). Records the class, which later prestages, re-legs and promotes use, and puts its cap on the head's array at once. Idempotent. With the head unreachable it is recorded with `rate_pending` and applied when the head answers. |
 | POST | `/api/v1/volumes/{name}/expand` | `{size_bytes}` → the volume (#73, stormblock-csi's ExpandVolume). Grow only: a smaller size is 409, the same size with nothing in flight is the record. In order: every leg on its own engine (`POST /v1/volumes/{id}/expand`), the head's array and its dedicated slab (`POST /api/v1/arrays/{id}/grow`, stormblock ≥ 23.9.0, admin credential), then the served volume (`/v1` expand; an adopted one `PATCH /api/v1/volumes/{id}/resize`), checked by its engine size. `size_bytes` moves only once all three have grown; until then `expanding {to_bytes, array_bytes_before, array_grown, slab_short, message}` is on the record, and the same call resumes it (a replacement leg made meanwhile is carved at the target). A single leg grows its leg; a clone grows its own volume, up to its parent's size (expand the parent first). 409 while fenced, degraded, pending, replacing, windowed, migrating, being deleted or gone, a node not answering, a leg the engine did not grow (the array grow refuses), or an array slab from before stormblock#318 (`slab_short`: its volumes need a new array). A backup volume (#46) grows before its next ship. |
 | POST | `/api/v1/volumes/{name}/prestage` | `{node?, from?, bandwidth_class?}` → `{replacing, to, bandwidth_class}`. Replaces a slave leg; 409 for the head as `node` or `from`. |
@@ -740,7 +740,7 @@ with a token set, their Delete/Publish actions get 401.
 | DELETE | `/api/v1/volumes/{name}/export/hosts/{host_nqn}` | Stop serving it to that host: `{host_nqn, withdrawn: done\|pending\|nothing_served}`. |
 | POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
 | DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
-| POST | `/api/v1/volumes/{name}/migrate` | Body `{pool}`. Tier migration (#32): every leg moves into that pool, one at a time; the head's own leg waits on a handover (stormblock#296). Returns the `migration`. 404 for an unknown volume or pool, 409 when it cannot start (see *Tier migration*). |
+| POST | `/api/v1/volumes/{name}/migrate` | Body `{pool}`. Tier migration (#32): every leg moves into that pool, one at a time; the head's own leg waits on a handover (#100). Returns the `migration`. 404 for an unknown volume or pool, 409 when it cannot start (see *Tier migration*). |
 | DELETE | `/api/v1/volumes/{name}/migrate` | Cancel the tier migration: `{cancelled}`. Legs already moved stay. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
 | POST | `/api/v1/nodes/{node}/volumes/{id}/migrate` | `{to, name?}` → 202 and the migration (#44): mirror the node volume `id` (engine id or name) on `node`, in use, to a new volume on `to`. 400 for `to` = `node`; 404 for an unknown node or volume; 409 when either node does not answer, the volume is mirrored or migrating, `to` holds a volume of that name, or S's engine refuses the mirror (a secret volume). |
@@ -965,8 +965,9 @@ done. The open work:
 
 - #8: the test suites are in and run on C2NR0Q2; see the issue for the
   latest run;
-- stormblock#296: a handover from a live RAID head (planned promote,
-  dual-attach commit, a tier migration's head leg). Failover from a lost
+- #100: a handover from a live RAID head (planned promote,
+  dual-attach commit, a tier migration's head leg) over stormblock#296,
+  which has landed (v23.7.0); stormstorage does not call it yet. Failover from a lost
   head is done and live-verified (#33);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);

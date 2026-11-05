@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-04 (docs refresh)
+- **docs:** Refreshed from the code since 2026-10-29: the only code change is #96 (engine over https), already documented (`[engine_tls]`, `[[nodes]] ca_file`, `scripts/e2e-engine-tls.sh`). Stale blockers fixed (#95): full copies no longer "wait on stormblock#295" (landed; not built), `encrypted`/`qos_class` are refused because stormstorage does not carry them (stormblock#319 closed), expand no longer "waits on" stormblock#318 (built, #73), and a live-head handover now points at #100 (stormblock#296 landed in v23.7.0; not called yet). Source comments/messages for #95 stay with that issue.
+
 ### 2026-11-04 (#96)
 - **feat:** Engines over https, for stormcos#374 (stormblock#203). An `https://` `engine_url` is verified against `[[nodes]] ca_file`, else the new `[engine_tls] ca_file`, and only that file: never the built-in roots, no skip-verify key, no fallback to plain, no redirect to plain. With no usable CA the handshake fails, no request is sent, and one WARN per engine says why. The file is read for each engine client, so a renewed CA needs no restart. `http://` is unchanged.
 - **feat:** `[engine_tls] address_scheme` (`http` by default, or `https`) is the scheme for an engine known only by its address: a cluster peer's `mgmt_addr`, a heartbeat's `node_addr`.
