@@ -88,7 +88,7 @@ async fn start(test: &str) -> Option<Fastetcd> {
         .args(["--listen-peer-urls", &format!("http://127.0.0.1:{peer}")])
         .args(["--initial-advertise-peer-urls", &format!("http://127.0.0.1:{peer}")])
         .args(["--initial-cluster", &format!("default=http://127.0.0.1:{peer}")])
-        .args(["--listen-metrics-urls", &format!("http://127.0.0.1:{metrics}")])
+        .args(["--listen-metrics-url", &format!("127.0.0.1:{metrics}")])
         .args(["--cert-file", &d("fastetcd.crt"), "--key-file", &d("fastetcd.key")])
         .args(["--trusted-ca-file", &d("ca.crt"), "--client-cert-auth"])
         .stdout(Stdio::from(log.try_clone().unwrap()))
