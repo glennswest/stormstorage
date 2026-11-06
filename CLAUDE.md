@@ -990,6 +990,40 @@ that never answered said nothing about why (fixed, 758aeab). Not seen on a
 node yet: stormcos sets the keys. A client pair (stormcos#374 item 2) is not
 used; the token stays the credential.
 
+### One cluster stormstorage on multi-node (#56, P3) — in progress 2026-11-06
+Election, shared state and forwarding are #34. What is left, settled with
+what stormcos#354 proposes (a Service cannot select a stormd service, so no
+label: **the leader keeps the Endpoints of a selectorless Service**; rustkube
+mirrors them into EndpointSlices, rustkube#133):
+- `[store] publish_service = "<ns>/<name>"`: each round, the leader makes that
+  Endpoints object say its `advertise_url` (IP, port; a hostname is resolved, a
+  loopback refused). Written only when different; `store.publish` in
+  `/api/v1/store` and health; an event on a change. A stale write by a deposed
+  leader is corrected by the new one's next round, and a follower behind the
+  Service still answers (reads local, writes forwarded).
+- **Members from stormcluster** (`[local] cluster_members`, only with the
+  etcd store): `GET /apis/cluster.storm.io/v1alpha1/clustermembers` each poll;
+  every member with `status.address` is a node (`NodeSource::Member`, its name
+  the cluster's, label `storage`), so all instances know the same nodes and a
+  failover can reach the old leader's legs. The local engine takes its member's
+  name. An unreadable list changes nothing.
+- **Peer engines: the `[kubernetes]` bearer** (owner, stormcos#241 2026-10-09:
+  Kubernetes identity, no shared engine token; stormblock#382), supersedes
+  the shared-token note on #56. Only to engines of a member read from the
+  apiserver (never a self-registered URL: register is open until #77).
+- **Env overrides** for what differs per node, written by stormcluster into
+  `env.d/stormstorage`: `STORMSTORAGE_STORE_BACKEND`,
+  `STORMSTORAGE_STORE_ADVERTISE_URL`. An SNO stays `file`.
+- A client pair renewed under a running instance is picked up (it would
+  otherwise lose etcd at expiry).
+- First load over local volumes the store does not hold (a node that joined):
+  state copy kept, `store_displaced_volumes` condition, Error event.
+- Live check against a real fastetcd (mTLS; with auth on, a CN user limited
+  to the prefix): tests/fastetcd.rs, `SC_TOOLS=fastetcd sc-build
+  scripts/e2e-fastetcd.sh`.
+- Then: Service/RBAC/pair on stormcos#354, env.d on stormcluster, entry via
+  the master, placement only on storage members as a follow-up.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
