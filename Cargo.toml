@@ -35,7 +35,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "1"
 clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# http2: fastetcd's TLS port offers only h2 in ALPN (#56).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 
 # The TLS stand-in engine of tests/engine_tls.rs (#96); both are in the lock
 # already, through reqwest.

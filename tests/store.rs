@@ -525,9 +525,9 @@ async fn cluster_members_are_nodes_and_only_their_engines_get_the_bearer() {
     api.lock().unwrap().members_status = Some(axum::http::StatusCode::FORBIDDEN);
     stormstorage::registry::poll_once(&a).await;
     assert!(a.fed.read().await.nodes.contains_key("m1"));
-    let noted = a.events.read().await.since(0).iter().filter(|e| e.message.contains("not readable")).count();
+    let noted = a.events.read().await.since(0).iter().filter(|e| e.message.contains("cluster members not readable")).count();
     stormstorage::registry::poll_once(&a).await;
-    assert_eq!(a.events.read().await.since(0).iter().filter(|e| e.message.contains("not readable")).count(), noted);
+    assert_eq!(a.events.read().await.since(0).iter().filter(|e| e.message.contains("cluster members not readable")).count(), noted);
     assert_eq!(noted, 1);
 
     // A member that left is forgotten, and loses the bearer.

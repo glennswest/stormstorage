@@ -253,7 +253,9 @@ impl Etcd {
                     }
                     return Ok(v.get("result").cloned().unwrap_or(v));
                 }
-                Err(e) => errors.push(format!("{url}: {e}")),
+                // With its causes: "error sending request" alone hides a refused
+                // certificate or a TLS failure.
+                Err(e) => errors.push(format!("{url}: {:#}", anyhow::Error::from(e))),
             }
         }
         anyhow::bail!("no etcd endpoint answered: {}", errors.join("; "))
