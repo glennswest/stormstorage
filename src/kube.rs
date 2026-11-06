@@ -261,7 +261,7 @@ fn endpoints_say(ep: &Value, ip: &str, port: u16, leader: &str) -> bool {
     let ports = one["ports"].as_array().map(Vec::as_slice).unwrap_or_default();
     matches!(addrs, [a] if a["ip"] == ip)
         && matches!(ports, [p] if p["port"] == port)
-        && one["notReadyAddresses"].as_array().is_none_or(Vec::is_empty)
+        && one["notReadyAddresses"].as_array().map_or(true, Vec::is_empty)
         && ep["metadata"]["annotations"][LEADER_ANNOTATION] == leader
 }
 
