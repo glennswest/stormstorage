@@ -188,15 +188,149 @@ pub fn join(node: &str, inv: &mut NodeInventory, claims: &BTreeMap<(String, Stri
     }
 }
 
-async fn fetch(cfg: &KubeConfig) -> anyhow::Result<(Vec<Value>, Vec<Value>)> {
+fn client(cfg: &KubeConfig) -> anyhow::Result<reqwest::Client> {
     let mut http = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .danger_accept_invalid_certs(cfg.skip_tls_verify());
     if let Some(ca) = cfg.ca_file.as_deref().filter(|p| !p.trim().is_empty()) {
         let pem = std::fs::read(ca).map_err(|e| anyhow::anyhow!("ca_file {ca}: {e}"))?;
-        http = http.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+        // A joined node's ca.crt is a bundle (its CA, then the cluster's).
+        for cert in reqwest::Certificate::from_pem_bundle(&pem)? {
+            http = http.add_root_certificate(cert);
+        }
     }
-    let http = http.build()?;
+    Ok(http.build()?)
+}
+
+/// One member of this node's cluster, from stormcluster's `ClusterMember`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    pub name: String,
+    /// `status.address`: the node's address, its engine's host.
+    pub address: String,
+    /// `spec.storage`: it serves its drives to other nodes.
+    pub storage: bool,
+}
+
+/// The members in a `ClusterMember` list. One with no address yet (it has
+/// not joined) is not a node yet.
+pub fn members_of(items: &[Value]) -> Vec<Member> {
+    items
+        .iter()
+        .filter_map(|m| {
+            let address = m["status"]["address"].as_str().filter(|a| !a.is_empty())?;
+            Some(Member {
+                name: m["metadata"]["name"].as_str().filter(|n| !n.is_empty())?.to_string(),
+                address: address.to_string(),
+                storage: m["spec"]["storage"].as_bool().or(m["status"]["storage"].as_bool()).unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+/// The cluster's members. A cluster without stormcluster's CRD (404) has
+/// none; anything else that is not an answer is an error, and the caller
+/// keeps what it knew.
+pub async fn members(cfg: &KubeConfig) -> anyhow::Result<Vec<Member>> {
+    const PATH: &str = "/apis/cluster.storm.io/v1alpha1/clustermembers";
+    let http = client(cfg)?;
+    let mut req = http.get(format!("{}{PATH}", cfg.server.trim_end_matches('/')));
+    if let Some(t) = cfg.token() {
+        req = req.bearer_auth(t);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        anyhow::bail!("GET {PATH}: {status} (token: {})", cfg.token_source().1);
+    }
+    let body: Value = resp.json().await?;
+    Ok(members_of(body["items"].as_array().map(Vec::as_slice).unwrap_or_default()))
+}
+
+/// Annotation on the published Endpoints: the instance that leads.
+pub const LEADER_ANNOTATION: &str = "stormstorage.storm.io/leader";
+
+/// Whether an Endpoints object already says this address, port and leader.
+fn endpoints_say(ep: &Value, ip: &str, port: u16, leader: &str) -> bool {
+    let subsets = ep["subsets"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let [one] = subsets else { return false };
+    let addrs = one["addresses"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let ports = one["ports"].as_array().map(Vec::as_slice).unwrap_or_default();
+    matches!(addrs, [a] if a["ip"] == ip)
+        && matches!(ports, [p] if p["port"] == port)
+        && one["notReadyAddresses"].as_array().is_none_or(Vec::is_empty)
+        && ep["metadata"]["annotations"][LEADER_ANNOTATION] == leader
+}
+
+/// Make the Endpoints `namespace/name` say `ip:port`, and nothing else. The
+/// port is unnamed, as a single-port Service's is. Returns whether it wrote.
+pub async fn keep_endpoints(
+    cfg: &KubeConfig,
+    (namespace, name): (&str, &str),
+    ip: &str,
+    port: u16,
+    leader: &str,
+) -> anyhow::Result<bool> {
+    let http = client(cfg)?;
+    let token = cfg.token();
+    let auth = |r: reqwest::RequestBuilder| match &token {
+        Some(t) => r.bearer_auth(t),
+        None => r,
+    };
+    let base = cfg.server.trim_end_matches('/');
+    let list = format!("/api/v1/namespaces/{namespace}/endpoints");
+    let path = format!("{list}/{name}");
+    let subsets = serde_json::json!([{
+        "addresses": [{ "ip": ip }],
+        "ports": [{ "port": port, "protocol": "TCP" }],
+    }]);
+    let resp = auth(http.get(format!("{base}{path}"))).send().await?;
+    let found = resp.status();
+    let refused = |verb: &str, at: &str, status: reqwest::StatusCode, body: String| {
+        anyhow::anyhow!("{verb} {at}: {status} {} (token: {})", body.trim(), cfg.token_source().1)
+    };
+    let sent = if found == reqwest::StatusCode::NOT_FOUND {
+        let ep = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Endpoints",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "annotations": { LEADER_ANNOTATION: leader },
+            },
+            "subsets": subsets,
+        });
+        ("POST", list.clone(), auth(http.post(format!("{base}{list}"))).json(&ep).send().await?)
+    } else if found.is_success() {
+        let mut ep: Value = resp.json().await?;
+        if endpoints_say(&ep, ip, port, leader) {
+            return Ok(false);
+        }
+        ep["subsets"] = subsets;
+        // The object's own resourceVersion goes back: a write that crossed
+        // another is a 409, and the next round looks again.
+        if !ep["metadata"]["annotations"].is_object() {
+            ep["metadata"]["annotations"] = serde_json::json!({});
+        }
+        ep["metadata"]["annotations"][LEADER_ANNOTATION] = serde_json::json!(leader);
+        ("PUT", path.clone(), auth(http.put(format!("{base}{path}"))).json(&ep).send().await?)
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(refused("GET", &path, found, body));
+    };
+    let (verb, at, resp) = sent;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(refused(verb, &at, status, resp.text().await.unwrap_or_default()));
+    }
+    Ok(true)
+}
+
+async fn fetch(cfg: &KubeConfig) -> anyhow::Result<(Vec<Value>, Vec<Value>)> {
+    let http = client(cfg)?;
     let token = cfg.token();
     let base = cfg.server.trim_end_matches('/');
     let mut lists = Vec::new();
@@ -347,6 +481,32 @@ mod tests {
             assert_eq!(v.len(), 1);
             assert_eq!(v[&("n1".to_string(), "fastetcd-data".to_string())].pv, "storm-fastetcd-data-n1");
         }
+    }
+
+    #[test]
+    fn members_need_an_address() {
+        let items = [
+            json!({"metadata": {"name": "m1"}, "spec": {"role": "master"}, "status": {"address": "10.0.0.1"}}),
+            json!({"metadata": {"name": "w1"}, "spec": {"storage": true}, "status": {"address": "10.0.0.2"}}),
+            json!({"metadata": {"name": "new"}, "spec": {"storage": true}, "status": {"phase": "Pending"}}),
+        ];
+        let m = members_of(&items);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].name.as_str(), m[0].address.as_str(), m[0].storage), ("m1", "10.0.0.1", false));
+        assert!(m[1].storage);
+    }
+
+    #[test]
+    fn endpoints_compare() {
+        let ep = json!({
+            "metadata": {"annotations": {LEADER_ANNOTATION: "a"}},
+            "subsets": [{"addresses": [{"ip": "10.0.0.1"}], "ports": [{"port": 9093}]}],
+        });
+        assert!(endpoints_say(&ep, "10.0.0.1", 9093, "a"));
+        assert!(!endpoints_say(&ep, "10.0.0.2", 9093, "a"));
+        assert!(!endpoints_say(&ep, "10.0.0.1", 9094, "a"));
+        assert!(!endpoints_say(&ep, "10.0.0.1", 9093, "b"));
+        assert!(!endpoints_say(&json!({"metadata": {}}), "10.0.0.1", 9093, "a"));
     }
 
     #[test]

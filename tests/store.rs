@@ -4,6 +4,8 @@
 //! its writes to the leader; when the leader's lease goes the follower
 //! takes over, and the old leader's next write is refused by the guard.
 
+mod common;
+
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -352,6 +354,231 @@ async fn a_leader_whose_lease_expired_steps_down() {
     // And it can win again.
     store(&a).step(&a).await;
     assert_eq!(store(&a).status().role, Role::Leader);
+}
+
+/// An instance that publishes, advertising an address nothing dials.
+async fn publisher(name: &str, etcd: &str, api: &str, advertise: &str) -> Arc<AppState> {
+    let mut config = Config::default();
+    config.local.enabled = false;
+    config.store.backend = StoreBackend::Etcd;
+    config.store.endpoints = vec![etcd.to_string()];
+    config.store.lease_ttl_secs = 3;
+    config.store.instance = Some(name.into());
+    config.store.advertise_url = Some(advertise.into());
+    config.store.publish_service = Some(SERVICE.into());
+    config.kubernetes.server = api.to_string();
+    config.validate().unwrap();
+    Arc::new(AppState::new(config, FedState::default(), None))
+}
+
+const SERVICE: &str = "stormblock-system/stormstorage";
+
+#[tokio::test]
+async fn the_leader_keeps_the_endpoints_and_a_new_leader_takes_them() {
+    let m: Mock = Default::default();
+    let etcd = mock_etcd(m.clone()).await;
+    let api: common::ApiMock = Default::default();
+    let url = common::mock_apiserver(api.clone()).await;
+    let a = publisher("a", &etcd, &url, "http://192.0.2.1:9093").await;
+    let b = publisher("b", &etcd, &url, "http://192.0.2.2:9093").await;
+
+    // A follower writes nothing.
+    store(&a).step(&a).await;
+    store(&b).step(&b).await;
+    assert_eq!(store(&b).status().role, Role::Follower);
+    assert!(store(&b).status().publish.is_none());
+    let want_a = Some(("192.0.2.1".to_string(), 9093, "a".to_string()));
+    assert_eq!(api.lock().unwrap().says(SERVICE), want_a);
+    assert_eq!(api.lock().unwrap().writes, 1, "created once");
+    let st = store(&a).status().publish.unwrap();
+    assert_eq!((st.address.as_deref(), st.port, st.error), (Some("192.0.2.1"), Some(9093), None));
+
+    // Nothing changed: nothing written.
+    store(&a).step(&a).await;
+    assert_eq!(api.lock().unwrap().writes, 1);
+
+    // A deposed leader's late write, or a hand edit, does not last.
+    api.lock().unwrap().endpoints.get_mut(SERVICE).unwrap()["subsets"][0]["addresses"][0]["ip"] = json!("192.0.2.9");
+    store(&a).step(&a).await;
+    assert_eq!(api.lock().unwrap().says(SERVICE), want_a);
+    assert_eq!(api.lock().unwrap().writes, 2);
+
+    // The apiserver refuses: the leadership does not depend on it, the
+    // status says why, and it heals.
+    api.lock().unwrap().endpoints_status = Some(axum::http::StatusCode::FORBIDDEN);
+    store(&a).step(&a).await;
+    assert_eq!(store(&a).status().role, Role::Leader);
+    assert!(store(&a).status().publish.unwrap().error.unwrap().contains("403"));
+    api.lock().unwrap().endpoints_status = None;
+    store(&a).step(&a).await;
+    assert_eq!(store(&a).status().publish.unwrap().error, None);
+
+    // A's lease goes: B leads and the Endpoints follow.
+    tokio::time::sleep(Duration::from_millis(3200)).await;
+    store(&b).step(&b).await;
+    assert_eq!(store(&b).status().role, Role::Leader);
+    assert_eq!(api.lock().unwrap().says(SERVICE), Some(("192.0.2.2".to_string(), 9093, "b".to_string())));
+    // A finds out, and stops publishing.
+    let before = api.lock().unwrap().writes;
+    store(&a).step(&a).await;
+    store(&a).step(&a).await;
+    assert_eq!(store(&a).status().role, Role::Follower);
+    assert!(store(&a).status().publish.is_none());
+    assert_eq!(api.lock().unwrap().writes, before);
+}
+
+#[tokio::test]
+async fn a_loopback_is_never_published() {
+    let m: Mock = Default::default();
+    let etcd = mock_etcd(m.clone()).await;
+    let api: common::ApiMock = Default::default();
+    let url = common::mock_apiserver(api.clone()).await;
+    let a = publisher("a", &etcd, &url, "http://127.0.0.1:9093").await;
+    store(&a).step(&a).await;
+    assert_eq!(store(&a).status().role, Role::Leader);
+    let e = store(&a).status().publish.unwrap().error.unwrap();
+    assert!(e.contains("not an address other nodes can reach"), "{e}");
+    assert!(api.lock().unwrap().endpoints.is_empty());
+}
+
+/// A mock engine recording the bearer it is called with.
+async fn bearer_engine() -> (String, Arc<Mutex<Vec<String>>>) {
+    let seen: Arc<Mutex<Vec<String>>> = Default::default();
+    let record = seen.clone();
+    let app = Router::new()
+        .route(
+            "/v1/nodes/capacity",
+            axum::routing::get(move |h: axum::http::HeaderMap| {
+                let record = record.clone();
+                async move {
+                    let a = h.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("none");
+                    record.lock().unwrap().push(a.to_string());
+                    Json(json!([{ "node": "x", "total_bytes": 1u64 << 30, "free_bytes": 1u64 << 29 }]))
+                }
+            }),
+        )
+        .route("/api/v1/slabs", axum::routing::get(|| async { Json(json!({ "items": [], "count": 0 })) }))
+        .route("/api/v1/volumes", axum::routing::get(|| async { Json(json!({ "items": [], "count": 0 })) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr.to_string(), seen)
+}
+
+#[tokio::test]
+async fn cluster_members_are_nodes_and_only_their_engines_get_the_bearer() {
+    let m: Mock = Default::default();
+    let etcd = mock_etcd(m.clone()).await;
+    let api: common::ApiMock = Default::default();
+    let url = common::mock_apiserver(api.clone()).await;
+    let (member_addr, member_seen) = bearer_engine().await;
+    let (stranger_addr, stranger_seen) = bearer_engine().await;
+
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("members");
+    std::fs::create_dir_all(&dir).unwrap();
+    let token = dir.join("stormstorage.token");
+    std::fs::write(&token, "sa-token\n").unwrap();
+
+    let mut config = Config::default();
+    config.local.enabled = false;
+    // No engine token of any kind on this machine.
+    config.local.token_file = Some(dir.join("absent").display().to_string());
+    config.store.backend = StoreBackend::Etcd;
+    config.store.endpoints = vec![etcd];
+    config.store.instance = Some("a".into());
+    config.kubernetes.server = url;
+    config.kubernetes.token_file = Some(token.display().to_string());
+    config.validate().unwrap();
+
+    // A URL that only announced itself: register is open (#77).
+    let mut fed = FedState::default();
+    let announced: NodeConfig =
+        toml::from_str(&format!("name = \"stranger\"\nengine_url = \"http://{stranger_addr}\"")).unwrap();
+    fed.nodes.insert("stranger".into(), Node { config: announced, status: NodeStatus::new(NodeSource::Registered) });
+    api.lock().unwrap().members = vec![
+        common::member("m1", &member_addr, true),
+        json!({ "metadata": { "name": "joining" }, "spec": {}, "status": { "phase": "Pending" } }),
+    ];
+    let a = Arc::new(AppState::new(config, fed, None));
+    stormstorage::registry::poll_once(&a).await;
+
+    {
+        let fed = a.fed.read().await;
+        let n = &fed.nodes["m1"];
+        assert_eq!(n.status.source, NodeSource::Member);
+        assert!(n.status.healthy, "{:?}", n.status);
+        assert_eq!(n.config.labels["storage"], "true");
+        assert_eq!(n.config.engine_url, format!("http://{member_addr}"));
+        assert!(!fed.nodes.contains_key("joining"), "no address yet");
+    }
+    assert!(api.lock().unwrap().bearers.iter().any(|b| b == "Bearer sa-token"));
+    assert!(member_seen.lock().unwrap().iter().all(|b| b == "Bearer sa-token"));
+    assert!(!member_seen.lock().unwrap().is_empty());
+    assert!(!stranger_seen.lock().unwrap().is_empty());
+    assert!(stranger_seen.lock().unwrap().iter().all(|b| b == "none"), "the bearer stays with members");
+
+    // Members are this instance's own, never in the store.
+    a.persist().await;
+    assert!(m.lock().unwrap().get("/stormstorage/nodes/m1").is_none());
+
+    // An unreadable list changes nothing.
+    api.lock().unwrap().members_status = Some(axum::http::StatusCode::FORBIDDEN);
+    stormstorage::registry::poll_once(&a).await;
+    assert!(a.fed.read().await.nodes.contains_key("m1"));
+    let noted = a.events.read().await.recent(50).iter().filter(|e| e.message.contains("not readable")).count();
+    stormstorage::registry::poll_once(&a).await;
+    assert_eq!(a.events.read().await.recent(50).iter().filter(|e| e.message.contains("not readable")).count(), noted);
+    assert_eq!(noted, 1);
+
+    // A member that left is forgotten, and loses the bearer.
+    api.lock().unwrap().members_status = None;
+    api.lock().unwrap().members.clear();
+    stormstorage::registry::poll_once(&a).await;
+    assert!(!a.fed.read().await.nodes.contains_key("m1"));
+    assert!(a.members.read().unwrap().engines.is_empty());
+    assert!(a.fed.read().await.nodes.contains_key("stranger"));
+}
+
+#[tokio::test]
+async fn volumes_the_store_does_not_hold_are_kept_and_reported() {
+    let m: Mock = Default::default();
+    let etcd = mock_etcd(m.clone()).await;
+    let (a, _) = instance("a", &etcd, FedState::default()).await;
+    store(&a).step(&a).await;
+
+    let mut fed = FedState::default();
+    let vol = serde_json::from_value(json!({
+        "name": "mine",
+        "size_bytes": 1,
+        "pool": null,
+        "replicas": 1,
+        "rung": "node",
+        "legs": [],
+        "assembly": "pending",
+        "created_at": std::time::SystemTime::now(),
+    }))
+    .unwrap();
+    fed.volumes.insert("mine".into(), vol);
+
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("displaced");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut config = Config::default();
+    config.local.enabled = false;
+    config.store.backend = StoreBackend::Etcd;
+    config.store.endpoints = vec![etcd];
+    config.store.instance = Some("b".into());
+    let b = Arc::new(AppState::new(config, fed, Some(dir.join("state.json"))));
+    store(&b).step(&b).await;
+
+    assert!(b.fed.read().await.volumes.is_empty(), "the store wins");
+    let d = store(&b).status().displaced.unwrap();
+    assert_eq!(d.volumes, vec!["mine"]);
+    let copy = d.kept_as.clone().unwrap();
+    assert!(std::fs::read_to_string(&copy).unwrap().contains("\"mine\""), "{copy}");
+    let c = b.conditions();
+    assert_eq!(c[0]["type"], "store_displaced_volumes");
+    assert_eq!(c[0]["volumes"][0], "mine");
 }
 
 #[tokio::test]

@@ -50,6 +50,10 @@ pub struct StoreConfig {
     /// Where the other instances reach this one's API when it leads:
     /// followers forward writes here. Unset = `http://<hostname>:<port>`.
     pub advertise_url: Option<String>,
+    /// `<namespace>/<name>` of a selectorless Service whose Endpoints the
+    /// leader keeps pointing at its `advertise_url` (#56), through the
+    /// `[kubernetes]` apiserver. Unset: nothing is published.
+    pub publish_service: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,11 +76,34 @@ impl Default for StoreConfig {
             lease_ttl_secs: 15,
             instance: None,
             advertise_url: None,
+            publish_service: None,
         }
     }
 }
 
 impl StoreConfig {
+    /// `publish_service` as (namespace, name).
+    pub fn publish_target(&self) -> Option<(&str, &str)> {
+        self.publish_service.as_deref()?.split_once('/')
+    }
+
+    /// What differs per node comes from the environment, because one config
+    /// text ships to every node (#56): stormcluster writes these into
+    /// `env.d/stormstorage` when the node stops being an SNO.
+    fn apply_env(&mut self, get: &dyn Fn(&str) -> Option<String>) -> anyhow::Result<()> {
+        if let Some(b) = get("STORMSTORAGE_STORE_BACKEND") {
+            self.backend = match b.trim() {
+                "file" => StoreBackend::File,
+                "etcd" => StoreBackend::Etcd,
+                other => anyhow::bail!("STORMSTORAGE_STORE_BACKEND {other:?}: must be file or etcd"),
+            };
+        }
+        if let Some(u) = get("STORMSTORAGE_STORE_ADVERTISE_URL").filter(|u| !u.trim().is_empty()) {
+            self.advertise_url = Some(u.trim().to_string());
+        }
+        Ok(())
+    }
+
     pub fn is_etcd(&self) -> bool {
         self.backend == StoreBackend::Etcd
     }
@@ -106,6 +133,15 @@ impl StoreConfig {
         }
         if self.cert_file.is_some() != self.key_file.is_some() {
             anyhow::bail!("store.cert_file and store.key_file go together");
+        }
+        if let Some(svc) = &self.publish_service {
+            let good = |p: &str| {
+                !p.is_empty()
+                    && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+            };
+            if !svc.split_once('/').is_some_and(|(ns, name)| good(ns) && good(name)) {
+                anyhow::bail!("store.publish_service {svc:?}: must be <namespace>/<name>");
+            }
         }
         Ok(())
     }
@@ -201,6 +237,10 @@ pub struct LocalConfig {
     pub name: Option<String>,
     /// Also adopt the live peers in the local engine's stormblock cluster.
     pub cluster_peers: bool,
+    /// With the etcd store: every stormcluster `ClusterMember` the
+    /// `[kubernetes]` apiserver lists is a node (#56), so every instance of
+    /// a cluster knows the same nodes under the same names.
+    pub cluster_members: bool,
     /// Bearer token file for the engine(s): `$STORMBLOCK_API_TOKEN` wins;
     /// otherwise the first readable of this file, `$STORMBLOCK_TOKEN_FILE`,
     /// and [`DEFAULT_TOKEN_FILES`].
@@ -229,6 +269,7 @@ impl Default for LocalConfig {
             engine_url: "http://127.0.0.1:9090".into(),
             name: None,
             cluster_peers: true,
+            cluster_members: true,
             token_file: None,
             shared_token_file: None,
             admin_token_file: None,
@@ -722,11 +763,15 @@ impl Config {
                         "unknown top-level config key, ignored (engine token: [local] token_file)"
                     );
                 }
-                Ok(toml::from_str(&s)?)
+                let mut c: Self = toml::from_str(&s)?;
+                c.store.apply_env(&|k| std::env::var(k).ok())?;
+                Ok(c)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 tracing::info!(?path, "no config file, using defaults");
-                Ok(Self::default())
+                let mut c = Self::default();
+                c.store.apply_env(&|k| std::env::var(k).ok())?;
+                Ok(c)
             }
             Err(e) => Err(e.into()),
         }
@@ -761,6 +806,9 @@ impl Config {
         self.legs.validate()?;
         self.engine_tls.validate()?;
         self.store.validate(!self.replication.peers.is_empty())?;
+        if self.store.is_etcd() && self.store.publish_service.is_some() && !self.kubernetes.enabled {
+            anyhow::bail!("store.publish_service writes through the apiserver: [kubernetes] enabled must not be false");
+        }
         if self.poll.interval_secs == 0 {
             anyhow::bail!("poll.interval_secs must be non-zero");
         }
@@ -786,6 +834,31 @@ fn unknown_top_level_keys(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_env_overrides_and_publish_target() {
+        let mut s: StoreConfig = toml::from_str(
+            "endpoints = [\"https://127.0.0.1:2379\"]\npublish_service = \"stormblock-system/stormstorage\"\n",
+        )
+        .unwrap();
+        assert!(!s.is_etcd());
+        s.validate(false).unwrap();
+        assert_eq!(s.publish_target(), Some(("stormblock-system", "stormstorage")));
+        s.apply_env(&|k| match k {
+            "STORMSTORAGE_STORE_BACKEND" => Some("etcd".into()),
+            "STORMSTORAGE_STORE_ADVERTISE_URL" => Some("http://10.0.0.1:9093".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert!(s.is_etcd());
+        assert_eq!(s.advertise_url.as_deref(), Some("http://10.0.0.1:9093"));
+        s.validate(false).unwrap();
+        assert!(s.apply_env(&|_| Some("nonsense".into())).is_err());
+        for bad in ["stormstorage", "/x", "x/", "A/b", "a/b/c"] {
+            s.publish_service = Some(bad.into());
+            assert!(s.validate(false).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn engine_tls_keys() {

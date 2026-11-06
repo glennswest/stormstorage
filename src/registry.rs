@@ -20,6 +20,9 @@ pub async fn run(state: Arc<AppState>) {
 }
 
 pub async fn poll_once(state: &Arc<AppState>) {
+    if state.store.is_some() && state.config.local.cluster_members && state.config.kubernetes.enabled {
+        adopt_members(state).await;
+    }
     if state.config.local.enabled {
         adopt_local(state).await;
     }
@@ -267,6 +270,96 @@ async fn refresh_io(state: &Arc<AppState>, name: &str, engine: &Engine) {
     }
 }
 
+/// The members of this node's cluster are nodes (#56): every instance reads
+/// the same list, so they agree on nodes and names, and a new leader reaches
+/// the legs the old one placed. The member on this machine is left to
+/// [`adopt_local`] (its engine over loopback, with its minted token), under
+/// its member name. An unreadable list changes nothing: one event per
+/// failure kind, and the nodes known stay.
+pub async fn adopt_members(state: &Arc<AppState>) {
+    let list = match crate::kube::members(&state.config.kubernetes).await {
+        Ok(l) => {
+            state.noted.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| !k.starts_with("members:"));
+            l
+        }
+        Err(e) => {
+            let e = format!("{e:#}");
+            let first = state.noted.lock().unwrap_or_else(|e| e.into_inner()).insert(format!("members:{e}"));
+            if first {
+                let m = format!("cluster members not readable, the nodes known stay: {e}");
+                tracing::warn!("{m}");
+                state.events.write().await.push(None, Severity::Warning, "adopt", m);
+            }
+            return;
+        }
+    };
+    let scheme = &state.config.engine_tls.address_scheme;
+    let hostname = hostname();
+    let mut local_name = None;
+    let mut wanted: Vec<NodeConfig> = Vec::new();
+    for m in &list {
+        let engine_url = crate::api::engine_url_from(&m.address, scheme);
+        let here = crate::config::is_this_machine(&engine_url)
+            || hostname.as_deref().is_some_and(|h| crate::kube::same_node(h, &m.name));
+        if here && state.config.local.enabled {
+            local_name = Some(m.name.clone());
+            continue;
+        }
+        wanted.push(NodeConfig {
+            name: m.name.clone(),
+            engine_url,
+            api_token: None,
+            token_file: None,
+            ca_file: None,
+            labels: BTreeMap::from([("storage".to_string(), m.storage.to_string())]),
+            tier: state.config.local.tier.clone(),
+        });
+    }
+    {
+        let mut members = state.members.write().unwrap_or_else(|e| e.into_inner());
+        members.engines = wanted.iter().map(|n| n.engine_url.clone()).collect();
+        members.local_name = local_name;
+    }
+    let (mut adopted, mut dropped) = (Vec::new(), Vec::new());
+    {
+        let mut fed = state.fed.write().await;
+        let keep: BTreeSet<&str> = wanted.iter().map(|n| n.name.as_str()).collect();
+        fed.nodes.retain(|name, n| {
+            let stays = n.status.source != NodeSource::Member || keep.contains(name.as_str());
+            if !stays {
+                dropped.push(name.clone());
+            }
+            stays
+        });
+        for nc in &wanted {
+            let covered = fed.nodes.values().any(|n| {
+                n.status.source != NodeSource::Member
+                    && (n.config.name == nc.name || n.config.engine_url == nc.engine_url)
+            });
+            if covered {
+                continue;
+            }
+            match fed.nodes.get_mut(&nc.name) {
+                Some(n) => n.config = nc.clone(),
+                None => {
+                    fed.nodes.insert(
+                        nc.name.clone(),
+                        Node { config: nc.clone(), status: NodeStatus::new(NodeSource::Member) },
+                    );
+                    adopted.push(format!("{} ({})", nc.name, nc.engine_url));
+                }
+            }
+        }
+    }
+    let mut events = state.events.write().await;
+    for a in adopted {
+        events.push(None, Severity::Info, "adopt", format!("cluster member {a}"));
+    }
+    for d in dropped {
+        events.push(Some(d.clone()), Severity::Warning, "adopt", format!("{d}: no longer a cluster member — forgotten"));
+    }
+}
+
 /// Adopt the engine on this machine once it answers, and the live peers of
 /// its stormblock cluster (#9). Nodes the config or a heartbeat already
 /// names are left as they are.
@@ -296,9 +389,11 @@ pub async fn adopt_local(state: &Arc<AppState>) {
         return; // No engine here (yet).
     }
     let local_url = local.engine_url.trim_end_matches('/').to_string();
+    let member_name = state.members.read().unwrap_or_else(|e| e.into_inner()).local_name.clone();
     let name = local
         .name
         .clone()
+        .or(member_name)
         .or_else(|| {
             discovery
                 .as_ref()

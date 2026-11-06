@@ -54,6 +54,20 @@ pub struct AppState {
     pub store: Option<Arc<crate::store::Store>>,
     /// The state file did not parse at startup and was set aside (#81).
     pub state_recovery: Option<crate::model::StateRecovery>,
+    /// The cluster's membership as last read from the apiserver (#56).
+    pub members: std::sync::RwLock<Members>,
+}
+
+/// What this instance last read of stormcluster's `ClusterMember`s (#56).
+/// In memory only: trust in an engine comes from this read, never from a
+/// record someone could have written.
+#[derive(Debug, Clone, Default)]
+pub struct Members {
+    /// Engine URLs of the members on other machines: these alone get the
+    /// `[kubernetes]` bearer in place of an engine token.
+    pub engines: std::collections::BTreeSet<String>,
+    /// This machine's name in the cluster, when it is a member.
+    pub local_name: Option<String>,
 }
 
 impl AppState {
@@ -82,6 +96,7 @@ impl AppState {
             noted: Default::default(),
             store,
             state_recovery: None,
+            members: Default::default(),
         })
     }
 
@@ -96,7 +111,8 @@ impl AppState {
 
     /// `state_recovered` while a startup recovery is on record (#81).
     pub fn conditions(&self) -> Vec<serde_json::Value> {
-        self.state_recovery
+        let mut c: Vec<serde_json::Value> = self
+            .state_recovery
             .iter()
             .map(|r| {
                 json!({
@@ -109,7 +125,18 @@ impl AppState {
                     "at": r.at,
                 })
             })
-            .collect()
+            .collect();
+        if let Some(d) = self.store.as_ref().and_then(|s| s.status().displaced) {
+            c.push(json!({
+                "type": "store_displaced_volumes",
+                "severity": "error",
+                "message": d.message(),
+                "volumes": d.volumes,
+                "kept_as": d.kept_as,
+                "at": d.at,
+            }));
+        }
+        c
     }
 }
 
@@ -199,7 +226,25 @@ impl AppState {
                 return found;
             }
         }
-        self.config.local.token_for(&node.engine_url)
+        let found = self.config.local.token_for(&node.engine_url);
+        if found.0.is_some() {
+            return found;
+        }
+        // Another member's engine (#56; owner on stormcos#241: Kubernetes
+        // identity, no shared engine token). The engine reviews the bearer
+        // (stormblock#382). Never to a URL that only announced itself.
+        let member = self
+            .members
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .engines
+            .contains(node.engine_url.trim_end_matches('/'));
+        if member {
+            if let Some(t) = self.config.kubernetes.token() {
+                return (Some(t), format!("{}: [kubernetes] bearer (cluster member)", node.name));
+            }
+        }
+        found
     }
 }
 
@@ -307,7 +352,7 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     }
     if let Some(store) = &s.store {
         let st = store.status();
-        h["store"] = json!({ "backend": "etcd", "role": st.role, "leader": st.leader });
+        h["store"] = json!({ "backend": "etcd", "role": st.role, "leader": st.leader, "publish": st.publish });
     }
     Json(h)
 }

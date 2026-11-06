@@ -18,6 +18,10 @@ pub enum NodeSource {
     /// Adopted by this instance: the engine on its own machine, or a peer
     /// in that engine's stormblock cluster (`[local]`, #9). Not replicated.
     Local,
+    /// A member of this instance's cluster, from stormcluster's
+    /// `ClusterMember`s (#56). Not replicated: every instance reads the
+    /// same list.
+    Member,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

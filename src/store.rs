@@ -23,6 +23,11 @@
 //!   themselves (status is local, as with peers), run no reconciler, and
 //!   forward every API write to the leader's `advertise_url`
 //!   ([`forward_writes`]).
+//! * **Publication.** With `publish_service`, the leader keeps that
+//!   selectorless Service's Endpoints on its `advertise_url` ([`Store::publish`],
+//!   #56): one address for stormblock-csi on a multi-node cluster. A deposed
+//!   leader's late write is corrected by the next round of the new one, and
+//!   a follower behind the Service still answers.
 //! * **Import.** The first leader of an empty store writes its own state
 //!   (state.json) into it; a later leader loads the store first, and the
 //!   store wins over its file.
@@ -154,12 +159,51 @@ fn kvs_of(resp: &Value) -> anyhow::Result<Vec<Kv>> {
 /// the last endpoint that answered, and on to the next when one does not.
 pub struct Etcd {
     endpoints: Vec<String>,
-    http: reqwest::Client,
+    cfg: StoreConfig,
+    /// Rebuilt when a TLS file changes: stormcert renews the client pair
+    /// under a running instance.
+    http: std::sync::RwLock<(reqwest::Client, TlsStamp)>,
     good: AtomicUsize,
+}
+
+/// Modification time and length of each TLS file.
+type TlsStamp = Vec<Option<(SystemTime, u64)>>;
+
+fn tls_stamp(cfg: &StoreConfig) -> TlsStamp {
+    [&cfg.ca_file, &cfg.cert_file, &cfg.key_file]
+        .into_iter()
+        .flatten()
+        .map(|f| std::fs::metadata(f).ok().and_then(|m| Some((m.modified().ok()?, m.len()))))
+        .collect()
 }
 
 impl Etcd {
     pub fn new(cfg: &StoreConfig) -> anyhow::Result<Self> {
+        Ok(Self {
+            endpoints: cfg.endpoints.iter().map(|e| e.trim_end_matches('/').to_string()).collect(),
+            http: std::sync::RwLock::new((Self::client(cfg)?, tls_stamp(cfg))),
+            cfg: cfg.clone(),
+            good: AtomicUsize::new(0),
+        })
+    }
+
+    /// Take up a renewed CA or client pair. A file caught half-written or
+    /// unusable keeps the client in use, and is tried again next time.
+    pub fn refresh_tls(&self) {
+        let now = tls_stamp(&self.cfg);
+        if self.http.read().unwrap_or_else(|e| e.into_inner()).1 == now {
+            return;
+        }
+        match Self::client(&self.cfg) {
+            Ok(c) => {
+                tracing::info!("store: TLS files changed; using them");
+                *self.http.write().unwrap_or_else(|e| e.into_inner()) = (c, now);
+            }
+            Err(e) => tracing::warn!("store: TLS files changed but are not usable yet: {e:#}"),
+        }
+    }
+
+    fn client(cfg: &StoreConfig) -> anyhow::Result<reqwest::Client> {
         let mut b = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .connect_timeout(Duration::from_secs(3));
@@ -175,11 +219,7 @@ impl Etcd {
             pem.extend(std::fs::read(k).map_err(|e| anyhow::anyhow!("store.key_file {k}: {e}"))?);
             b = b.identity(reqwest::Identity::from_pem(&pem)?);
         }
-        Ok(Self {
-            endpoints: cfg.endpoints.iter().map(|e| e.trim_end_matches('/').to_string()).collect(),
-            http: b.build()?,
-            good: AtomicUsize::new(0),
-        })
+        Ok(b.build()?)
     }
 
     /// POST `path` with `body`; the response, or for a streamed call
@@ -188,10 +228,11 @@ impl Etcd {
         let n = self.endpoints.len();
         let start = self.good.load(Ordering::Relaxed);
         let mut errors = Vec::new();
+        let http = self.http.read().unwrap_or_else(|e| e.into_inner()).0.clone();
         for i in 0..n {
             let idx = (start + i) % n;
             let url = format!("{}{path}", self.endpoints[idx]);
-            match self.http.post(&url).json(body).send().await {
+            match http.post(&url).json(body).send().await {
                 Ok(r) => {
                     let status = r.status();
                     let text = r.text().await.unwrap_or_default();
@@ -398,8 +439,45 @@ pub struct StoreStatus {
     pub writes: u64,
     pub loads: u64,
     pub last_error: Option<String>,
+    /// The leader's address in the published Endpoints (#56).
+    pub publish: Option<PublishStatus>,
+    /// Volumes this instance held that the store did not, when it first
+    /// loaded the store.
+    pub displaced: Option<Displaced>,
     #[serde(skip)]
     pub last_renewal: Option<Instant>,
+}
+
+/// What the leader last did about `publish_service`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PublishStatus {
+    pub service: String,
+    pub address: Option<String>,
+    pub port: Option<u16>,
+    pub published_at: Option<SystemTime>,
+    pub error: Option<String>,
+}
+
+/// Local volumes a first load of the store replaced: a node that joined a
+/// cluster with volumes of its own. Their legs stay on the engine; nothing
+/// manages them until someone acts on the copy.
+#[derive(Debug, Clone, Serialize)]
+pub struct Displaced {
+    pub volumes: Vec<String>,
+    pub kept_as: Option<String>,
+    pub at: SystemTime,
+}
+
+impl Displaced {
+    pub fn message(&self) -> String {
+        format!(
+            "{} volume(s) this instance held are not in the store and are no longer managed: {}; state kept as {}. \
+             Their legs are still on the engines",
+            self.volumes.len(),
+            self.volumes.join(", "),
+            self.kept_as.as_deref().unwrap_or("nowhere: the copy failed"),
+        )
+    }
 }
 
 pub struct Store {
@@ -408,6 +486,7 @@ pub struct Store {
     pub instance: String,
     pub advertise_url: String,
     pub ttl: u64,
+    publish_target: Option<(String, String)>,
     status: std::sync::RwLock<StoreStatus>,
     /// The records as last written or loaded; also serializes writes.
     written: tokio::sync::Mutex<BTreeMap<String, String>>,
@@ -429,6 +508,7 @@ impl Store {
                 .trim_end_matches('/')
                 .to_string(),
             ttl: cfg.lease_ttl_secs,
+            publish_target: cfg.publish_target().map(|(n, s)| (n.to_string(), s.to_string())),
             status: Default::default(),
             written: Default::default(),
             // Writes can take the engine's time (array create: minutes).
@@ -565,6 +645,9 @@ impl Store {
         };
         {
             let mut fed = state.fed.write().await;
+            if self.status().loads == 0 {
+                self.note_displaced(state, &fed, &records).await;
+            }
             apply_records(&mut fed, &records)?;
             fed.revision = meta.revision;
         }
@@ -577,6 +660,105 @@ impl Store {
         Ok(true)
     }
 
+    /// Before the first load replaces this instance's memory: volumes of its
+    /// own the store does not hold are about to be forgotten. Copy the state
+    /// aside and say so.
+    async fn note_displaced(&self, state: &AppState, fed: &FedState, records: &BTreeMap<String, String>) {
+        let volumes: Vec<String> =
+            fed.volumes.keys().filter(|n| !records.contains_key(&format!("volumes/{n}"))).cloned().collect();
+        if volumes.is_empty() {
+            return;
+        }
+        let at = SystemTime::now();
+        let secs = at.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default();
+        let kept_as = state.state_path.as_ref().and_then(|p| {
+            let copy = p.with_file_name(format!("state.json.before-store-{secs}"));
+            let json = serde_json::to_vec_pretty(fed).ok()?;
+            std::fs::write(&copy, json).ok()?;
+            Some(copy.display().to_string())
+        });
+        let d = Displaced { volumes, kept_as, at };
+        let msg = d.message();
+        tracing::error!("{msg}");
+        state.events.write().await.push(None, Severity::Error, "store", msg);
+        self.update(|s| s.displaced = Some(d));
+    }
+
+    /// The address and port in `advertise_url`, for an Endpoints object: an
+    /// IP, a hostname resolved to one, and never a loopback, which would
+    /// send every caller to its own node.
+    async fn advertise_addr(&self) -> anyhow::Result<(String, u16)> {
+        let url = reqwest::Url::parse(&self.advertise_url)
+            .map_err(|e| anyhow::anyhow!("advertise_url {:?}: {e}", self.advertise_url))?;
+        let port = url.port_or_known_default().unwrap_or(9093);
+        let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
+        let ips: Vec<std::net::IpAddr> = match host.parse() {
+            Ok(ip) => vec![ip],
+            Err(_) => tokio::net::lookup_host((host, port)).await?.map(|a| a.ip()).collect(),
+        };
+        ips.into_iter()
+            .find(|ip| !ip.is_loopback() && !ip.is_unspecified())
+            .map(|ip| (ip.to_string(), port))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "advertise_url {:?} is not an address other nodes can reach: set [store] advertise_url \
+                     or $STORMSTORAGE_STORE_ADVERTISE_URL to this node's address",
+                    self.advertise_url
+                )
+            })
+    }
+
+    /// While this instance leads, keep the published Endpoints on it (#56).
+    /// Asked every round, so a late write by a deposed leader, or a hand
+    /// edit, does not last. It never affects the leadership.
+    pub async fn publish(&self, state: &AppState) {
+        let Some((ns, name)) = self.publish_target.as_ref().filter(|_| self.is_leader()) else {
+            return;
+        };
+        let service = format!("{ns}/{name}");
+        let result = match self.advertise_addr().await {
+            Ok((ip, port)) => crate::kube::keep_endpoints(&state.config.kubernetes, (ns, name), &ip, port, &self.instance)
+                .await
+                .map(|wrote| (ip, port, wrote)),
+            Err(e) => Err(e),
+        };
+        let old = self.status().publish;
+        let next = match &result {
+            Ok((ip, port, wrote)) => PublishStatus {
+                service: service.clone(),
+                address: Some(ip.clone()),
+                port: Some(*port),
+                published_at: match (wrote, &old) {
+                    (false, Some(o)) => o.published_at.or(Some(SystemTime::now())),
+                    _ => Some(SystemTime::now()),
+                },
+                error: None,
+            },
+            Err(e) => PublishStatus {
+                service: service.clone(),
+                address: old.as_ref().and_then(|o| o.address.clone()),
+                port: old.as_ref().and_then(|o| o.port),
+                published_at: old.as_ref().and_then(|o| o.published_at),
+                error: Some(format!("{e:#}")),
+            },
+        };
+        let (was_err, now_err) = (old.as_ref().and_then(|o| o.error.clone()), next.error.clone());
+        self.update(|s| s.publish = Some(next));
+        match (result, now_err) {
+            (Ok((ip, port, true)), _) => {
+                let m = format!("{service}: Endpoints now say {ip}:{port} ({} leads)", self.instance);
+                tracing::info!("{m}");
+                state.events.write().await.push(None, Severity::Info, "store", m);
+            }
+            (Err(_), Some(e)) if was_err.as_ref() != Some(&e) => {
+                let m = format!("{service}: could not publish the leader: {e}");
+                tracing::warn!("{m}");
+                state.events.write().await.push(None, Severity::Warning, "store", m);
+            }
+            _ => {}
+        }
+    }
+
     async fn step_down(&self, state: &AppState, why: &str) {
         let was = self.update(|s| {
             let was = s.role == Role::Leader;
@@ -584,6 +766,7 @@ impl Store {
             s.lease_id = None;
             s.leader_revision = None;
             s.leader = None;
+            s.publish = None;
             // Reload from the store on the next step.
             s.meta_revision = 0;
             s.last_error = Some(why.to_string());
@@ -598,10 +781,12 @@ impl Store {
     /// One round: renew or campaign, then follow. Run every third of the
     /// lease's TTL by [`run`]; tests call it directly.
     pub async fn step(&self, state: &AppState) {
+        self.etcd.refresh_tls();
         if let Err(e) = self.try_step(state).await {
             tracing::warn!("store: {e:#}");
             self.update(|s| s.last_error = Some(format!("{e:#}")));
         }
+        self.publish(state).await;
     }
 
     async fn try_step(&self, state: &AppState) -> anyhow::Result<()> {
