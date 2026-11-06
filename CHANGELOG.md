@@ -3,6 +3,17 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-06 (#56)
+- **feat:** One cluster stormstorage on multi-node. `[store] publish_service = "<ns>/<name>"`: the leader keeps that selectorless Service's Endpoints on its `advertise_url`, looking every round and writing on a difference, so the Service follows the leader (stormcos#354). `store.publish` in `/api/v1/health` and `/api/v1/store`. A loopback is refused; a failure never touches the leadership.
+- **feat:** With the etcd store, every stormcluster `ClusterMember` with an address is a node (`[local] cluster_members`, source `member`, label `storage`), so all instances know the same nodes under the same names and a failover reaches the old leader's legs. The local engine takes its member name.
+- **feat:** A member's engine on another machine gets the `[kubernetes]` bearer when no shared or node token applies (owner on stormcos#241: no shared engine token; stormblock#382). Never a URL that only announced itself.
+- **feat:** `$STORMSTORAGE_STORE_BACKEND` and `$STORMSTORAGE_STORE_ADVERTISE_URL` override `[store]`, for what differs per node (`env.d/stormstorage`).
+- **fix:** A renewed etcd CA or client pair is taken up without a restart; the instance would have lost its store when the old pair expired.
+- **fix:** An instance whose first load of the store would forget volumes of its own copies its state to `state.json.before-store-<secs>`, with an Error event and the `store_displaced_volumes` condition.
+- **fix:** The apiserver client takes a CA bundle: a joined node's `ca.crt` holds two.
+- **test:** tests/store.rs (publication, failover, members, the bearer's limits, displaced volumes) and tests/fastetcd.rs against a real fastetcd over mutual TLS, auth off and auth on (`SC_TOOLS=fastetcd sc-build scripts/e2e-fastetcd.sh`).
+- **docs:** README *One cluster instance on multi-node*, docs/architecture.md, deck, work plan.
+
 ### 2026-11-04 (docs refresh)
 - **docs:** Refreshed from the code since 2026-10-29: the only code change is #96 (engine over https), already documented (`[engine_tls]`, `[[nodes]] ca_file`, `scripts/e2e-engine-tls.sh`). Stale blockers fixed (#95): full copies no longer "wait on stormblock#295" (landed; not built), `encrypted`/`qos_class` are refused because stormstorage does not carry them (stormblock#319 closed), expand no longer "waits on" stormblock#318 (built, #73), and a live-head handover now points at #100 (stormblock#296 landed in v23.7.0; not called yet). Source comments/messages for #95 stay with that issue.
 

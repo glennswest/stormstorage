@@ -453,10 +453,10 @@ because stormstorage does not carry them (stormblock#319 closed: the engine refu
 the head's array and its slab (stormblock#318), then the served volume;
 `size_bytes` moves once all three have, and a clone grows only as far as
 its parent. What it still
-needs from here: #56 (one
-elected cluster stormstorage that a multi-node foreign cluster points at,
-with stormcos#354). Single-node clusters point the driver at the node's
-own stormstorage (`$(HOST_IP):9093`).
+needed from here on multi-node: one elected cluster stormstorage at one
+address (#56, below), which it reaches through the Service stormcos#354
+carries. Single-node clusters point the driver at the node's own stormstorage
+(`$(HOST_IP):9093`).
 
 ### Live migration of a VM's disks (#44) — *implemented 2026-10-29*
 
@@ -531,7 +531,27 @@ the instances share it through etcd's v3 JSON gateway:
   `x-stormstorage-forwarded`). An election in flight or a store outage is
   a 503 for writes; the data path never notices.
 - **Import.** The first leader of an empty store writes its state.json;
-  afterwards the store wins over any instance's file.
+  afterwards the store wins over any instance's file. An instance whose first
+  load would forget volumes of its own copies its state aside and reports them.
+
+**One cluster instance on multi-node (implemented, #56; owner decision on
+stormblock-csi#16).** The store above needs no dedicated fastetcd for this: a
+multi-node cluster already has one on its masters, reached over loopback where
+stormstorage runs. Two things turn the elected leader into "the cluster's
+stormstorage":
+
+- **Publication.** A Service cannot select a stormd service, so a label is no
+  use: the leader keeps a selectorless Service's Endpoints on its
+  `advertise_url` (`[store] publish_service`), and rustkube mirrors them into
+  EndpointSlices (rustkube#133). It looks every round and writes on a
+  difference, so a deposed leader's late write does not last. This is advisory:
+  the guard on the leader key still decides who writes, and a follower behind
+  the Service still answers.
+- **Membership.** stormcluster owns it. Every instance reads the
+  `ClusterMember`s, so all know the same nodes under the same names, and a
+  failover reaches the old leader's legs. That read is also the trust: only a
+  member's engine gets the `[kubernetes]` bearer (owner on stormcos#241), never
+  a URL from the open register route.
 
 Known edge: an engine call already in flight on a leader that is then
 deposed (a leg move, say) finishes; its record write is refused, and the
@@ -635,7 +655,9 @@ stormconsole#53).
    built; the copy waits on stormblock#399/#400. VM-disk migration
    (#44) over the engine's live mirror (stormblock#295): in.
 5. **HA** (#34): in — state in a fleet fastetcd, one leader elected by
-   lease, followers forward writes. The fleet fastetcd is stormcluster#55.
+   lease, followers forward writes; on multi-node the leader publishes itself
+   in a Service's Endpoints and the nodes come from stormcluster (#56). A
+   dedicated fleet fastetcd is stormcluster#55.
 
 ## What this asked of the neighbours
 

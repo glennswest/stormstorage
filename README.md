@@ -548,6 +548,70 @@ stormview components feed on **:9093**.
 **Not done yet** (tracked in issues, see [Status](#status)): moving a head by handover (#100: stormblock#296 has landed, the call is not made yet),
 which is what a tier migration of the head's own leg waits on.
 
+
+## One cluster instance on multi-node (#56)
+
+On a single node the node's own stormstorage is the cluster's: nothing here
+applies, and the state stays in `state.json`. On more than one node the
+instances share their state and elect one leader (`[store] backend = "etcd"`,
+above), and the rest of the cluster finds it at one address.
+
+- **The address is a selectorless Service.** stormstorage runs under stormd,
+  not in a pod, so a selector has nothing to select. The leader keeps that
+  Service's `Endpoints` itself: with `[store] publish_service =
+  "stormblock-system/stormstorage"`, every round (a third of the lease) it
+  makes the object say its `advertise_url`, one address and one unnamed port
+  (so the Service's single port is unnamed too), with the annotation
+  `stormstorage.storm.io/leader`. It writes only when that differs. A hostname
+  is resolved; a loopback is refused, because it would send every caller to
+  its own node. `store.publish` in `/api/v1/health` and `/api/v1/store` says
+  what was published or why it could not be; a failure is one Warning event and
+  never touches the leadership. A failover moves the address within a lease
+  plus a round. Between the two, a caller reaching a follower is still answered
+  (reads locally, writes forwarded); one reaching a dead leader retries.
+- **The nodes come from stormcluster.** Each instance reads
+  `GET /apis/cluster.storm.io/v1alpha1/clustermembers` on every poll. A member
+  with `status.address` is a node named as the cluster names it (source
+  `member`, label `storage` from `spec.storage`, engine at the address on
+  `:9090`, scheme `[engine_tls] address_scheme`), so a new leader reaches the
+  legs the old one placed. The member on this machine stays the adopted local
+  engine, under its member name. An unreadable list changes nothing and says so
+  once. Placement does not yet keep legs off `storage: false` members (#102).
+- **Peer engines get the `[kubernetes]` bearer** (owner on stormcos#241: no
+  shared engine token; the engine reviews it, stormblock#382), and only engines
+  of members read from the apiserver: never a URL that merely announced itself
+  on the open register route. A shared token or the node's own still comes first.
+- **What differs per node comes from the environment,** because one config text
+  ships everywhere: `STORMSTORAGE_STORE_BACKEND=etcd` and
+  `STORMSTORAGE_STORE_ADVERTISE_URL=http://<node address>:9093`, written by
+  stormcluster into `env.d/stormstorage` when a node stops being an SNO.
+- **A node that joins with volumes of its own.** The store wins, so its first
+  load forgets them. The state is copied to
+  `state.json.before-store-<unix secs>`, and an Error event and the
+  `store_displaced_volumes` condition name them. Their legs stay on the engine.
+- **The cluster's fastetcd serves as the store.** It has mutual TLS and no etcd
+  auth (`stormcos` ships none), so a client pair from the CA is all it takes;
+  `prefix` per cluster keeps it apart. With auth on, a user named by the pair's
+  CN and given readwrite on the prefix alone works, and nothing else does
+  (tests/fastetcd.rs against a real fastetcd). The pair is re-read when it
+  changes, so a renewal needs no restart.
+
+The shipped config would add:
+
+```toml
+[store]
+endpoints = ["https://127.0.0.1:2379"]
+ca_file = "/data/stormcert/ca.crt"
+cert_file = "/data/stormcert/stormstorage-etcd.crt"
+key_file = "/data/stormcert/stormstorage-etcd.key"
+publish_service = "stormblock-system/stormstorage"
+```
+
+`backend` stays `file` until the environment says otherwise. What the other
+components carry: the Service, the pair, RBAC (`endpoints` in the namespace,
+`clustermembers`) and the start line on stormcos#354, the environment on
+stormcluster#89.
+
 ## Running
 
 ```bash
@@ -586,18 +650,20 @@ worked example.
 | `[poll] fail_threshold` | `3` | Consecutive failed polls before a node is marked unhealthy. |
 | `[api] api_token` | `""` | Set: every inbound write needs `Authorization: Bearer <token>` (see *Auth* under API), and outbound replication pushes send it, so replicating peers share one token. Empty: no auth. |
 | `[replication] peers` | `[]` | Base URLs of peer instances, e.g. `["http://siteb:9093"]`. Not with `[store] backend = "etcd"`. |
-| `[store] backend` | `"file"` | `file`: state in `<data_dir>/state.json`, this instance alone. `etcd`: state in a fleet etcd shared by every instance, one elected leader (#34, see *HA* above). |
+| `[store] backend` | `"file"` | `$STORMSTORAGE_STORE_BACKEND` (`file` or `etcd`) wins over it. `file`: state in `<data_dir>/state.json`, this instance alone. `etcd`: state in a fleet etcd shared by every instance, one elected leader (#34, see *HA* above). |
 | `[store] endpoints` | `[]` | etcd client URLs (`https://host:2379`); the JSON gateway on that port is used. A call goes on to the next member when one does not answer or answers 503. Required for `etcd`. |
 | `[store] prefix` | `"/stormstorage/"` | Every key stormstorage writes starts with this; must end with `/`. |
 | `[store] ca_file` | unset | CA bundle that signed the members' certificates. |
 | `[store] cert_file` / `key_file` | unset | Client certificate and key (mutual TLS; the CN is the etcd user, which needs readwrite on the prefix). Together or not at all. |
 | `[store] lease_ttl_secs` | `15` | The leader's lease (≥ 3). A leader that stops renewing is replaced about this long later. |
 | `[store] instance` | hostname | This instance's name in the leader key. |
-| `[store] advertise_url` | `http://<hostname>:<listen port>` | Where the other instances forward writes while this one leads. |
+| `[store] advertise_url` | `http://<hostname>:<listen port>` | Where the other instances forward writes while this one leads, and what `publish_service` publishes. `$STORMSTORAGE_STORE_ADVERTISE_URL` wins over it. |
+| `[store] publish_service` | unset | `<namespace>/<name>` of a selectorless Service whose Endpoints the leader keeps on its `advertise_url`, through `[kubernetes]` (#56). See [One cluster instance](#one-cluster-instance-on-multi-node-56). |
 | `[local] enabled` | `true` | Adopt the engine on this machine, see [Local adoption](#local-adoption). |
 | `[local] engine_url` | `"http://127.0.0.1:9090"` | Where this machine's stormblock answers. |
 | `[local] name` | unset | Name for the adopted node. Unset: the engine's own name (`local_node` from its `GET /api/v1/discovery`), else this machine's hostname. |
 | `[local] cluster_peers` | `true` | Also adopt the live peers in the local engine's stormblock cluster. |
+| `[local] cluster_members` | `true` | With the etcd store only: every stormcluster `ClusterMember` with an address is a node (#56), read through `[kubernetes]` each poll. |
 | `[local] token_file` | unset | Engine bearer token file. `$STORMBLOCK_API_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `$STORMBLOCK_TOKEN_FILE`, `/etc/stormblock/api_token`, `/var/lib/stormblock/api_token` and `/run/stormblock/engine/api_token` (the family order, stormdrive#14; the last is where a stormcos unit mounts the minted token) (#42). The token is read on every call and presented to every engine without an `api_token` of its own: the adopted engine and its peers, and nodes stormblock registered. An engine that refuses it (401/403) is backed off up to 5 min and logged once, then at most every 5 min; a changed token is tried at once (#38). The key belongs under `[local]`: a top-level `token_file` is ignored, and every unknown top-level key is logged as a WARN at start. |
 | `[local] shared_token_file` | unset | File holding the cluster's **shared** engine token (stormblock's `management.api_token`), presented to every engine, peers included (#12). `$STORMBLOCK_API_TOKEN` wins over it. The `token_file` search above finds a token the engine minted for itself, which goes only to an engine on this machine. |
 | `[local] admin_token_file` | unset | The engine's **admin** token file, presented on its destructive verbs (array create/delete, members, drive close; stormblock#274, #47), and only to an engine on this machine. `$STORMBLOCK_ADMIN_TOKEN` wins over it. There is no default: stormblock keeps its admin token (`/run/stormblock-admin/admin_token`) out of what services mount. Without either, the `[kubernetes]` bearer is presented, and the engine reviews it against `storage-admin`. |
@@ -712,7 +778,7 @@ with a token set, their Delete/Publish actions get 401.
 |---|---|---|
 | GET | `/`, `/ui`, `/ui/` | Embedded UI. |
 | GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. After a state file was recovered at startup (#81) it adds `conditions: [{type: "state_recovered", severity, message, error, kept_as, started_from (previous/empty), at}]`; status stays `ok` (the process serves). |
-| GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered` or `local`). |
+| GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered`, `local` or `member`). |
 | GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume as the engine reports it (with `placement`, `kind`, `in_use`, `attachments`, `consumer` when the engine sends them) plus `slabs` and `placed_by` (`engine`, else `slots`, `parent`, `role`, `unknown`); each slab with its `drive`; `fetched_at`, `error`. |
 | GET | `/api/v1/topology` | Rungs, plus each node's label chain, tier and health. |
 | GET | `/api/v1/pools/{name}/rebalance` | Rebalance dry run (#30): `{pool, enabled, high_watermark, low_watermark, max_moves, moves[{volume, from, to, from_used, to_used}], held[]}`. `held` says why nothing moves. 404 for a pool not in the config. |
@@ -971,12 +1037,15 @@ done. The open work:
   head is done and live-verified (#33);
 - stormblock#214: a token on self-registration, so register/deregister
   can close too (#6);
-- #34: HA state in a fleet fastetcd is in (mock-gateway tested); the
-  fleet fastetcd itself is stormcluster#55;
+- #34: HA state in etcd is in, proven against a real fastetcd over mutual
+  TLS (`scripts/e2e-fastetcd.sh`); a dedicated fleet fastetcd is
+  stormcluster#55;
 - stormblock-csi (#36, settled): its controller talks to stormstorage
   only (stormblock-csi v0.4.0). Snapshots, group snapshots and clones
-  are in (#49), and expand (#73, stormblock#318). What it still needs
-  from here is #56 (one elected cluster instance for multi-node);
+  are in (#49), and expand (#73, stormblock#318). The cluster instance it
+  points at on multi-node is in from here (#56); turning it on is
+  stormcos#354 and the stormcluster issue named in
+  [One cluster instance](#one-cluster-instance-on-multi-node-56);
 - #46: point-in-time backups are in; the copy waits on
   stormblock#399/#400;
 - #72: parity volumes (needs a parity engine on the head).

@@ -152,7 +152,8 @@ The source is `src/registry.rs`, `src/placement.rs`,
 |---|---|
 | Handover from a live RAID head (planned promote, dual-attach commit) | #100 (stormblock#296 landed) |
 | Sync evidence from leg superblocks while the head is gone | #48 → stormblock#309 |
-| HA on a real fleet fastetcd (code is in) | #34 → stormcluster#55 |
+| HA on a dedicated fleet fastetcd (code is in, proven on real fastetcd) | #34 → stormcluster#55 |
+| One cluster instance switched on for multi-node (code is in) | #56 → stormcos#354, stormcluster#89 |
 
 ---
 
