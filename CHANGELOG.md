@@ -11,6 +11,7 @@
 - **fix:** A renewed etcd CA or client pair is taken up without a restart; the instance would have lost its store when the old pair expired.
 - **fix:** An instance whose first load of the store would forget volumes of its own copies its state to `state.json.before-store-<secs>`, with an Error event and the `store_displaced_volumes` condition.
 - **fix:** The apiserver client takes a CA bundle: a joined node's `ca.crt` holds two.
+- **fix:** The etcd client now speaks HTTP/2: fastetcd's TLS port offers only `h2`, so #34's store could not reach a real fastetcd over mutual TLS at all (found by the first real run; the mock is plain HTTP). `h2` joins the lock. An etcd call's error now carries its cause.
 - **test:** tests/store.rs (publication, failover, members, the bearer's limits, displaced volumes) and tests/fastetcd.rs against a real fastetcd over mutual TLS, auth off and auth on (`SC_TOOLS=fastetcd sc-build scripts/e2e-fastetcd.sh`).
 - **docs:** README *One cluster instance on multi-node*, docs/architecture.md, deck, work plan.
 

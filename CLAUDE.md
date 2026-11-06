@@ -990,7 +990,7 @@ that never answered said nothing about why (fixed, 758aeab). Not seen on a
 node yet: stormcos sets the keys. A client pair (stormcos#374 item 2) is not
 used; the token stays the credential.
 
-### One cluster stormstorage on multi-node (#56, P3) — in progress 2026-11-06
+### One cluster stormstorage on multi-node (#56, P3) — DONE 2026-11-06
 Election, shared state and forwarding are #34. What is left, settled with
 what stormcos#354 proposes (a Service cannot select a stormd service, so no
 label: **the leader keeps the Endpoints of a selectorless Service**; rustkube
@@ -1021,8 +1021,16 @@ mirrors them into EndpointSlices, rustkube#133):
 - Live check against a real fastetcd (mTLS; with auth on, a CN user limited
   to the prefix): tests/fastetcd.rs, `SC_TOOLS=fastetcd sc-build
   scripts/e2e-fastetcd.sh`.
-- Then: Service/RBAC/pair on stormcos#354, env.d on stormcluster, entry via
-  the master, placement only on storage members as a follow-up.
+- Then: Service/RBAC/pair on stormcos#354, env.d on stormcluster#89, entry via
+  the master, placement only on storage members (#102).
+Done: 83168f6 + fixes; sc-build on 57ed862 passes (`--locked` build + test +
+clippy -D warnings). `SC_TOOLS=fastetcd sc-build scripts/e2e-fastetcd.sh` PASSED
+on 946acfb against fastetcd 1.38.0. Its first run found a real bug #34's mock
+could not: fastetcd's TLS port offers only h2 in ALPN and our reqwest had no
+http2, so no instance could reach a real mutual-TLS fastetcd (fixed, h2 in the
+lock). With auth off (as stormcos ships) and on (CN user, role on one prefix).
+Not seen on a node: nothing changes until stormcluster#89 sets the env. Mock
+apiserver, not rustkube, for Endpoints and ClusterMembers.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
@@ -1030,6 +1038,7 @@ mirrors them into EndpointSlices, rustkube#133):
 - [x] #12 engine token default path and peer calls (done 2026-10-06).
 - [x] #15 reassemble after head engine restart (done 2026-10-06).
 - [x] #14 re-head — opt-in, off by default (done 2026-10-06).
+- [x] #56 one cluster instance (done 2026-11-06): turned on by stormcos#354 and stormcluster#89.
 - [x] #35 closed with nothing built (owner, 2026-10-09): one node registry — stormfs reads `GET /api/v1/nodes`; no forwarding. Docs say so; recorded on stormfs#64.
 - [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
       (stormcentral#72) via `component edit stormstorage --set config=…`:
