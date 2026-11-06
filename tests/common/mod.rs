@@ -1,6 +1,8 @@
 //! A mock apiserver for #56: stormcluster's ClusterMembers and one
 //! Endpoints store, with resourceVersion conflicts as the real one has.
 
+// Each test crate uses a part of this.
+#![allow(dead_code)]
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
