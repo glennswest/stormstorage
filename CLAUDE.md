@@ -1032,7 +1032,7 @@ lock). With auth off (as stormcos ships) and on (CN user, role on one prefix).
 Not seen on a node: nothing changes until stormcluster#89 sets the env. Mock
 apiserver, not rustkube, for Endpoints and ClusterMembers.
 
-### Migrate onto a named place on the target (#106, P1, stormcos#806)
+### Migrate onto a named place on the target (#106, P1, stormcos#806) — DONE 2026-11-07
 `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, placement?}`. The engine
 today takes only `placement.array_id` on a /v1 create (stormblock#150);
 slab/drive at create is stormblock#426 (open). Plan:
@@ -1052,6 +1052,10 @@ slab/drive at create is stormblock#426 (open). Plan:
   detached + restart).
 - Then: comment the create-time contract on stormblock#426; follow-up issue
   here for slab/drive pass-through, proposed after stormblock#426.
+Done: ca1294d; sc-build passes (`--locked` build + test + clippy -D
+warnings: 103 unit incl. 3 new, tests/vmmigrate.rs 8/8). Contract posted
+on stormblock#426; slab/drive is #107 (proposed after stormblock#426).
+Not run on real engines: the live run is #101 (stormcos#806 tests 1–5).
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
