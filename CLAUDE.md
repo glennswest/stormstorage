@@ -1032,6 +1032,27 @@ lock). With auth off (as stormcos ships) and on (CN user, role on one prefix).
 Not seen on a node: nothing changes until stormcluster#89 sets the env. Mock
 apiserver, not rustkube, for Endpoints and ClusterMembers.
 
+### Migrate onto a named place on the target (#106, P1, stormcos#806)
+`POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, placement?}`. The engine
+today takes only `placement.array_id` on a /v1 create (stormblock#150);
+slab/drive at create is stormblock#426 (open). Plan:
+- `placement {array|slab|drive}` (exactly one, else 400). Resolved on T
+  before any record: array by uuid or set name from `GET /api/v1/arrays`
+  (room = its `slab.free_bytes`; no slab → 409); slab by id, drive by
+  serial/WWN/path from `GET /api/v1/slabs` (room = free of its slabs).
+  Missing → 404, room < size → 409, slab/drive with room → 501 naming
+  stormblock#426 (never sent and ignored).
+- `VmMigration.placement {kind, name, id}`; `advance` creates T's volume
+  with `create_pinned_volume` for an array, so new extents stay there.
+- Detached volume: nothing here needs an attachment (stormblock's mirror
+  works on the volume handle); test it with the mock, cutover right after
+  synced. Restart: record read by id from a new AppState over the state
+  file, then complete.
+- Tests: unit (find/check), tests/vmmigrate.rs (onto a set, refusals,
+  detached + restart).
+- Then: comment the create-time contract on stormblock#426; follow-up issue
+  here for slab/drive pass-through, proposed after stormblock#426.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).

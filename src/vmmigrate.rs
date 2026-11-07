@@ -26,7 +26,7 @@
 use crate::api::AppState;
 use anyhow::Context;
 use crate::events::Severity;
-use crate::model::{VmMigration, VmMigrationState};
+use crate::model::{TargetPlacement, VmMigration, VmMigrationState};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -97,6 +97,109 @@ async fn engine(state: &Arc<AppState>, node: &str) -> anyhow::Result<crate::engi
 
 async fn healthy(state: &Arc<AppState>, node: &str) -> bool {
     state.fed.read().await.nodes.get(node).is_some_and(|n| n.status.healthy)
+}
+
+/// The engine issue a create-time slab or drive placement waits on.
+pub const SLAB_DRIVE_PLACEMENT_ISSUE: &str = "stormblock#426";
+
+/// What a named place on T turned out to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaceLookup {
+    /// Its engine id and the free bytes of what a volume there is carved on.
+    Found { id: String, free_bytes: u64 },
+    /// T has no such array, slab or drive.
+    Missing,
+    /// An array with no slab: nothing can be carved on it.
+    NoSlab { id: String },
+}
+
+/// An array of `GET /api/v1/arrays` by uuid or set name, with its slab's
+/// room. Pure.
+pub fn find_array(arrays: &[Value], name: &str) -> PlaceLookup {
+    let Some(a) = arrays.iter().find(|a| {
+        a.get("id").and_then(|x| x.as_str()) == Some(name)
+            || a.get("name").and_then(|x| x.as_str()).is_some_and(|n| !n.is_empty() && n == name)
+    }) else {
+        return PlaceLookup::Missing;
+    };
+    let id = a.get("id").and_then(|x| x.as_str()).unwrap_or(name).to_string();
+    match a.get("slab").filter(|s| s.is_object()) {
+        None => PlaceLookup::NoSlab { id },
+        Some(slab) => PlaceLookup::Found { id, free_bytes: slab.get("free_bytes").and_then(|x| x.as_u64()).unwrap_or(0) },
+    }
+}
+
+/// A slab of `GET /api/v1/slabs` by id. Pure.
+pub fn find_slab(slabs: &[crate::inventory::Slab], name: &str) -> PlaceLookup {
+    match slabs.iter().find(|s| s.id == name) {
+        Some(s) => PlaceLookup::Found { id: s.id.clone(), free_bytes: s.free_bytes },
+        None => PlaceLookup::Missing,
+    }
+}
+
+/// A drive by serial, WWN or path, from the slabs on it: its room is the
+/// free bytes of every slab it holds. Pure.
+pub fn find_drive(slabs: &[crate::inventory::Slab], name: &str) -> PlaceLookup {
+    let on: Vec<&crate::inventory::Slab> = slabs
+        .iter()
+        .filter(|s| {
+            s.drive
+                .as_ref()
+                .is_some_and(|d| [&d.serial, &d.wwn, &d.path].into_iter().any(|x| !x.is_empty() && x == name))
+        })
+        .collect();
+    match on.first().and_then(|s| s.drive.as_ref()) {
+        None => PlaceLookup::Missing,
+        Some(d) => PlaceLookup::Found { id: d.describe(), free_bytes: on.iter().map(|s| s.free_bytes).sum() },
+    }
+}
+
+/// Why a named placement on T is refused before anything is made: missing
+/// (404), no room (409), or one the engine cannot take at create yet (501).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaceRefusal {
+    Missing(String),
+    NoRoom(String),
+    NotYet(String),
+}
+
+/// Check a named placement on T against what T reports: it must exist and
+/// have room for `size` bytes. A slab or drive is refused after those
+/// checks until T's engine takes one at create (stormblock#426): sending
+/// it and having the volume land elsewhere would be the move undoing
+/// itself. Pure.
+pub fn check_placement(
+    target: &str,
+    kind: &str,
+    name: &str,
+    size: u64,
+    lookup: PlaceLookup,
+) -> Result<TargetPlacement, PlaceRefusal> {
+    let what = match kind {
+        "array" => "RAID set (array)",
+        other => other,
+    };
+    let (id, free) = match lookup {
+        PlaceLookup::Missing => return Err(PlaceRefusal::Missing(format!("{target} has no {what} {name:?}"))),
+        PlaceLookup::NoSlab { id } => {
+            return Err(PlaceRefusal::NoRoom(format!(
+                "{target}: array {name:?} ({id}) carries no slab: nothing can be carved on it"
+            )))
+        }
+        PlaceLookup::Found { id, free_bytes } => (id, free_bytes),
+    };
+    if free < size {
+        return Err(PlaceRefusal::NoRoom(format!(
+            "{target}: {what} {name:?} has {free} bytes free, the volume is {size}"
+        )));
+    }
+    if kind != "array" {
+        return Err(PlaceRefusal::NotYet(format!(
+            "{target}: {what} {name:?} is there with room, but its engine takes no {kind} placement on a create yet \
+             ({SLAB_DRIVE_PLACEMENT_ISSUE}); name a RAID set (\"array\") or leave placement out"
+        )));
+    }
+    Ok(TargetPlacement { kind: kind.into(), name: name.into(), id })
 }
 
 /// S's mirror as its engine reports it (`mirror` on `GET
@@ -191,10 +294,13 @@ pub async fn advance(state: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
     let t = engine(state, &m.target_node).await?;
     let tn = &m.target_node;
     if m.target_volume_id.is_none() {
-        let v = t
-            .create_volume(&m.target_name, m.size_bytes, None)
-            .await
-            .with_context(|| format!("{tn}: create {}", m.target_name))?;
+        // On a named RAID set (#106): every extent of the volume on the
+        // array's slab, so writes the mirror lands there stay there.
+        let v = match m.placement.as_ref().filter(|p| p.kind == "array") {
+            Some(p) => t.create_pinned_volume(&m.target_name, m.size_bytes, &p.id).await,
+            None => t.create_volume(&m.target_name, m.size_bytes, None).await,
+        }
+        .with_context(|| format!("{tn}: create {}", m.target_name))?;
         let vid = v
             .get("id")
             .and_then(|x| x.as_str())
@@ -654,6 +760,54 @@ mod tests {
         let mut m = rec(VmMigrationState::Copying);
         m.aborting = true;
         assert_eq!(apply_reading(&mut m, None), None);
+    }
+
+    #[test]
+    fn a_raid_set_is_found_by_uuid_or_name_with_its_slab_room() {
+        let arrays = vec![
+            serde_json::json!({"id": "u-1", "name": "shelf1-a", "slab": {"free_bytes": 10}}),
+            serde_json::json!({"id": "u-2", "name": ""}),
+        ];
+        let found = PlaceLookup::Found { id: "u-1".into(), free_bytes: 10 };
+        assert_eq!(find_array(&arrays, "shelf1-a"), found);
+        assert_eq!(find_array(&arrays, "u-1"), found);
+        assert_eq!(find_array(&arrays, "u-2"), PlaceLookup::NoSlab { id: "u-2".into() });
+        assert_eq!(find_array(&arrays, ""), PlaceLookup::Missing, "an unnamed set is not matched by \"\"");
+        assert_eq!(find_array(&arrays, "x"), PlaceLookup::Missing);
+    }
+
+    #[test]
+    fn a_drive_is_found_by_serial_wwn_or_path_with_every_slab_on_it() {
+        let drive = |serial: &str, path: &str| crate::inventory::DriveRef {
+            serial: serial.into(),
+            path: path.into(),
+            ..Default::default()
+        };
+        let slab = |id: &str, d, free| crate::inventory::Slab {
+            id: id.into(),
+            drive: Some(d),
+            free_bytes: free,
+            ..Default::default()
+        };
+        let slabs = vec![slab("a", drive("SN0", "/dev/sda"), 3), slab("b", drive("SN0", "/dev/sda"), 4), slab("c", drive("SN1", ""), 9)];
+        assert_eq!(find_drive(&slabs, "/dev/sda"), PlaceLookup::Found { id: "SN0".into(), free_bytes: 7 });
+        assert_eq!(find_drive(&slabs, "SN1"), PlaceLookup::Found { id: "SN1".into(), free_bytes: 9 });
+        assert_eq!(find_drive(&slabs, ""), PlaceLookup::Missing);
+        assert_eq!(find_slab(&slabs, "c"), PlaceLookup::Found { id: "c".into(), free_bytes: 9 });
+    }
+
+    #[test]
+    fn only_a_raid_set_with_room_is_taken_today() {
+        let found = |free| PlaceLookup::Found { id: "u".into(), free_bytes: free };
+        let p = check_placement("t", "array", "set", 5, found(5)).unwrap();
+        assert_eq!((p.kind.as_str(), p.name.as_str(), p.id.as_str()), ("array", "set", "u"));
+        assert!(matches!(check_placement("t", "array", "set", 6, found(5)), Err(PlaceRefusal::NoRoom(_))));
+        assert!(matches!(check_placement("t", "slab", "s", 1, PlaceLookup::Missing), Err(PlaceRefusal::Missing(_))));
+        assert!(matches!(check_placement("t", "drive", "d", 9, found(5)), Err(PlaceRefusal::NoRoom(_))));
+        match check_placement("t", "slab", "s", 1, found(5)) {
+            Err(PlaceRefusal::NotYet(m)) => assert!(m.contains(SLAB_DRIVE_PLACEMENT_ISSUE), "{m}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

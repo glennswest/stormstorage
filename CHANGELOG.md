@@ -3,6 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-07 (#106)
+- **feat:** A node-volume migration lands on a named RAID set on the target: `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, placement: {array}}` (uuid or set name) creates T's volume pinned to that array (`placement.array_id`), so every extent, including what the mirror writes, is on its slab. Refused before anything is made: 404 no such set, 409 no slab or not enough free bytes, 400 unless exactly one of `array`/`slab`/`drive`. `slab` and `drive` are checked the same way, then 501 until T's engine takes them at create (stormblock#426). The record keeps `placement`, so a restart mid-start resumes onto the same set (stormcos#806).
+- **test:** A detached volume (a stopped VM's disk, an unused claim) migrates and cuts over straight after `synced`; the record is read by migration id from a new instance over the same state file and completes from there (rustkube-node#338).
+
 ### 2026-11-06 (#56)
 - **feat:** One cluster stormstorage on multi-node. `[store] publish_service = "<ns>/<name>"`: the leader keeps that selectorless Service's Endpoints on its `advertise_url`, looking every round and writing on a difference, so the Service follows the leader (stormcos#354). `store.publish` in `/api/v1/health` and `/api/v1/store`. A loopback is refused; a failure never touches the leadership.
 - **feat:** With the etcd store, every stormcluster `ClusterMember` with an address is a node (`[local] cluster_members`, source `member`, label `storage`), so all instances know the same nodes under the same names and a failover reaches the old leader's legs. The local engine takes its member name.

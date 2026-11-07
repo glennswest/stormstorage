@@ -33,6 +33,11 @@ struct Mock {
     vols: BTreeMap<String, Vol>,
     /// Refuse a mirror start with this 409 message.
     refuse_mirror: Option<String>,
+    /// `GET /api/v1/arrays` and `/api/v1/slabs` (#106).
+    arrays: Vec<Value>,
+    slabs: Vec<Value>,
+    /// The `placement` each /v1 create carried, by name.
+    created_placement: BTreeMap<String, Value>,
     log: Vec<String>,
 }
 
@@ -53,6 +58,7 @@ async fn v1_create(State(m): State<M>, Json(b): Json<Value>) -> Json<Value> {
     let name = b["name"].as_str().unwrap().to_string();
     let v1 = format!("{node}-v1-{n}");
     m.log.push(format!("create {name} {}", b["size_bytes"]));
+    m.created_placement.insert(name.clone(), b.get("placement").cloned().unwrap_or(Value::Null));
     m.vols.insert(
         format!("{node}-{n:04}"),
         Vol { name: name.clone(), size: b["size_bytes"].as_u64().unwrap(), v1: Some(v1.clone()), ..Default::default() },
@@ -78,7 +84,8 @@ async fn get_vol(State(m): State<M>, Path(key): Path<String>) -> (StatusCode, Js
     let m = m.lock().unwrap();
     let Some(id) = find(&m, &key) else { return not_found(&key) };
     let v = &m.vols[&id];
-    let mut out = json!({"id": id, "name": v.name, "virtual_size_bytes": v.size});
+    // A detached volume, as a stopped VM's disk or an unused claim (#106).
+    let mut out = json!({"id": id, "name": v.name, "virtual_size_bytes": v.size, "in_use": false, "attachments": []});
     if let Some(mi) = &v.mirror {
         out["mirror"] = mi.clone();
     }
@@ -166,6 +173,8 @@ async fn mock_engine(node: &str) -> (String, M) {
         .route("/api/v1/volumes/{id}", get(get_vol).delete(delete_vol))
         .route("/api/v1/volumes/{id}/attach", post(attach).delete(withdraw))
         .route("/api/v1/volumes/{id}/mirror", post(mirror_start).delete(mirror_stop))
+        .route("/api/v1/arrays", get(|State(m): State<M>| async move { Json(json!({"items": m.lock().unwrap().arrays.clone()})) }))
+        .route("/api/v1/slabs", get(|State(m): State<M>| async move { Json(json!({"items": m.lock().unwrap().slabs.clone()})) }))
         .with_state(m.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -181,6 +190,10 @@ struct Fx {
 }
 
 async fn setup() -> Fx {
+    setup_at(None).await
+}
+
+async fn setup_at(state_path: Option<std::path::PathBuf>) -> Fx {
     let mut config = Config::default();
     config.local.enabled = false;
     config.kubernetes.enabled = false;
@@ -196,7 +209,7 @@ async fn setup() -> Fx {
     );
     let mut fed = FedState::default();
     fed.apply_config_nodes(&config.nodes);
-    let state = Arc::new(AppState::new(config, fed, None));
+    let state = Arc::new(AppState::new(config, fed, state_path));
     stormstorage::registry::poll_once(&state).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api = listener.local_addr().unwrap();
@@ -379,4 +392,119 @@ async fn a_failed_mirror_is_reported_and_retried() {
     assert_eq!(s.log.iter().filter(|l| l.starts_with("mirror ")).count(), 2, "{:?}", s.log);
     drop(s);
     assert_eq!(fx.t.lock().unwrap().vols.len(), 1, "the same target volume, reused");
+}
+
+/// T's RAID sets and slabs, as stormblock reports them.
+fn give_t_storage(t: &M) {
+    let mut t = t.lock().unwrap();
+    t.arrays = vec![
+        json!({"id": "11111111-aaaa-4bbb-8ccc-000000000001", "name": "shelf1-a", "level": "raid1",
+               "slab": {"id": "s-arr", "dedicated": false, "free_bytes": 100u64 << 30}}),
+        json!({"id": "11111111-aaaa-4bbb-8ccc-000000000002", "name": "shelf1-full", "level": "raid1",
+               "slab": {"id": "s-full", "dedicated": false, "free_bytes": 1u64 << 30}}),
+        json!({"id": "11111111-aaaa-4bbb-8ccc-000000000003", "name": "bare", "level": "raid1"}),
+    ];
+    t.slabs = vec![json!({"id": "slab-nvme0", "tier": "hot", "role": "data", "domain": "drive=SN0",
+                          "drive": {"serial": "SN0", "wwn": "", "model": "m", "path": "/dev/nvme0n1"},
+                          "slot_size": 1u64 << 20, "total_slots": 1u64 << 20, "free_slots": 1u64 << 19,
+                          "allocated_slots": 0, "total_bytes": 1u64 << 40, "free_bytes": 1u64 << 39})];
+}
+
+#[tokio::test]
+async fn onto_a_named_raid_set_on_the_target() {
+    let fx = setup().await;
+    give_t_storage(&fx.t);
+    let (st, m) = call(
+        reqwest::Method::POST,
+        format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api),
+        Some(json!({"to": "node-t", "placement": {"array": "shelf1-a"}})),
+    )
+    .await;
+    assert_eq!(st, 202, "{m}");
+    assert_eq!(m["state"], "copying");
+    // By set name, carved on that array's uuid: every extent on its slab.
+    assert_eq!(
+        m["placement"],
+        json!({"kind": "array", "name": "shelf1-a", "id": "11111111-aaaa-4bbb-8ccc-000000000001"})
+    );
+    assert_eq!(
+        fx.t.lock().unwrap().created_placement["ns.vm-disk"],
+        json!({"array_id": "11111111-aaaa-4bbb-8ccc-000000000001"})
+    );
+}
+
+#[tokio::test]
+async fn a_named_placement_is_refused_up_front_with_the_reason() {
+    let fx = setup().await;
+    give_t_storage(&fx.t);
+    let url = format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api);
+    for (p, want, says) in [
+        (json!({"array": "nope"}), 404, "has no RAID set"),
+        (json!({"array": "shelf1-full"}), 409, "bytes free"),
+        (json!({"array": "bare"}), 409, "carries no slab"),
+        (json!({"slab": "nope"}), 404, "has no slab"),
+        (json!({"drive": "SN9"}), 404, "has no drive"),
+        // There, with room, but the engine cannot take it at create yet.
+        (json!({"slab": "slab-nvme0"}), 501, "stormblock#426"),
+        (json!({"drive": "/dev/nvme0n1"}), 501, "stormblock#426"),
+        (json!({"array": "shelf1-a", "slab": "slab-nvme0"}), 400, "exactly one"),
+        (json!({}), 400, "exactly one"),
+    ] {
+        let (st, e) = call(reqwest::Method::POST, url.clone(), Some(json!({"to": "node-t", "placement": p}))).await;
+        assert_eq!(st, want, "{p}: {e}");
+        assert!(e["error"].as_str().unwrap_or_default().contains(says), "{p}: {e}");
+    }
+    assert!(fx.t.lock().unwrap().vols.is_empty(), "nothing made on T");
+    assert!(fx.state.fed.read().await.vm_migrations.is_empty(), "no record kept");
+}
+
+/// A stopped VM's disk or a claim no pod uses: detached on S. It mirrors
+/// like any, and cuts over the moment it is synced, with no pause step.
+/// The kubelet keeps only the migration id, so the record answers by id
+/// after a restart (#106, rustkube-node#338).
+#[tokio::test]
+async fn a_detached_volume_moves_and_is_found_by_id_after_a_restart() {
+    let dir = std::env::temp_dir().join(format!("ss-vmmig106-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.json");
+    let fx = setup_at(Some(path.clone())).await;
+    give_t_storage(&fx.t);
+    let (st, m) = call(
+        reqwest::Method::POST,
+        format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api),
+        Some(json!({"to": "node-t", "placement": {"array": "shelf1-a"}})),
+    )
+    .await;
+    assert_eq!(st, 202, "{m}");
+    let id = m["id"].as_str().unwrap().to_string();
+    set_mirror(&fx.s, "synced", 0, None);
+    let (st, c) = call(reqwest::Method::POST, format!("{}/api/v1/migrations/{id}/cutover", fx.api), None).await;
+    assert_eq!((st, c["state"].clone()), (200, json!("cut_over")), "{c}");
+
+    // A restart: a new instance from the state file, the same engines.
+    let (mut fed, rec) = stormstorage::model::load_state(&path).unwrap();
+    assert!(rec.is_none(), "the state file was whole");
+    let mut config = Config::default();
+    config.local.enabled = false;
+    config.kubernetes.enabled = false;
+    config.nodes = fx.state.config.nodes.clone();
+    fed.apply_config_nodes(&config.nodes);
+    let again = Arc::new(AppState::new(config, fed, Some(path)));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api = format!("http://{}", listener.local_addr().unwrap());
+    let router = stormstorage::api::router(again.clone());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let (st, g) = call(reqwest::Method::GET, format!("{api}/api/v1/migrations/{id}"), None).await;
+    assert_eq!(st, 200, "{g}");
+    assert_eq!(g["state"], "cut_over");
+    assert_eq!(g["placement"]["name"], "shelf1-a");
+    let t_id = fx.t.lock().unwrap().vols.keys().next().cloned().unwrap();
+    assert_eq!(g["target"], json!({"node": "node-t", "name": "ns.vm-disk", "id": t_id}));
+    // And it goes on from there.
+    stormstorage::registry::poll_once(&again).await;
+    let (st, d) = call(reqwest::Method::POST, format!("{api}/api/v1/migrations/{id}/complete"), None).await;
+    assert_eq!((st, d["state"].clone()), (200, json!("completed")), "{d}");
+    assert!(!fx.s.lock().unwrap().vols.contains_key("s-disk-uuid"));
+    std::fs::remove_dir_all(&dir).ok();
 }

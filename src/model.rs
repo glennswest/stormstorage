@@ -1014,6 +1014,19 @@ pub fn backup_target_name(volume: &str) -> String {
     format!("{volume}-backup")
 }
 
+/// A named place on the target node for a migrated volume (#106): a RAID
+/// set (array), a slab or a drive of T's engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetPlacement {
+    /// `array`, `slab` or `drive`.
+    pub kind: String,
+    /// As asked: an id or a name.
+    pub name: String,
+    /// T's engine id of it (an array's uuid, a slab's id, a drive's
+    /// serial / WWN / path).
+    pub id: String,
+}
+
 /// Where a live migration of a node volume is (#44).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1066,6 +1079,10 @@ pub struct VmMigration {
     /// T's volume served to S's host NQN; None once withdrawn.
     #[serde(default)]
     pub target_attach: Option<crate::engine::AttachedLeg>,
+    /// Where on T the target volume is carved (#106); None: wherever T's
+    /// engine places it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<TargetPlacement>,
     /// The URI S's mirror was started with.
     #[serde(default)]
     pub mirror_target: Option<String>,

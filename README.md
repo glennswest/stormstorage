@@ -527,6 +527,22 @@ stormview components feed on **:9093**.
      (the URI's `hostnqn=` is who S connects as). All or nothing: a
      refusal undoes T's volume. 409 when S's volume is already mirrored
      or migrating, or T holds a volume of that name.
+     - **On a named place on T (#106):** `placement: {"array": "<uuid or
+       set name>"}` carves T's volume on that RAID set (`placement.array_id`
+       on T's `/v1` create, stormblock#150): every extent on the array's
+       slab, so the writes the mirror lands stay there. Checked first:
+       404 when T has no such set, 409 when it carries no slab or its slab
+       has fewer free bytes than the volume. `{"slab": "<id>"}` and
+       `{"drive": "<serial, WWN or path>"}` are checked the same way (a
+       drive's room is the free bytes of its slabs) and then refused with
+       501: T's engine takes no slab or drive at create yet
+       (stormblock#426), and a volume placed elsewhere would undo the move.
+       Exactly one of the three, else 400. The record keeps `placement
+       {kind, name, id}`, so a restart mid-start resumes onto the same set.
+     - **Detached or attached:** the mirror works on S's engine volume,
+       not on its consumer, so a stopped VM's disk or a claim no pod uses
+       moves the same way, and `cutover` may follow `synced` at once (there
+       is no guest to pause).
   2. `GET /api/v1/migrations/{mid}`: `state` `starting` → `copying` →
      `synced` (T has every byte; writes reach both), `bytes_remaining`,
      and `target {node, name, id}`. It reads S's mirror live; the
@@ -543,7 +559,9 @@ stormview components feed on **:9093**.
   - The mirror does not survive an engine restart (it reads `failed`):
     `POST …/{mid}/retry` forgets it and starts it again on the same
     target volume. Records are kept (replicated, in the store), and
-    completed/aborted ones are dropped a day later. Feed: `vmmig:<mid>`.
+    completed/aborted ones are dropped a day later, so a caller that keeps
+    only the migration id (the kubelet, rustkube-node#338) reads it by id
+    after a restart. Feed: `vmmig:<mid>`.
 
 **Not done yet** (tracked in issues, see [Status](#status)): moving a head by handover (#100: stormblock#296 has landed, the call is not made yet),
 which is what a tier migration of the head's own leg waits on.
@@ -809,7 +827,7 @@ with a token set, their Delete/Publish actions get 401.
 | POST | `/api/v1/volumes/{name}/migrate` | Body `{pool}`. Tier migration (#32): every leg moves into that pool, one at a time; the head's own leg waits on a handover (#100). Returns the `migration`. 404 for an unknown volume or pool, 409 when it cannot start (see *Tier migration*). |
 | DELETE | `/api/v1/volumes/{name}/migrate` | Cancel the tier migration: `{cancelled}`. Legs already moved stay. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
-| POST | `/api/v1/nodes/{node}/volumes/{id}/migrate` | `{to, name?}` → 202 and the migration (#44): mirror the node volume `id` (engine id or name) on `node`, in use, to a new volume on `to`. 400 for `to` = `node`; 404 for an unknown node or volume; 409 when either node does not answer, the volume is mirrored or migrating, `to` holds a volume of that name, or S's engine refuses the mirror (a secret volume). |
+| POST | `/api/v1/nodes/{node}/volumes/{id}/migrate` | `{to, name?, placement?}` → 202 and the migration (#44): mirror the node volume `id` (engine id or name) on `node`, in use or detached, to a new volume on `to`, on the RAID set `placement.array` names (#106). 400 for `to` = `node` or not exactly one of `placement.array`/`slab`/`drive`; 404 for an unknown node, volume or named place on `to`; 501 for a `slab` or `drive` (stormblock#426); 409 when the named place has no room, or when either node does not answer, the volume is mirrored or migrating, `to` holds a volume of that name, or S's engine refuses the mirror (a secret volume). |
 | GET | `/api/v1/migrations` | `{migrations: [...]}`. `GET /api/v1/migrations/{id}`: `{id, source_node, source_volume_id, source_name, size_bytes, target_node, target_name, target_volume_id, target_local_id, target_attach, mirror_target, state (starting/copying/synced/cut_over/completed/aborted/failed), bytes_total, bytes_remaining, message, aborting, started_at_ms, updated_at_ms, target {node, name, id}}`, with S's mirror read live. |
 | POST | `/api/v1/migrations/{id}/cutover` | The switch-over (guest paused): 409 unless `synced`; S's mirror stopped (synced and flushed, else `failed`), S's attach on T withdrawn → `cut_over`. Idempotent. `…/complete` (from `cut_over`) deletes S's volume; `…/abort` (not after `completed`) stops the mirror and deletes T's volume; `…/retry` (from `failed`, before the cut-over) starts the mirror again. 409 while another step of it runs. |
 | GET | `/api/v1/orphans` | Leg volumes left on unreachable nodes: `{orphans: [{node, volume_id, master_node, of_volume, reason, since}]}`. Reaped when the node answers. |

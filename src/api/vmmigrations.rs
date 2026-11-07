@@ -67,11 +67,62 @@ pub(super) struct MigrateBody {
     /// The volume's name on T; default S's name.
     #[serde(default)]
     name: Option<String>,
+    /// Where on T (#106): exactly one of a RAID set, a slab or a drive.
+    #[serde(default)]
+    placement: Option<PlacementBody>,
 }
 
-/// POST /api/v1/nodes/{node}/volumes/{id}/migrate {to, name?} — start
-/// mirroring S's volume (engine id or name) to a new volume on `to`. All
-/// or nothing: a step that fails undoes T's volume and keeps no record.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PlacementBody {
+    #[serde(default)]
+    array: Option<String>,
+    #[serde(default)]
+    slab: Option<String>,
+    #[serde(default)]
+    drive: Option<String>,
+}
+
+impl PlacementBody {
+    /// The one place named, as (kind, name).
+    fn one(&self) -> Result<(&'static str, String), ApiError> {
+        let named: Vec<(&'static str, String)> = [("array", &self.array), ("slab", &self.slab), ("drive", &self.drive)]
+            .into_iter()
+            .filter_map(|(k, v)| v.as_ref().filter(|v| !v.is_empty()).map(|v| (k, v.clone())))
+            .collect();
+        match named.as_slice() {
+            [one] => Ok(one.clone()),
+            _ => Err(ApiError::bad_request("placement: exactly one of \"array\", \"slab\" or \"drive\"")),
+        }
+    }
+}
+
+/// Find the named place on T and check it has room (#106).
+async fn resolve_placement(
+    t: &crate::engine::Engine,
+    target: &str,
+    body: &PlacementBody,
+    size: u64,
+) -> Result<crate::model::TargetPlacement, ApiError> {
+    let (kind, name) = body.one()?;
+    let up = |e: anyhow::Error| ApiError::upstream(format!("{target}: {e:#}"));
+    let lookup = match kind {
+        "array" => vmmigrate::find_array(&t.list_arrays().await.map_err(up)?, &name),
+        "slab" => vmmigrate::find_slab(&t.list_slabs().await.map_err(up)?, &name),
+        _ => vmmigrate::find_drive(&t.list_slabs().await.map_err(up)?, &name),
+    };
+    vmmigrate::check_placement(target, kind, &name, size, lookup).map_err(|r| match r {
+        vmmigrate::PlaceRefusal::Missing(m) => ApiError::not_found(m),
+        vmmigrate::PlaceRefusal::NoRoom(m) => ApiError::conflict(m),
+        vmmigrate::PlaceRefusal::NotYet(m) => ApiError::not_implemented(m),
+    })
+}
+
+/// POST /api/v1/nodes/{node}/volumes/{id}/migrate {to, name?, placement?}
+/// — start mirroring S's volume (engine id or name) to a new volume on
+/// `to`, carved on `placement`'s RAID set when named (#106). Attached or
+/// not: the mirror works on S's engine volume, not on its consumer. All or
+/// nothing: a step that fails undoes T's volume and keeps no record.
 pub(super) async fn start(
     State(s): State<Arc<AppState>>,
     Path((node, vol)): Path<(String, String)>,
@@ -120,6 +171,10 @@ pub(super) async fn start(
         Err(e) if crate::engine::is_not_found(&e) => {}
         Err(e) => return Err(ApiError::upstream(format!("{}: {e:#}", body.to))),
     }
+    let placement = match &body.placement {
+        None => None,
+        Some(p) => Some(resolve_placement(&dst, &body.to, p, size).await?),
+    };
     let id = new_id();
     {
         let mut fed = s.fed.write().await;
@@ -141,6 +196,7 @@ pub(super) async fn start(
                 size_bytes: size,
                 target_node: body.to.clone(),
                 target_name,
+                placement,
                 started_at_ms: now,
                 updated_at_ms: now,
                 ..Default::default()
