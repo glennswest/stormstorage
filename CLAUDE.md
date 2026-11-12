@@ -1035,7 +1035,7 @@ apiserver, not rustkube, for Endpoints and ClusterMembers.
 ### Migrate onto a named place on the target (#106, P1, stormcos#806) — DONE 2026-11-07
 `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, placement?}`. The engine
 today takes only `placement.array_id` on a /v1 create (stormblock#150);
-slab/drive at create is stormblock#426 (open). Plan:
+slab/drive at create is stormblock#426 (closed since; the pass-through is #107). Plan:
 - `placement {array|slab|drive}` (exactly one, else 400). Resolved on T
   before any record: array by uuid or set name from `GET /api/v1/arrays`
   (room = its `slab.free_bytes`; no slab → 409); slab by id, drive by

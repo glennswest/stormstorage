@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-11 (docs refresh)
+- **docs:** Refreshed from the code since 2026-11-05 (#56, #106 were already documented and match the code: config keys, env overrides, migrate `placement`). stormblock#426 is closed, so the README no longer says migrate waits on it: slab/drive stay 501 until #107 sends them. Recorded the per-peer CA gap (#108) beside `[engine_tls]`.
+
 ### 2026-11-07 (#106)
 - **feat:** A node-volume migration lands on a named RAID set on the target: `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, placement: {array}}` (uuid or set name) creates T's volume pinned to that array (`placement.array_id`), so every extent, including what the mirror writes, is on its slab. Refused before anything is made: 404 no such set, 409 no slab or not enough free bytes, 400 unless exactly one of `array`/`slab`/`drive`. `slab` and `drive` are checked the same way, then 501 until T's engine takes them at create (stormblock#426). The record keeps `placement`, so a restart mid-start resumes onto the same set (stormcos#806).
 - **test:** A detached volume (a stopped VM's disk, an unused claim) migrates and cuts over straight after `synced`; the record is read by migration id from a new instance over the same state file and completes from there (rustkube-node#338).
