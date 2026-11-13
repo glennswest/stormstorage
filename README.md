@@ -1014,6 +1014,31 @@ seed. Since 2026-10-06 the entry's config puts `token_file` under
 it (and warns). The token was found anyway, since
 `/run/stormblock/engine/api_token` is one of the default paths (#42).
 
+### API health (#82, stormcentral#596)
+
+`/api/v1/health` takes no lock, so it keeps answering while the real work is
+stuck. The entry therefore declares three APIs, each a cheap **real** read
+that stormd probes inside the container (`[[process.api]]` in the golden's
+stormd config) and sorts into healthy / slow / stalled / down:
+
+| `name` | `probe` (on :9093) | `p50_ms` | `p99_ms` | `timeout_s` | What a stall means |
+|---|---|---|---|---|---|
+| `registry` | `/api/v1/nodes` | 50 | 500 | 10 | the federation state lock is held (a create, move or reconcile stuck under it) |
+| `volumes` | `/api/v1/volumes` | 100 | 1000 | 10 | the federation or head-reading lock is held |
+| `pools` | `/api/v1/pools` | 100 | 1000 | 10 | the federation or the poller's inventory lock is held |
+
+None of them calls an engine, so they measure stormstorage, not stormblock
+(its own APIs are declared on its entry). All are GETs, open with
+`[api] api_token` set, so no `token_file` (tests/auth.rs keeps them open).
+No `restart_after_stalled_secs`: a restart in the middle of an
+orchestration is worse than a stall someone looks at; its state is
+persisted, but an engine call it was waiting on is not resumed. The entry
+is the owner's setting:
+
+```bash
+stormcentral component edit stormstorage --set 'apis=[{"name":"registry","probe":"/api/v1/nodes","p50_ms":50,"p99_ms":500,"timeout_s":10},{"name":"volumes","probe":"/api/v1/volumes","p50_ms":100,"p99_ms":1000,"timeout_s":10},{"name":"pools","probe":"/api/v1/pools","p50_ms":100,"p99_ms":1000,"timeout_s":10}]'
+```
+
 A commit here does not reach a node until a golden is built and a
 release composed. When an issue's work is complete, request the golden
 once:

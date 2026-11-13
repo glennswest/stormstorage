@@ -99,3 +99,21 @@ async fn empty_token_is_open() {
         .unwrap();
     assert_eq!(r.status(), 200);
 }
+
+/// #82: the APIs declared for stormd's health probing (stormcentral#596)
+/// are open GETs that answer from this process alone — no engine call, no
+/// bearer — even with `api_token` set. A probe that needed a token would
+/// read `down`; one that called an engine would measure the engine.
+#[tokio::test]
+async fn health_probe_reads_are_open_and_local() {
+    let api = serve("s3cret").await;
+    let c = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap();
+    for p in ["/nodes", "/volumes", "/pools"] {
+        let r = c.get(format!("{api}{p}")).send().await.unwrap();
+        assert_eq!(r.status(), 200, "probe GET {p}");
+        let _: Value = r.json().await.unwrap();
+    }
+}

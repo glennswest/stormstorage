@@ -3,6 +3,10 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-13 (#82)
+- **docs:** API health for stormd (stormcentral#596): the registry entry declares `registry` (`/api/v1/nodes`), `volumes` (`/api/v1/volumes`) and `pools` (`/api/v1/pools`) with budgets and a 10 s timeout. Each takes the lock real work takes and calls no engine. README *API health* gives the command; the registry is the owner's setting, so the master applies it.
+- **test:** tests/auth.rs: the three probes answer 200 with no bearer while `api_token` is set.
+
 ### 2026-11-11 (docs refresh)
 - **docs:** Refreshed from the code since 2026-11-05 (#56, #106 were already documented and match the code: config keys, env overrides, migrate `placement`). stormblock#426 is closed, so the README no longer says migrate waits on it: slab/drive stay 501 until #107 sends them. Recorded the per-peer CA gap (#108) beside `[engine_tls]`.
 
