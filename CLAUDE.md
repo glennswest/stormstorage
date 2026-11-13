@@ -1057,6 +1057,20 @@ warnings: 103 unit incl. 3 new, tests/vmmigrate.rs 8/8). Contract posted
 on stormblock#426; slab/drive is #107 (proposed after stormblock#426).
 Not run on real engines: the live run is #101 (stormcos#806 tests 1–5).
 
+### API health probes in the registry (#82, P0, stormcentral#596)
+stormd probes each declared API inside the container (healthy / slow /
+stalled / down); `/api/v1/health` takes no lock, so it says nothing about
+stuck work. Declaration (the registry is the owner's setting, #829: the
+master runs it; the check endpoint is admin-only too):
+`apis=[{registry,/api/v1/nodes,50/500ms,10s},{volumes,/api/v1/volumes,
+100/1000ms,10s},{pools,/api/v1/pools,100/1000ms,10s}]`. Each takes the
+locks real work takes (`fed`, `heads`, `inventory`) and calls no engine;
+all are open GETs (no `token_file`). No `restart_after_stalled_secs`: a
+restart mid-orchestration is worse than a stall an operator looks at.
+Here: README "API health", a test that the probes stay open with a token
+set, changelog. Then: note to the master with the command; close once
+`component export` shows `apis` and the golden is requested.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
