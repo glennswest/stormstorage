@@ -1070,6 +1070,10 @@ restart mid-orchestration is worse than a stall an operator looks at.
 Here: README "API health", a test that the probes stay open with a token
 set, changelog. Then: note to the master with the command; close once
 `component export` shows `apis` and the golden is requested.
+Status 2026-11-13: 8e5bc6e pushed (README, test, changelog); sc-build passes
+(build + test + clippy -D warnings, probe test ok). Note sent to the master;
+`wait-owner --action` card with the command. Next: once `component export`
+shows `apis`, request the golden, close #82.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
