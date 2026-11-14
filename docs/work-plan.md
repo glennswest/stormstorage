@@ -1,0 +1,1031 @@
+# Work plan — moved out of CLAUDE.md
+
+Kept here whole, newest notes as they were. Write new intentions here.
+
+## Work Plan
+
+### Phase 1: Registry, pools, placement, volumes — DONE (v0.1.0)
+- [x] Founding spec (docs/architecture.md)
+- [x] Scaffold: config (nodes/pools/rungs), model, events, persistence
+- [x] Engine client (/v1: capacity, volume create/delete/list; bearer;
+      legs request replica_tier slaves=0)
+- [x] Poller: enrich + health-mark every node
+- [x] stormblock-compatible register/deregister endpoints
+- [x] Placement engine: domain grouping at rung, load-balanced, pure+tested
+- [x] DistVolume create/delete (legs created per node; assembly pending #73;
+      rollback on partial failure)
+- [x] API + embedded UI + stormd summary card
+- [x] Build/test on dev (15/15, clippy clean); e2e against a LIVE stormblock
+      on dev: poll→capacity, pool create→leg in engine, delete→clean.
+      Operational note: an engine started with plain --device does NOT
+      reopen an existing slab — capacity reads 0 until a slab is
+      formatted/adopted; matters for node provisioning.
+- [x] Issues: stormblock#73 (NVMe-TCP export as drive/RAID member via API),
+      stormfs#64 (consume stormstorage registry/placement)
+
+### Phase 1.5: stormview feed + peer replication — DONE (v0.2.0)
+- [x] `GET /api/v1/components` + `/ws/components` (stormview crate,
+      public): system/pool/node/volume with relations for grids and a
+      delete action on volumes — renders in stormd/stormsh/stormconsole
+- [x] `[replication] peers`: revision-guarded async replication of
+      durable intent (volumes + registered nodes); poll status stays
+      local per peer. Live-verified: create on peer A → visible on B <2s
+
+### CSI relationship (Glenn, 2026-08-26) — #36 settled 2026-10-06
+stormblock is the default-everywhere storage. **PVCs on stormcos are the
+built-in `stormblock` driver**: the kubelet clones the sealed blank of the
+claim's size class on the pod's node and attaches it over ublk, with no CSI
+(stormblock CLAUDE.md, rustkube `docs/storage.md`). CSI (stormblock-csi) is
+the compatibility path for third-party drivers and *foreign* Kubernetes:
+still wanted, not primary. **Settled** (owner decisions on stormblock-csi#29
+and #32, 2026-10-06; shipped in stormblock-csi v0.4.0): its controller and
+operator talk to **stormstorage only** (create, replicas/sync state,
+fence/promote/prestage/dual-attach, attach from `export`); the CSI volume id
+is the stormstorage name; the node plugin uses its own engine for local
+replicas = 1. Follow-ups here: #48 (done), #51 (done), #49 (snapshots,
+expand, clones; needs-owner), #50 (head preference, done),
+#56 (one elected cluster stormstorage for multi-node, with stormcos#354).
+Replicated claims across servers (rustkube-node#68) go through re-leg (#1).
+
+### Phase 2: Leg wiring — DONE (v0.3.0, 2026-08-28)
+stormblock now attaches `nvme-tcp://host:port/<nqn>?nsid=N` as a drive via
+POST /api/v1/drives and takes it as a RAID member; proven cross-engine on
+dev (RAID-1 across a local drive + a remote NVMe-TCP leg, members active).
+Plan: legs export via /v1 attach (hot-add namespace, returns
+nqn/addresses/nsid); head = first placed node; head attaches every leg as
+an nvme-tcp:// drive (its own leg over loopback too — uniform; local
+fast-path is a later optimization) and assembles RAID1 via
+/api/v1/arrays. Move = new leg → attach → add_member → poll member
+active → remove_member → drop old drive/volume.
+- [x] Engine client: /v1 attach/detach, arrays create/get/members, typed
+      create (captures master node for attach gating)
+- [x] Assembly in create flow; teardown in delete; AssemblyState::Assembled
+      (needs stormblock ≥ 2026-08-28: array members expose uuid+path)
+- [x] POST /api/v1/volumes/{name}/move — background leg move with events
+- [x] e2e on dev: 3 engines — create → assembled RAID1 on head (member
+      uuids captured); move node-c → node-d converged, both members
+      active, old volume gone
+- [x] Node-loss handling: re-leg from surviving copies (#1, P1) — DONE 2026-10-13; code
+      done (999556f, 5deffda, c7d71f9); live run waits on
+      stormcentral#131 (#27 host_nqn done 2026-10-06).
+      Plan: `LegState::Lost` (was created, node now unhealthy) and
+      `AssemblyState::Degraded`; a reconciler on every poll marks legs
+      lost and starts one re-leg per volume through the move machinery.
+      The replacement is recorded on the volume (`replacing`) so a restart
+      resumes the wait instead of adding a second member, and there is a
+      per-volume cooldown after a failed attempt (so a flapping node gives
+      one re-leg). Cleanup of the dead side is best-effort: an undeletable
+      old leg goes to `orphans` and is reaped when its node answers again.
+      A lost **head** is reported (degraded, event) but not recovered: that
+      is re-head, a later phase. /v1 attach sends `transport: nvme_tcp`
+      (stormblock#149, v19.1.1). Verify with unit tests of the decisions
+      and `test/e2e-releg.sh` (3 engines on dev via sc-build: create 2-leg,
+      stop non-head, re-leg converges, restart reaps the orphan).
+      **Status 2026-09-28:** code, unit tests and docs done (999556f,
+      5deffda, c7d71f9). The re-leg itself converged on real engines inside
+      the #2 e2e (b64c3ee run: `b → c (node lost)`, cleanup pending,
+      republished unchanged), but `scripts/e2e-releg.sh` has no recorded
+      pass. It now carries e2e-export's loaded-box fixes. Blocked like #2 on
+      stormcentral#131 (no stormblock binary for an sc-build job, #25).
+      When it passes: close #1 with the run, then the golden.
+      **2026-10-13: unblocked** (stormcentral#131 closed via #168:
+      `SC_TOOLS=stormblock` gives a job stormblock's golden, 20.0.0).
+      Running `SC_TOOLS=stormblock sc-build scripts/e2e-releg.sh`.
+      Run 1: 401 on array create (stormblock#274 admin gate) → #83; the
+      scripts now share a `STORMBLOCK_ADMIN_TOKEN` (f54cb02). Run 2 on
+      f54cb02 PASSED: loss noticed in 40 s, one re-leg b → c, both members
+      active on the head, orphan recorded and reaped on restart, no second
+      re-leg, delete leaves no leg. #1 and #83 closed.
+      Golden golden-stormstorage-bb67cbce78ea (73b97e2, stormcos#428).
+- [x] Consumer serving (#2) — DONE 2026-10-13 (live e2e passed). Was: live e2e waits on
+      stormcentral#131 (#25) and, on closed engines, #53. History (2026-09-27). Unblocked:
+      stormblock v19.0.0 (#150: dedicated arrays, `placement.array_id`
+      pins a /v1 volume) and v19.1.1 (#149: `transport: nvme_tcp` attach).
+      Plan: `DistVolume.export` {state none|published|failed, volume_id,
+      node, master_node, coordinates, published_at, coordinates_changed,
+      message}. Assembled/degraded: `<name>-mirror` /v1 volume pinned to the
+      array on the head, attached nvme_tcp. Single leg: the leg's own
+      attach, same field. Published at the end of create; delete revokes
+      first (detach + delete the pinned volume, else the array delete is a
+      409); `POST /api/v1/volumes/{name}/export` publishes or republishes,
+      and a head node coming back healthy republishes. API, feed, UI,
+      docs; tests/export.rs against a mock engine; e2e on dev
+      (scripts/e2e-export.sh via sc-build).
+      **Status 2026-09-27 (session restart):** code, docs, tests/export.rs
+      done and pushed; `sc-build` passes (28 unit + 2 adopt + 3 export).
+      Open: live e2e `sc-build scripts/e2e-export.sh` — run 1 failed on a
+      harness race (fixed: 180 s engine wait), run 2 exited silently right
+      after create (URI one-liner rewritten, ERR trap added), run 3 was in
+      flight at restart. Run 3 never started (dev.g8.lo rebooted); run 4
+      failed: engine a took >5 s to answer a leg create (#19) → engine
+      writes now time out after 60 s (95d4a20), then 300 s (a172e5c: array
+      create formats a slab, 47 s loaded). Runs 5–9 fixed harness bugs
+      (array lists engine uuids; victim "b" matched "assembled") and one
+      real one: a publish on an unreachable node was not recorded — now
+      `failed` + event, retried on recovery (b64c3ee, test in export.rs).
+      Run 9 passed everything up to delete: the head's engine did not answer
+      the served-volume DELETE in 300 s (it finished later). Run 10
+      instruments that (latency probe head vs other engine, loadavg) to
+      tell an engine stall (→ stormblock issue) from box load.
+      **2026-09-28: blocked on stormcentral#131.** Run 10 left no result
+      here; the e2e spent over an hour of its build slot compiling
+      stormblock, which the owner ruled out (#25: test at runtime, no
+      stormblock compiles here). The scripts now require `STORMBLOCK_BIN`
+      and stop without it; no sc-build job has a stormblock ≥ v19.1.1 to
+      point at until stormblock's golden bin is reachable from a job (#131;
+      GitHub releases stop at v8.2.1). #2 proposed --after
+      stormcentral#131. Expect #26 (a stalled head's leg stays lost) on a
+      loaded box. When it passes: close #17, #18, #19, #21 (harness
+      build-failures) and #2 with what was verified, then request the
+      golden once. #13 and #16 closed.
+      **2026-10-13: unblocked** (#168 `SC_TOOLS=stormblock`, stormblock
+      20.0.0; admin token shared since f54cb02). Running
+      `SC_TOOLS=stormblock sc-build scripts/e2e-export.sh`; a head stall goes
+      on stormblock#266. Run 1: shared publish 400 (closed engine, #210),
+      recorded `failed` as designed → the script names x as a host at
+      create (8960c56). Run 2: x's slab format 401 (admin gate) → the
+      harness's engine writes use the admin token (b1b6ec9). Run 3 on
+      b1b6ec9 PASSED (publish per host, consumer write, re-leg under it,
+      read back, republish unchanged, single leg, delete promptly, nothing
+      left). #2 closed; #17–#21 were already closed.
+      Golden golden-stormstorage-7c0e18b1438d (bc99504, stormcos#428).
+- [x] Retry a failed assembly (#7) — done 2026-09-28:
+      `POST /api/v1/volumes/{name}/assemble` (409 when assembled, single
+      leg or busy) → `orchestrate::assemble`, then publish. The reconciler
+      retries a pending volume whose leg nodes are all healthy, gated like
+      re-leg by `recovery.active`, with `next_assemble_after` = now +
+      `recovery.cooldown_secs` after a failed attempt. `assemble` takes the
+      per-volume claim (no concurrent re-leg/assemble). Before creating the
+      RAID it lists the head's arrays: one whose members are exactly the
+      legs' drive URIs is adopted (a create whose response was lost); one
+      holding any of them otherwise → refuse. (Since stormblock#215 create
+      itself 409s on held drives; a 409 for legs carrying a superblock of
+      an array the head lost now reassembles that array, #43.) Event text
+      names the retry path. Tests: mock engine in tests/assemble.rs.
+
+### Docs from code — DONE (#4, 2026-09-24)
+- [x] README rewritten from source: flags, every config key + default,
+      ports, endpoints, build (sc-build), shipping (golden)
+- [x] docs/architecture.md: design-only sections marked, stale bits fixed
+- [x] CLAUDE.md: build rules → sc-build; status current
+- [x] Cross-refs checked against the code of stormblock (`src/stormfs.rs`
+      heartbeat, :9090), stormd (`[process.ui]` proxy/summary), stormcos
+      (goldens, routes) and stormconsole (the stormstorage plugin)
+- [x] Gaps the docs promised but the code lacks, filed as issues:
+      #6 inbound API auth, #7 assembly retry
+
+### Presentation — DONE (#5, 2026-09-24)
+- [x] docs/presentation.md: an 11-slide Marp deck built from the README
+      and code; the relationships slide follows stormcentral's graph
+      (graph gaps filed as stormcentral#20)
+- [x] Linked from the README; changelog; sc-build passing
+
+### Node adoption: the local stormblock, slabs as pools — DONE (#9, 2026-09-25)
+On a node stormstorage saw 0 nodes/pools/volumes while its stormblock had
+3 slabs and 141 volumes.
+- [x] `[local]` config (default on): adopt `http://127.0.0.1:9090` once it
+      answers, named by the engine's discovery `local_node` (else the
+      hostname), plus live peers of its stormblock cluster. Source
+      `local`: never replicated, no revision bump.
+- [x] Poller inventory (memory only): slabs, `/api/v1/volumes`, slab slot
+      tables → each volume placed by slots / parent / only-slab-of-role /
+      unknown (`src/inventory.rs`).
+- [x] `/api/v1/pools` kinds policy/slab/tier;
+      `/api/v1/nodes/{name}/inventory`; feed: `tier:*`, `pool:<node>/<slab>`
+      with volumes, `nvol:<node>/<id>` with owner; summary + UI.
+- [x] tests/adopt.rs: two mock stormblocks (local + cluster peer) → adopt,
+      place, pools, feed. sc-build passes.
+- [x] #11 follow-ups (except PV/PVC) — done 2026-09-28. stormblock#136 (v17.1.0)
+      and #138 (v18.1.0) landed; rustkube-node#59 (PV/PVC) is still open.
+      Plan: poll `GET /api/v1/volumes?placement=true` (full read each
+      poll; `?since` is not used because attach/detach and slab state do
+      not bump `generation`). Parse slab `drive` {serial,wwn,model,path};
+      volume `placement` {slabs[{id,drive,node,state,legs,…}], drives,
+      legs{policy,health,expected,missing,…}, rebuild, arrays[{members}]},
+      `kind`, `in_use`, `attachments`, `consumer`. `placed_by: engine` from
+      placement; the slot scan runs only for an engine that sends no
+      placement (older than v17.1.0). Feed: pool detail names the drive;
+      node volume: kind, in use, consumer, drives, partners, rebuild.
+      UI Node volumes: kind, consumer, drive, partners. Tests: parse real
+      shapes, placement precedence, feed. PV/PVC is #28, after
+      rustkube-node#59.
+- [x] PV/PVC per node volume (#28) — done 2026-10-05 (356227b).
+      The engine does not carry the PV: the kubelet's mirror writes a PV +
+      bound PVC per volume into the apiserver (`storm.io/node`,
+      `storm.io/volume` annotations; `spec.csi.volumeHandle` = volume
+      name, driver `stormblock.storm.io`; labels `storm.io/volume-kind`,
+      `storm.io/component`). Plan: `[kubernetes]` config (enabled, server
+      default `https://127.0.0.1:6443` unverified on loopback like
+      stormconsole, `token_file` else `$KUBE_TOKEN`, else
+      `/data/stormcert/node-admin.token`, else the pod SA token; anonymous
+      without one); `src/kube.rs` reads PVs + PVCs once per poll, joins by
+      (node, volume) onto `PlacedVolume.pv` {name, phase, reclaim, kind,
+      component, claim {namespace, name, uid, phase, bound}}; failures keep
+      the last view, event on transitions only. Feed `nvol:` metrics
+      pv/claim; UI Node volumes column. Tests: unit join + tests/kube.rs
+      (mock apiserver + mock engine). sc-build passes (47 unit,
+      tests/kube.rs 2/2). Filed stormcos#290: mount /data/stormcert ro in
+      the stormstorage unit (today anonymous works only while sno grants
+      anonymous admin, stormcos#76). Not seen on a node yet.
+- Build box has no clippy (stormcentral#31); `sc-build 'cargo clippy'`
+  fails until that is fixed.
+
+### Test suites (#8) — DONE 2026-10-13 (short + medium passed on a test machine)
+Verified on dev: `sc-build scripts/check-test-container.sh` (47a65c9)
+builds --locked, stages a 3.2 MiB static /test, and runs it against a real
+stormstorage of the commit (no nodes: api-up pass, node checks fail, exit
+1; results.jsonl = stdout; unreachable/no node → 2). Not yet run on a test
+machine: C2NR0Q2 (the only one) last install failed and its :9093 refused.
+Queued `stormcentral test run stormstorage short` = run d3d347cb97. When a
+run there passes short (and medium), close #8 with it.
+2026-09-28 later: blocked outside this repo. C2NR0Q2 is down (stormcos#165,
+stormcentral#63), and on 11.50 stormstorage did not answer on the node at
+all (stormcos#139: neither :9093 nor its stormd :9193). #8 proposed after
+stormcos#139. No code change pending.
+2026-10-05: stormcos#139 fixed (11.80); C2NR0Q2 up. Run ed43948592
+(short, 2a4c3ac on C2NR0Q2): harness end to end OK (image built, pushed,
+Job ran, cleaned up) — api-up pass, engine-adopted/pools fail, lifecycle
+skip. Real bug: the node's stormstorage got 401 from its stormblock, token
+looked for only at /etc/stormblock/api_token; the unit mounts it at
+/run/stormblock/engine/api_token and the entry's `token_file` is top-level
+(ignored, stormcentral#72). Fixed in ef3af98 (#42 step 2: family-order
+search incl. that path; warn on unknown top-level keys). A pass needs a
+release carrying the new golden on C2NR0Q2; then rerun short + medium.
+Medium run 61a319ebe8 (2a4c3ac): 4 pass / 7 fail / 3 skip, all failures
+"0 candidates" (same cause). sc-build passes on ef3af98; golden
+golden-stormstorage-6a3478464394, release request stormcos#156; #8
+proposed after stormcos#156. #42 step 2 done (entry fix: stormcentral#72).
+2026-10-05 later: owner on #8: "go ahead and use the new image". Newest
+releases 11.80/11.81 still carry golden-stormstorage-0acf7f3181ff (519f58f,
+pre-fix); golden-stormstorage-2ff1f1875288 (853ba26: token fix + #28) is the
+one to ship. Next: compose a release picking it, install on C2NR0Q2
+(`testhost install`), then `test run stormstorage short` and `medium`.
+The compose was refused in this session by the permission classifier
+(production deploy), so it waits on the owner running it or allowing it.
+2026-10-10: unblocked. Release 12.14 carries stormstorage 0cad0c4 (has the
+token fix ef3af98); C2NR0Q2, pvetest1 and server8 run 12.14 (install
+passed). Rerunning `test run stormstorage short`, then `medium`.
+Run b231ed5133 (short, f61750f on C2NR0Q2) queued; paused for P0 #81 —
+check `stormcentral test show b231ed5133`, then medium.
+2026-10-13: b231ed5133 = 3 pass / 1 fail: api-up, engine-adopted,
+pools-and-feed pass (token fix works on the node); single-leg-lifecycle
+fails on the closed engine's shared-subsystem refusal (stormblock#210).
+Fix: the suites create every volume with `hosts: [{CONSUMER_NQN}]` and
+read `export.hosts[]` coordinates. Then rerun short + medium on C2NR0Q2.
+33a0048 does that. Run f43e11f9fd (C2NR0Q2) errored on its apiserver
+/readyz (stormcentral#63) and 1597cd895c lost its lease. On pvetest1 at
+33a0048: **medium b89965dcb1 passed 13/0/1** (raid1-across-nodes skipped:
+one storage node) and **short 7270fc5af0 passed 4/4**. pvetest2's medium
+ee1a8b06f6 did not start its container (CreateContainerError, machine side).
+#8 closed. Golden golden-stormstorage-0fadf7cd56be (4d2bafa, stormcos#428).
+Per stormcentral docs/test-standard.md, like every sibling: `test/` is a
+workspace member crate `stormstorage-test` (static musl `/test`),
+`test/build.sh` (STAGE_ONLY=1 stages test/.stage/), `test/Containerfile`
+FROM scratch, `test/stormstorage-test.yaml` (Job + metadata). The suites
+drive the **node's own stormstorage** at `STORM_NODE:9093` through its API
+(no stormblock binary in the image: #25). Writes use
+`STORM_STORMSTORAGE_TOKEN` when the node's `api_token` is set, else they
+are skips. Volumes are named `t-<run id>-…`, 64 MiB, deleted on success
+and failure. short: up, local engine adopted, pools + feed, single-leg
+create→published→delete. medium: + dry-run placement, refusals (dup,
+`-mirror`, too many replicas leaves no leg), leg on the engine and gone
+after delete (inventory), republish unchanged, assemble/move refused on
+one node, 404s, auth guard, RAID1 when ≥2 healthy storage nodes
+(`requires: storage-nodes>=2`, else skip). long: waves sized from free
+capacity (STORM_WAVE_MAX caps), create latency per wave, residue after
+each (volumes, engine legs, orphans); a slower wave or growing residue
+fails. When stormcentral#121 lands (golden bins, no podman) the
+Containerfile goes; build.sh's static binary stays.
+
+### Open: security
+- [x] Inbound API auth (#6), 2026-09-28. Register/deregister stay open
+      until stormblock#214; then close them too. Plan: a middleware on the router. With
+      `api.api_token` set, every mutation (create/delete/move/export
+      volume, replicate) needs `Authorization: Bearer <token>` → else 401
+      `{error, code: "unauthorized"}`, constant-time compare. Reads (GET,
+      ws, the dry-run `placement/plan`) stay open: family posture.
+      `storage/register|deregister` stay open: stormblock's heartbeat sends
+      no token (stormblock `src/stormfs.rs`), and enrolling needs no engine
+      change; a stormblock issue asks for a token on it. Empty token = open,
+      as today. The embedded UI asks for the token on a 401 (sessionStorage).
+      tests/auth.rs: token + no header → 401, right header → 2xx, wrong →
+      401, reads open, register open, empty token → open.
+
+### Engine token on every poll, back off on 401 (#38, P0) — DONE 2026-10-02
+server1's console: a stormblock WARN for `GET /api/v1/discovery` and
+`/v1/nodes/capacity` every 15 s. A node with no token of its own (one
+stormblock self-registered, or adopted) was polled bare.
+- [x] `AppState::engine_token`: the node's own token, else the configured
+      engine token (`STORMBLOCK_API_TOKEN`, `[local] token_file`), read at
+      call time so a re-minted file is picked up. Adopted nodes no longer
+      copy the token into the state file.
+- [x] A 401/403 is a configuration error: `src/refusal.rs` backs off per
+      engine URL (2×interval doubling to 5 min; a changed token retries at
+      once), one WARN + event at the first refusal, then a summary at most
+      every 5 min; an event when it is accepted again.
+- [x] Tests: unit (backoff, token change) and tests/token.rs (a mock engine
+      that demands the token; a self-registered node polled with it; a
+      refusing engine called a bounded number of times).
+- sc-build passes (39 unit, tests/token.rs 3/3). Not seen on a node yet:
+      the golden carries it; server1's console should go quiet.
+
+### Phase 3: Rebalance + tier migration
+- [x] Pool watermarks; policy-driven leg moves to new nodes/shelves/clusters (#30) — done 2026-10-06
+- [x] Placement by live IO load, not only free ratio (#31) — done 2026-10-06
+- [x] Cross-cluster tier migration (pool → pool) (#32) — done 2026-10-06 (head leg waits on stormblock#296)
+
+### Phase 4: Replication on the RAID head (#33) — DONE 2026-10-13 (live run passed)
+Re-scoped by the owner on stormblock#179 (option b, 2026-10-05): cross-node
+RAID1 is the head's job here, not the engine's. stormblock #5/#7 moved
+here; the engine's `/v1` prestage/promote/dual-attach are never called.
+Design and contracts: docs/replication.md. Code: `src/head.rs`.
+- [x] Sync state: head array read each poll (`AppState.heads`, memory
+      only) → `replicas[] {node, role, sync}` in /v1's JSON; no reading =
+      detached. `GET …/replicas`; view `replica_sync`/`health`; feed + UI.
+- [x] `epoch` + `fenced` per volume; `POST …/fence` CAS (412 +
+      current_epoch), fences each leg's /v1 epoch (`legs[].epoch`); leg
+      attaches send it (`Engine::attach_leg`).
+- [x] `POST …/promote`: surviving legs opened on the target,
+      `/api/v1/arrays/assemble` (same array uuid), the adopted
+      `<name>-mirror` served via `/api/v1/volumes/{id}/attach`
+      (`export.adopted`; never an empty replacement). Live old head → 409
+      until stormblock#296 (filed). `stale_heads` reaped only once the old
+      head no longer holds the array.
+- [x] `POST …/prestage` (slave replacement), `bandwidth_class` →
+      `PUT arrays/{id}/rebuild` (`[recovery] rate_*`).
+- [x] Dual-attach open/close (commit = fence + promote), expiry in the
+      reconciler.
+- [x] Self-demotion: not built — a fenced head fails at the legs (doc).
+- [x] Tests: 8 unit in src/head.rs; tests/replication.rs 4/4 (mock engines
+      sharing superblocks/slabs). sc-build passes (e64ad72: 55 unit).
+- [x] Contract for stormblock#6 and the stormblock-csi#29 answer (read
+      from stormstorage) posted on #33 / stormblock#6 / stormblock-csi#29.
+- [x] Live run on real engines — DONE 2026-10-13 (was: waited on
+      stormcentral#131; enforcement stormblock#6, now closed). Live handover
+      still needs stormblock#296. Async backup legs split to #46: design pass in docs/async-legs.md
+      (2026-10-06), waits on the owner's choice (point-in-time B / async
+      replica A or C / both).
+      **2026-10-13: live run** (stormblock#6 closed, SC_TOOLS=stormblock).
+      Plan: `scripts/e2e-replication.sh`, built like e2e-export (3 engines
+      + consumer x served by host NQN, shared admin token): replicas both
+      in_sync; prestage the slave onto c at class low → in_sync again;
+      kill -9 the head; fence (stale expected → 412; legs fenced, leg /v1
+      epoch 2); enforcement on a leg engine: attach without/with stale
+      epoch → 412, the old head's attachment gone; promote onto a
+      surviving leg → same array uuid, adopted mirror, consumer re-opens
+      the new coordinates and reads its slab back; restart the old head →
+      stale head reaped; dual-attach open + abort; delete leaves nothing.
+      Out of scope: promote off a live head (stormblock#296), superblock
+      sync evidence (stormblock#309, still open: a lost head reads
+      detached).
+      Run 1: all stormstorage steps worked; harness wait bug, and the old
+      head kept its `/v1` record of `rv-mirror` after a restart (nothing
+      behind it, reads healthy → stormblock#419). Fix 98afef6: the
+      stale-head reap deletes that record (`StaleHead.served_v1`, guarded:
+      same id + mirror name + engine holds no such volume). Run 3 on
+      98afef6 PASSED; sc-build on 0d72448 (mock lists /v1) passes: 88
+      unit, replication 22/22, clippy -D warnings. Docs: #57 done with it.
+      #33 and #57 closed. Golden golden-stormstorage-e6494f899158 (e45381e,
+      stormcos#428).
+
+### Phase 5: HA — fleet fastetcd (#34) — DONE 2026-10-10
+Owner (2026-10-09, master's recommendation): **(a) a fleet fastetcd**
+(multi-member, across the storage nodes); `[replication] peers` stay the
+fallback for a fleet without one. Deployment of that fastetcd: filed on
+stormcluster. Plan:
+- `[store] backend = "file" | "etcd"` (file = today), `endpoints`,
+  `prefix` (`/stormstorage/`), `ca_file`/`cert_file`/`key_file` (client
+  cert, CN is the etcd user), `lease_ttl_secs` (15), `instance` (default
+  hostname), `advertise_url` (default `http://<hostname>:9093`). etcd and
+  `[replication] peers` are exclusive (validate).
+- Talks etcd's v3 JSON gateway (`/v3/kv/*`, `/v3/lease/*`), which fastetcd
+  serves on the client port: reqwest only, no gRPC/protoc. `src/store.rs`.
+- Keys: `<prefix>leader` (lease-bound, {instance, url}), `meta`
+  ({revision, by, at}, written in every txn), `volumes/<n>`,
+  `snapshots/<n>`, `group_snapshots/<n>`, `backups/<n>`, `nodes/<n>`
+  (registered configs), `orphans`, `stale_heads`.
+- Election: lease grant + txn `create_revision(leader) == 0` → put with
+  lease; keepalive every ttl/3; a failed keepalive = leadership lost.
+- Only the leader writes: `persist()` diffs the durable records against
+  what was last written/loaded and sends one txn guarded by
+  `create_revision(leader) == mine` (chunks ≤ 100 ops). A deposed leader's
+  write fails the compare.
+- First leader with an empty store imports its state.json; a new leader
+  loads the store first. Followers reload when `meta`'s mod_revision moves.
+- Followers proxy every non-GET API call to the leader's `advertise_url`
+  (headers + body kept, `x-stormstorage-forwarded` stops loops; no leader
+  → 503 `no_leader`). Followers poll engines (status stays local) but run
+  no reconcile/republish; `recovery.active` = leader (and not
+  `enabled = false`).
+- `GET /api/v1/store` status; health carries the role.
+- Tests: unit (keys, diff, chunking); tests/store.rs against a mock etcd
+  gateway (two instances: one leader, follower proxies, follower loads,
+  failover when the lease goes).
+Done: feat + docs + test fixes; sc-build passes on aeef92e (`--locked`
+build, 85 unit incl. 6 store, tests/store.rs 4/4, every suite green,
+clippy `-D warnings` clean). Not run against a real fastetcd: the fleet
+fastetcd is stormcluster#55 (deployment), and nothing changes until a
+node's config says `backend = "etcd"`. #56 (one cluster instance) can use it.
+
+### Live migration of a VM's disks (#44, P3) — DONE 2026-10-29
+stormblock v23.11.0 (#295) has the live mirror: `POST
+/api/v1/volumes/{id}/mirror {target: nvme-tcp URI}` on S (admin; S connects
+as the URI's `hostnqn=` if given), `GET /api/v1/volumes/{id}` → `mirror
+{target, state copying|synced|failed, bytes_total, bytes_remaining,
+message, started_at}`, `DELETE …/mirror` → `{stopped, flushed, state}`
+(switch-over and abort). A restart leaves it `failed`; nothing resumes.
+Owner (rustkube-node#159): RAID to the destination, let it catch up, then
+move the memory. A VM disk is a plain local engine volume on S; it is not
+a distributed volume. Plan (`src/vmmigrate.rs`, `FedState.vm_migrations`
+by id `vm-<ms>-<n>`):
+- `POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, name?}`: S's volume by
+  engine id or name (`GET /api/v1/volumes/{id}` on S: id, name, size,
+  `mirror` → 409 if already mirrored); one open migration per source
+  volume; T ≠ S, both healthy. T must not hold `name` (default S's volume
+  name) already → 409. Steps, each recorded: /v1 thin create on T → its
+  engine id → `attach_for_host` for `[legs] host_nqn` of S → mirror POST
+  on S with `drive_uri()` (carries `hostnqn=`). The first POST is all or
+  nothing (undo T, drop the record); a restart mid-way resumes (`starting`).
+- `GET /api/v1/migrations`, `GET /api/v1/migrations/{mid}`: the record
+  with a live read of S's mirror overlaid. The reconciler (recovery-active
+  instance) records copying/synced/failed + bytes; mirror gone → failed.
+- `POST …/{mid}/cutover` (guest paused): needs synced; DELETE mirror on S
+  must answer state synced + flushed, else failed (T not exact: abort).
+  Then withdraw S's host on T (retried by the reconciler if it fails) →
+  `cut_over`, answered with T's volume {node, name, id} for ublk on T.
+- `POST …/{mid}/complete` (from cut_over): delete S's volume → completed.
+- `POST …/{mid}/abort` (any state but completed): stop the mirror, withdraw,
+  delete T's volume → aborted; S untouched. Retried while `aborting`.
+- `POST …/{mid}/retry` (failed, before cut-over): forget S's mirror, start
+  it again (T's volume reused; the copy starts over).
+- Terminal records (completed/aborted) dropped after a day. Events, feed
+  (`vmmig:<mid>`), auth (mutations), docs. Tests: tests/vmmigrate.rs with
+  two mock engines.
+Consumer: rustkube-node#40.
+Done: 6d7580c (+ 26d0ee2 test lint) + docs; sc-build passes (`--locked` build + test + clippy
+-D warnings: 96 unit incl. 4 vmmigrate, tests/vmmigrate.rs 5/5). Not run
+on real engines (a two-engine live run would be an e2e like e2e-export).
+
+### Head leg back from lost (#26, P1) — DONE 2026-10-06
+A head that misses `fail_threshold` polls marks its own leg lost and the
+volume degraded; nothing brought it back. Plan: in the reconciler, for a
+degraded, unfenced, idle volume whose head leg is lost and whose head is
+healthy again, read the head's array (this poll's reading, else
+`GET /api/v1/arrays/{id}`, 404 = gone). Head member active → leg
+`created`, assembly `assembled` when no leg is lost, Info event. Array
+gone (#15) or member not active → stays degraded, one Warning event per
+change (dedup on the leg's message). Pure `apply_head_reading` + unit
+tests; tests/rejoin.rs against a mock engine.
+Done: sc-build passes (59 unit incl. 4 new, tests/rejoin.rs 2/2). Not
+seen on a live engine (live runs wait on stormcentral#131).
+
+### Legs served to their head alone (#27, stormblock#210) — DONE 2026-10-06
+A closed engine admits no host on its shared subsystem; an attach must
+name `host_nqn` and the volume is served from that host's own subsystem
+(`<nqn>:host:<hex>`). The engine has no API that says what NQN its
+initiator presents, but a drive URI's `&hostnqn=` sets it. So stormstorage
+names the head: `[legs] host_nqn` template (default
+`nqn.2026-10.lo.storm:stormstorage:{node}`, `{node}` = head). Every leg
+attach (assemble, move/re-leg, promote, re-attach on promote-in-place)
+sends `host_nqn` of the head it is for; `AttachedLeg.host_nqn` is kept and
+`drive_uri()` adds `&hostnqn=` (old records without it keep their URI, so
+existing arrays still match). The NQN in the URI is the reply's (the
+per-host subsystem). Consumer publish (`<name>-mirror`) names no host
+still — the consumer is unknown here; filed separately. Detach needs no
+change (/v1 detach releases every host). DH-HMAC-CHAP waits on
+stormblock#213. Tests: unit (URI, template), mock engines check the
+attach body's `host_nqn` and the opened drive's `hostnqn=`.
+Done: sc-build passes (61 unit, export 7/7, replication 4/4). Consumer
+export host: #53. Not seen on a live closed engine (stormcentral#131).
+
+### Sync evidence that survives the head (#48, P1) — DONE 2026-10-06
+`/replicas` read every leg `detached` once the head was lost, so
+stormblock-csi (waiting for `in_sync`) never failed over. Plan: when the
+head's array cannot be read, read each surviving leg's RAID superblock on
+its own engine (`GET /v1/volumes/{id}/raid-superblock`, filed as
+stormblock#309; 404/err = no evidence) and build the reading from those
+(`sync_source: superblock`; live = `head`). A leg is `in_sync` only if its
+superblock is of this array, has the newest `events` among the reachable
+legs, every newest superblock records it active, its events are not below
+the last live head reading's, and that reading (kept in memory per
+volume) did not show it other than active. Rebuilding → resyncing from
+`rebuilt_to`. Residual window (documented): a slave dropped after the
+last live reading, when only the dead head recorded the drop (2 legs).
+Pure `from_superblocks` + unit tests; tests/replication.rs mock engine
+serves the endpoint. Live run waits on stormblock#309 + stormcentral#131.
+Done: dcda0a2; sc-build passes (65 unit incl. 4 new, replication 5/5).
+Until stormblock#309 lands the route 404s, so a lost head still reads
+`detached` on real engines (no evidence, never a false `in_sync`).
+
+### Serve a volume to named consumer hosts (#51 + #53, P1) — DONE 2026-10-06
+A closed engine (stormblock#210) refuses the export's shared-subsystem
+attach, and a consumer node had no way in. stormblock already takes
+`host_nqn` + `dhchap` on `POST /api/v1/volumes/{local}/attach` and
+withdraws one host with `DELETE …/attach?host_nqn=`; both need the
+engine-local uuid. Plan: `Export.hosts[] {host_nqn, dhchap, coordinates
+(per-host subsystem nqn, addresses, nsid, host_nqn), coordinates_changed,
+served_at, message}` + `Export.local_id` (found by exact name on the serving
+engine: `<name>-mirror`, or the leg's name for a single leg; the adopted
+mirror's id is already local). `POST /api/v1/volumes/{name}/export/hosts
+{host_nqn, dhchap?}` → that host's coordinates + `dhchap_secret` (returned
+only, never stored/replicated/logged; the engine keeps a host's secret, so
+a repeat returns it). `DELETE …/export/hosts/{host_nqn}` withdraws.
+`hosts` also on create and `POST …/export` (#53). Publish/republish (move,
+promote, recovery) re-serves every recorded host; a volume with named hosts
+gets no shared attach. Auth: mutations. Tests: mock engine checks body and
+withdraw query.
+Done: 83666b7 (+ 4d tests, 6343709 docs). `export.per_host` keeps a volume
+per host once any host was named (no fallback to shared with zero hosts);
+pending withdrawals retried each poll and on recovery. sc-build passes
+(65 unit, hosts 2/2, replication 6/6). Not seen on a live closed engine
+(stormcentral#131).
+
+### A delete whose revoke failed is not republished (#24; #40 open) — DONE 2026-10-06
+#24's e2e: the served volume's DELETE timed out on a loaded head (the
+engine finished it later), the record kept `published` + that id, and every
+recovery re-attached it → 404 for ever. Plan: `ExportState::Revoking`, set
+before revoke touches the engine and kept when it fails; `republish_on`
+skips it, `publish` refuses it (409: finish the DELETE), a retried DELETE
+treats 404 as gone. Feed/UI show it. Test in tests/export.rs (engine
+deletes but answers 500). #40's general case (a served volume gone without
+a delete from here: recreate an empty `<name>-mirror`, or not?) is a data
+question → asked on #40, `needs-owner`.
+Done: the fix commit + b1d39bc docs; sc-build passes (export 8/8). #40 waits
+on the owner's answer (recreate empty, or refuse).
+
+### A served volume gone from its engine (#40, P2) — DONE 2026-10-06
+Owner (2026-10-06, master's recommendation accepted): never hand out an
+empty replacement. Plan: when publish's attach of a *recorded* served
+volume (v1 attach, adopted attach_any, per-host attach, or the local-id
+lookup) gets 404, the export is `failed` with `gone: true` ("served volume
+gone; its data is not recreated") and an Error event; recovery and plain
+`POST …/export` no longer attach it (409 says what to do). Only `POST
+…/export {"recreate": true}` (assembled volumes: a new pinned
+`<name>-mirror`, hosts re-served, `coordinates_changed`) or a delete moves
+it on; a single-leg volume's leg is the data, so recreate is refused there.
+Engine 404 is typed (`engine::HttpStatus`) so it survives wrapping.
+Tests in tests/export.rs (+ a per-host case in tests/hosts.rs).
+Done: sc-build passes (export 9/9, hosts 3/3); build failure #55 fixed.
+
+### Engine token for peers (#12, P2) — DONE 2026-10-06
+Default-path half done by #42 (ef3af98: family order incl.
+`/run/stormblock/engine/api_token`). Peer half, by stormblock's own rule
+(`mgmt::auth::token_for`, #107): a *shared* token — `$STORMBLOCK_API_TOKEN`
+or the new `[local] shared_token_file` — goes to every engine; a *minted*
+one (the file search) only to an engine on this machine (loopback, this
+hostname, or an IP held here: a UDP bind to it succeeds). New per-node
+`[[nodes]] token_file`. Order per node: `api_token`, `token_file`, shared,
+minted-if-local. The refusal log says which applied. Unit tests of the
+choice; tests/token.rs: a remote peer is not sent the minted token.
+Done: c944a27; sc-build passes (67 unit, token 4/4).
+
+### Reassemble the array after the head's engine restarts (#15 + #43, P2) — DONE 2026-10-06
+stormblock#252: an engine reassembles arrays from v2 superblocks itself
+only for configured drives; runtime `nvme-tcp://` legs need re-opening and
+`POST /api/v1/arrays/assemble`; create 409s on held legs. Plan: factor
+promote's "open legs on X → arrays/assemble → member uuids → rebuild rate →
+find `<name>-mirror`" into `head::assemble_on`; new `head::reassemble`
+(same head): legs created on healthy nodes + the head's own leg if it was
+marked lost (#26's "array gone"); only when `find_array` says 404. After:
+legs created, assembled/degraded, served volume adopted (`export.adopted`,
+`local_id`) and republished; none → `gone` (#40). Reconciler: unfenced,
+idle, no replacement/window, head healthy, no live reading this poll,
+gated by `recovery.active`, cooldown `next_assemble_after` on failure.
+`orchestrate::assemble` (#7): a 409 from create means legs carry a foreign
+superblock → assemble instead of retrying. Test: tests/replication.rs mock
+head drops its arrays + drives (restart) → reassembled, same array id,
+served again. Stale #7 note about stormblock#215 fixed.
+Done: aeb7bef; sc-build passes (replication 7/7). Live: an engine restart
+in the e2e waits on stormcentral#131.
+
+### Automatic re-head, opt-in (#14, P2) — DONE 2026-10-06
+Owner (2026-10-06, master's recommendation): (b) automatic but opt-in,
+off by default; turn it on only once the head is fenced through cluster
+membership/quorum (stormcluster), not merely unreachable from here —
+a partitioned head that keeps writing is split-brain. Until then failover
+stays with the consumer's tiebreaker or an operator (promote).
+Plan: `[recovery] rehead = false`, `rehead_after_secs = 120`. Reconciler
+(only when `recovery.active` and `rehead`): a volume assembled/degraded,
+not fenced (a consumer's failover in flight is left alone), idle, no
+replacement/window, head unhealthy for ≥ rehead_after_secs
+(consecutive_failures × interval), and a surviving leg on a healthy node
+that reads `in_sync` (#48 evidence; none → no re-head, one event) →
+fence at the current epoch, promote onto that leg. Failure: cooldown
+(`next_assemble_after`), error event naming the manual promote. WARN at
+start when on. Pure `rehead_plan` + unit tests; tests/replication.rs:
+off by default does nothing; on + slave in sync (superblock) → re-headed.
+Done: c4d4a88 (+ dc897ef docs); sc-build passes (68 unit, replication 8/8).
+Turning it on waits on fencing through cluster membership (stormblock#6,
+enforcement at the legs, is done).
+
+### Admin credential for the engine's destructive verbs (#47, P2) — DONE 2026-10-06
+stormblock#274: array create/delete, member add/fail/replace/remove, and
+every non-detach DELETE (drive close) need the admin token or a Kubernetes
+bearer allowed `storage.storm.io` (`storage-admin`); the node token gets 401
+under `admin_gate = enforce`. Calls of ours that are destructive:
+create_raid1, delete_array, forget_array, array_add_member,
+array_remove_member, delete_drive. Plan: `Engine.admin`, used only by those
+(`admin_req`); ordinary calls keep the node token. Order:
+`$STORMBLOCK_ADMIN_TOKEN` (any engine), `[local] admin_token_file` (this
+machine only, like #12's minted token; no default — stormblock keeps it
+out of services), else the `[kubernetes]` bearer. Tests: a mock engine
+records the bearer per call.
+Done: 39e43b2 (+ c6b5858 docs); sc-build passes (token 6/6). A refused admin
+credential is retried with the node token (pre-#274 engines). On a node the
+bearer needs stormcos#290 (mount /data/stormcert) and storage-admin.
+
+### Placement by live IO load (#31, P3) — DONE 2026-10-06
+Signal: stormblock's `/metrics` histogram `stormblock_nvmeof_io_seconds`
+(every NVMe-oF I/O: legs to heads, served mirrors; ublk-local I/O is not
+in it). Each poll reads `_count`/`_sum` summed over labels; the rate
+between two polls gives `io.iops` and `io.busy` (I/O-seconds per second =
+mean I/Os in flight) on NodeStatus. Missing metric, error or counter reset
+→ no rate this poll (never fails the poll). Score:
+(1−w)·free_ratio + w·(1 − busy/max_busy) over the fitting candidates,
+w = `[placement] io_weight` (0.3); unknown busy = mean of known; no data
+at all = today's free-ratio order. Ties by name. Tests: placement units
+(hot node sheds, unknown neutral, w=0 = old), metrics parse, rate.
+Done: 2d46f95 (+ e8cedca docs); sc-build passes (72 unit). Not seen on a
+node yet (needs a release; ublk-local I/O is not in the signal).
+
+### Rebalance by pool watermarks (#30, P3) — DONE 2026-10-06
+Opt-in per pool: `[[pools]] high_watermark`, `low_watermark` (used
+fraction), `max_moves` (in flight per pool, 1). No watermarks = no
+rebalance (as today). Pure planner `src/rebalance.rs::plan`: a pool whose
+nodes are all healthy; sources = pool nodes used > high, fullest first;
+volumes of that pool with a created leg there, assembled (not degraded),
+unfenced, idle, no replacement/window, past `next_releg_after`; target =
+`move_target_candidates` ∩ pool nodes used < low and ≤ high after the
+leg's size, picked by `placement::plan` (io_weight); one move per volume,
+in-flight + new ≤ max_moves. Reconciler (`recovery.active`) →
+`start_replacement(…, "rebalance")` (redundancy never drops), event per
+move, cooldown on failure. `GET /api/v1/pools/{name}/rebalance` = the
+proposal (dry run). Tests: planner units; tests via mock engines optional.
+Done: 6013bf7 (+ 3ae0d9a docs); sc-build passes (75 unit). Never moves a
+head's own leg. Not run against live engines (stormcentral#131).
+
+### Tier migration pool → pool (#32, P3) — DONE 2026-10-06
+`POST /api/v1/volumes/{name}/migrate {pool}` records `migration {to_pool,
+from_pool, started_at, state, message}` (assembled volumes only; not
+fenced/replacing/windowed; destination must fit: `placement::plan` over
+its healthy nodes at its rung for every leg). The reconciler
+(`recovery.active`) takes one step per idle volume: the next non-head leg
+outside the destination → `start_replacement(…, to, "tier migration")`
+with the target from `move_target_candidates` ∩ destination nodes. The
+head's own leg moves by promote only (prestage rule), and a live head's
+handover is stormblock#296: once only it is left, `state:
+waiting_handover`. All legs in the destination → `pool` = to, migration
+cleared, event. `DELETE …/migrate` cancels (moves done stay). Rebalance
+skips migrating volumes. Pure `next_step`; unit tests + tests/replication.rs
+(4 nodes, two pools).
+Done: sc-build passes on 2bd672c (77 unit, replication 9/9) after four
+no-slot tries. The head's own leg waits on stormblock#296.
+
+### Routes stormblock-csi needs (#49, P2) — DONE 2026-10-10 (expand split to #73)
+Owner (2026-10-09, master's recommendation): (1) clones copy-on-write on
+the source's array now, full copies onto new legs after stormblock#295;
+(2) group snapshots only for volumes served from one node, others refused
+with the reason; (3) keep refusing `encrypted`/`qos_class` until
+stormblock#319. Expand waits on stormblock#318 (open) → propose after it.
+Plan (engine: /v1 snapshots, group-snapshots, create with `source`, all on
+the node that serves the volume — its head's array, or a single leg):
+- `FedState.snapshots` {name → Snapshot: /v1 shape `{id (= name), name,
+  source_volume_id, size_bytes, ready, created_at_ms, group_snapshot_id}`
+  + `node`, `engine_name`, `engine_id`}, `group_snapshots` {name →
+  {id, name, members, ready, created_at_ms, node, engine_id}}; replicated.
+  One namespace with volumes (an engine volume is named after each).
+- `POST /api/v1/snapshots {name, volume_id}` → `/v1/snapshots {name,
+  volume_id: <served engine name>}` on the serving node (crash-consistent:
+  one point on the head). Idempotent on name (same source); GET list
+  (`?source_volume=`, `?name=`), GET/DELETE `{id}`. Delete: /v1 id on the
+  node that made it, else the engine volume by name (after a promote).
+- `POST/GET /api/v1/group-snapshots`, GET/DELETE `{id}`: every volume
+  served from one node, else 409 naming the nodes. Members recorded as
+  snapshots `{group}-{volume}` (engine names `{group}-{served name}`).
+- Clone: `POST /api/v1/volumes` with `source {kind: snapshot|volume, id}`
+  → `/v1/volumes {name, size_bytes ≥ source, master_node, source: {kind:
+  volume, id: <engine name>}}` on the source's serving node.
+  `AssemblyState::Clone`, `clone_of {parent, source}` (parent = the root
+  volume whose array/leg holds it), no legs. Served as itself; follows
+  the parent's serving node (after a promote: found by name, adopted).
+  View: health/raid from the parent. Refused on clones: fence, promote,
+  prestage, dual-attach, move, migrate, assemble. Delete of a volume with
+  clones or snapshots → 409. `raid`/`replicas`/`pool`/`extent_size_bytes`
+  with `source` → 400.
+- `encrypted: true` / `qos_class` on create → 501 naming stormblock#319.
+Tests: tests/replication.rs mock engine grows /v1 snapshots, group
+snapshots and create-with-source.
+Done: 799c77b (+ docs); sc-build passes (replication 20/20: snapshots and
+clones, group snapshots one node only, hint refusal, a clone through a
+promote; clippy clean). Expand → #73, proposed after stormblock#318.
+Golden golden-stormstorage-3feae051c784 (stormcos#428).
+
+### Point-in-time backups to the backup tier (#46, P3) — DONE 2026-10-10 (copy waits on stormblock#399/#400)
+Owner (2026-10-09, master's recommendation): **B** — periodic snapshots,
+changed extents shipped to a volume on a backup node, N points kept; not a
+sync/async replica. Engine primitives filed on stormblock (snapshot diff;
+ship a snapshot's changes to a remote volume over NVMe-TCP as a job).
+Plan here, built against that contract (`waiting_engine` until it lands):
+- `PUT /api/v1/volumes/{name}/backup {pool?, tier?, node?, interval_secs
+  (3600), keep (7)}` → `DistVolume.backup` policy; `GET …/backup` (policy,
+  state, points); `DELETE …/backup` stops (points kept), `?purge=true`
+  deletes the backup volume and points too.
+- `FedState.backups` {volume → Backup}: backup node (placement over the
+  policy's nodes, never one holding a leg), `<name>-backup` thin /v1 volume
+  there attached for the serving node's host NQN, `base` (last shipped
+  snapshot on the serving node, by engine name), `job`, `points[]`, state
+  idle|shipping|waiting_engine|failed + message, `next_at`. Replicated.
+- Reconciler (recovery-active instance): create/attach the target (again
+  after the serving node changes); when due, snapshot the served volume
+  on the serving node, `POST /v1/snapshots/{snap}/ship {target_uri, base,
+  max_bytes_per_sec}`; poll the job; done → snapshot the target on the
+  backup node (a point), drop points beyond `keep`, drop the old base.
+  Ship route 404 → `waiting_engine`, the snapshot taken is dropped.
+- Restore: `POST …/backup/points/{point}/restore {name}` → COW clone of the
+  point on the backup node = a new single-leg volume there, served.
+- Backups outlive their volume (undoing a delete is the point): a deleted
+  volume's backup stays; a new volume of that name is refused until it is
+  restored from or purged.
+Tests: tests/replication.rs (mock engines implementing the contract).
+Done: e05d729 (+ docs); sc-build passes (79 unit incl. prune, replication
+22/22, clippy clean). Engine side: stormblock#399 (diff), #400 (ship job);
+until they land a cycle reads `waiting_engine`. Live run: stormcentral#131.
+Golden golden-stormstorage-c8d36379c5b2 (stormcos#428).
+
+### Head-node preference on create (#50, P3) — DONE 2026-10-10
+`prefer_node` on `POST /api/v1/volumes` and `placement/plan`: soft. If the
+node is a fitting candidate (healthy, pool/tier, room), it is the first
+pick — the first leg is the head (or, single copy, the only leg, local to
+the consumer) — and the rest are placed over the other domains by the
+usual rules; otherwise the plain plan. Responses carry
+`prefer_node_honored`. Pure `placement::plan_preferring` + unit tests;
+tests/replication.rs: created with prefer_node → that node is head.
+Done: 54b94d0 (+ ec5ac39 docs). sc-build on aeef92e (`--locked`, clippy
+-D warnings): unit `a_preferred_node_leads_when_it_fits` and
+`tests/replication.rs::a_preferred_node_becomes_the_head` pass (preferred
+node is head; unknown node → honored false; dry run single leg there).
+In golden-stormstorage-89bdc8b2c158 (stormcos#428).
+
+### Extent size on create (#59, P3) — DONE 2026-10-07
+stormblock#156: `/v1` create takes `extent_size_bytes` (absent = the node
+chooses). Plan: optional `extent_size_bytes` on `POST /api/v1/volumes`
+(400 unless a power of two ≥ 4096), sent on every leg's `/v1` create and
+kept on `DistVolume`, so move/re-leg/prestage/rebalance/migration carve
+replacement legs at the same size. A node without a pool of that size
+fails the create with its message and the legs made are rolled back (the
+engine answers 500, not 400 — stormblock#323). The served
+`<name>-mirror` is pinned to the array: its extents are the array slab's
+slots, which the engine chooses and ignores the field for (stormblock#324).
+Shown in the volume JSON and `/replicas`. Test: tests/replication.rs.
+Done: c7d2a3e; sc-build passes on a build VM (e107551: 78 unit,
+replication 11/11). Golden golden-stormstorage-0768c8488a1c
+(stormcos#312).
+
+### Change a volume's bandwidth class (#60, P3) — DONE 2026-10-07
+For stormblock-csi#31 (ControllerModifyVolume). `PUT
+/api/v1/volumes/{name}/bandwidth-class {bandwidth_class}`: recorded
+(revision, replicated, event on a change; later prestage/re-leg/promote
+use it), its cap put on the head's array at once (`PUT
+/api/v1/arrays/{id}/rebuild`), idempotent, answered with the volume plus
+`rebuild_cap {bytes_per_sec, applied, pending, message}`. Head not
+answering or the call failing → `rate_pending` on the record, retried by
+the reconciler (recovery-active instance) once the head is healthy. No
+array (single leg / pending assembly) → recorded only; assembly applies
+it. Auth: a mutation. Test: tests/replication.rs.
+Done: edc7fbc (+ 88375e3 test fix, #62); sc-build passes on a build VM
+(78 unit, replication 12/12). Golden golden-stormstorage-0768c8488a1c
+(stormcos#312).
+
+### Pin git dependencies to a rev (#64, stormcentral#571) — DONE 2026-10-10
+Golden builds refuse a git dependency not pinned to a `rev`. stormview goes
+from `branch = "main"` to `rev = "81ef1d28…"` (the commit Cargo.lock already
+had, so nothing compiled changes); Cargo.lock's source reads
+`?rev=<sha>#<sha>`. Moving stormview forward is now a deliberate rev bump.
+**Status 2026-10-10 (paused for P0 #69):** pin pushed (Cargo.toml +
+Cargo.lock, README/CLAUDE/CHANGELOG); `sc-build --locked` build + test
+pass (78 unit + all integration). Open: `cargo clippy --all-targets -D
+warnings` fails on pre-existing lints (#67): test crate's manual_contains
+fixed; lib's 6 `explicit_auto_deref` errors (src/placement.rs) are #69, fixed.
+**2026-10-10: #69 (P0) done:** the derefs (bde72f2), two MutexGuards held
+across an await in tests/export.rs (4713bfc), and `[workspace.lints]`
+denying rustc warnings and clippy `all` in both crates (9f09efe). sc-build
+`--locked` build + test + `clippy --all-targets -D warnings` passes. #67
+closed with it. Golden golden-stormstorage-c2663e2fa2c2 (release request
+stormcos#428); its SBOM step (stormcentral#571) took the pinned stormview.
+Closed 2026-10-10: golden golden-stormstorage-89bdc8b2c158 (36a7961,
+stormcos#428) passed the SBOM step (206 crates) with stormview pinned.
+
+### Nothing O(capacity) on a create/enrol/install path (#65, stormblock#363) — DONE 2026-10-10
+Review. stormstorage never touches data; what it asks of an engine:
+- create (legs `/v1/volumes` thin, attach, drive open, `POST /api/v1/arrays`
+  RAID1, pinned `<name>-mirror`), enrol (register/adopt/poll), assemble,
+  reassemble: O(metadata) on the engine (stormblock a0f5baf: array create
+  writes superblocks + bitmaps, no initial resync; legs are fresh thin
+  volumes, so "never written = zero" holds on every leg). Array create's
+  slab format zero-fills ≤ 64 MiB of slot table through RAID1 inline under
+  the volume-manager lock → stormblock issue (metadata only / own task).
+- add member (move, re-leg, prestage, rebalance, migration): the engine's
+  RAID1 rebuild copies the whole leg (O(capacity), and allocates the whole
+  thin target) → stormblock issue (allocation-aware rebuild). Its rate cap
+  is memory only on the engine (lost on restart, unlimited until PUT).
+Fixes here: (1) the rebuild wait abandons a replacement only when
+`rebuilt_bytes` makes no progress for `rebuild_timeout_secs` (was: wall
+clock — a leg over ~700 GiB at 200 MiB/s could never move, and every
+retry redid the copy); (2) the rate cap is put before `add_member` and
+re-put every minute while waiting (an engine restart resets it to
+unlimited). Test: 1 PiB two-leg create against mock engines completes in
+seconds with only control-plane calls; rebuild progressing past the
+timeout is kept, a stalled one undone.
+Done: cb1e2de; sc-build passes (78 unit, replication 15/15, clippy clean).
+Engine-side issues filed: stormblock#395 (allocation-aware rebuild),
+#396 (persist the rebuild cap / take it on add-member), #397 (array slab
+format inline under the lock, ≤64 MiB zero-fill through every leg).
+Golden golden-stormstorage-d3deff6c8547 (release request stormcos#428).
+
+### RAID profile on create (#68, P1, for nextnfs-operator#17) — DONE 2026-10-10
+`raid: none | mirror | parity1 | parity2` on `POST /api/v1/volumes` (and the
+`placement/plan` dry run). none = 1 leg (replicas must be 1 if given);
+mirror = today's RAID1 (replicas default max(2, pool's), < 2 → 400);
+parity1/parity2 → 501 naming #72 (needs a parity engine on the head and
+replace-member for parity arrays; stormblock#374). Absent = today's
+behaviour. The volume view gains `raid {level, members[{node, role, sync}],
+health, rebuilding}` (level from the leg count). Tests: tests/replication.rs.
+Done: 7b6de5f; sc-build passes (replication 16/16, clippy clean). Parity: #72.
+Golden golden-stormstorage-330e7eac0722 (stormcos#428).
+
+### State file survives a power cut (#81, P0) — DONE 2026-10-10
+server2 (12.14) crash-looped on an empty state.json after a hard power cut
+(`EOF while parsing a value at line 1 column 0`). Plan: `FedState::save`
+writes a uniquely named temp file, fsyncs it, hard-links the current file
+to `state.json.prev` (the last good copy), renames, fsyncs the directory.
+`model::load_state` never fails on content: a file that does not parse
+(empty, truncated) is kept as `state.json.bad-<unix secs>`, the state starts
+from `.prev` if that parses, else empty; `StateRecovery` is recorded on
+AppState, logged at ERROR, an Error event, and a `state_recovered`
+condition in `/api/v1/health` and `/api/v1/store`. There are no append-only
+logs (events are memory only). Tests: unit (empty, truncated, prev) and
+tests/state.rs (starts, health shows the condition).
+Done: 05eb7f8; sc-build passes (`--locked`, 88 unit incl. 3 new, state 1/1,
+clippy -D warnings clean). Re-verified on 85b18b7 (2026-10-13);
+closed. Golden golden-stormstorage-7d586161ae40 (stormcos#428); live proof
+is server2's reinstall over the bad file.
+
+### Expand a volume (#73, P3) — DONE 2026-10-29
+stormblock v23.9.0 (#318): `POST /api/v1/arrays/{id}/grow` (admin, no body)
+after every leg grew on its own engine; 409 while a leg has not grown, a
+member is out, a rebuild runs; `slab_short` when the dedicated slab
+predates #318 (its volumes cannot use the room). Plan:
+`POST /api/v1/volumes/{name}/expand {size_bytes}` (grow only: smaller →
+409, same with nothing in flight → the record). Refused while fenced,
+busy, replacing, windowed, migrating, revoking/gone, not assembled, a leg
+not created or its node unhealthy. Records `expanding {to_bytes,
+array_bytes_before, slab_short, message}` first (persisted), so a retry
+resumes and replacement legs/mirror use `max(size, to)`. Steps: every leg
+`/v1/volumes/{id}/expand`; head `arrays/{id}/grow` (a 409 with the array
+already above `array_bytes_before` = done earlier; `slab_short` → 409 and
+kept); served volume `/v1/volumes/{id}/expand` (adopted:
+`PATCH /api/v1/volumes/{id}/resize`), checked by its engine size; then
+`size_bytes` = to, `expanding` cleared, event, replicate. Single leg: its
+leg only. Clone: its own served volume, refused past the parent's size.
+A backup target smaller than its volume is grown before the next ship.
+Tests: tests/replication.rs mock engine (leg expand, grow, resize).
+Done: 133534e (+ 584718f docs); sc-build passes (`--locked`, 92 unit incl.
+4 expand, replication 23/23, clippy -D warnings). Not run on real engines
+(a head over NVMe/TCP legs grown on their engines is unproven on metal on
+stormblock's side too).
+
+### Engine client over https with the node CA (#96, stormcos#374) — DONE 2026-11-04
+stormblock's :9090 is moving to TLS (stormblock#203, `tls_mode = "optional"`
+while callers move, #525). stormcos flips each caller's URL and CA in its
+config; nothing switches from here. Plan:
+- `[engine_tls] ca_file` (PEM, a bundle is fine) for every `https://` engine,
+  `[[nodes]] ca_file` per node before it (SNO clusters have their own CA).
+  `Engine::new` takes the file. An https client trusts **only** that file
+  (`tls_built_in_root_certs(false)`), refuses plain redirects (`https_only`),
+  and is built per Engine like today, so a renewed CA is picked up. No CA, an
+  unreadable one or garbage: a client with no roots (fails closed, no request
+  sent), one WARN per engine URL per change. No skip-verify key.
+- `http://` engines: unchanged, the CA is not read.
+- A bare address (a cluster peer's `mgmt_addr`, a heartbeat's `node_addr`) has
+  no scheme: `[engine_tls] address_scheme = "http"` (default) or `"https"`. Not
+  derived from the CA: a peer on an older release has no pair yet, and an
+  https poll of it would mark it lost and re-leg its volumes. The engine's
+  plain-request count shows who is left, so stormcos sets it before `required`.
+- Client certificates are not in #96's ask (the token stays the credential).
+- Tests: tests/engine_tls.rs, a TLS stand-in (tokio-rustls, certificates by
+  the openssl CLI as stormcert makes them; rustls + tokio-rustls are already in
+  the lock): right CA, other CA, wrong name, no/garbage CA, http still works,
+  a node polled healthy through AppState, address scheme.
+  `scripts/e2e-engine-tls.sh`: a real engine with `tls_cert`
+  (`SC_TOOLS=stormblock`).
+- Then: say the keys on stormcos#374 (the unit already has
+  `/data/stormcert/ca.crt`), close #96, golden.
+Done: 47fa296, 758aeab; sc-build on 758aeab passes (`--locked` build + test +
+clippy -D warnings: 97 unit, tests/engine_tls.rs 9/9).
+`SC_TOOLS=stormblock sc-build scripts/e2e-engine-tls.sh` PASSED against
+stormblock 4f0b9c4 with `tls_mode = optional`. Its first run found that a node
+that never answered said nothing about why (fixed, 758aeab). Not seen on a
+node yet: stormcos sets the keys. A client pair (stormcos#374 item 2) is not
+used; the token stays the credential.
+
+### One cluster stormstorage on multi-node (#56, P3) — DONE 2026-11-06
+Election, shared state and forwarding are #34. What is left, settled with
+what stormcos#354 proposes (a Service cannot select a stormd service, so no
+label: **the leader keeps the Endpoints of a selectorless Service**; rustkube
+mirrors them into EndpointSlices, rustkube#133):
+- `[store] publish_service = "<ns>/<name>"`: each round, the leader makes that
+  Endpoints object say its `advertise_url` (IP, port; a hostname is resolved, a
+  loopback refused). Written only when different; `store.publish` in
+  `/api/v1/store` and health; an event on a change. A stale write by a deposed
+  leader is corrected by the new one's next round, and a follower behind the
+  Service still answers (reads local, writes forwarded).
+- **Members from stormcluster** (`[local] cluster_members`, only with the
+  etcd store): `GET /apis/cluster.storm.io/v1alpha1/clustermembers` each poll;
+  every member with `status.address` is a node (`NodeSource::Member`, its name
+  the cluster's, label `storage`), so all instances know the same nodes and a
+  failover can reach the old leader's legs. The local engine takes its member's
+  name. An unreadable list changes nothing.
+- **Peer engines: the `[kubernetes]` bearer** (owner, stormcos#241 2026-10-09:
+  Kubernetes identity, no shared engine token; stormblock#382), supersedes
+  the shared-token note on #56. Only to engines of a member read from the
+  apiserver (never a self-registered URL: register is open until #77).
+- **Env overrides** for what differs per node, written by stormcluster into
+  `env.d/stormstorage`: `STORMSTORAGE_STORE_BACKEND`,
+  `STORMSTORAGE_STORE_ADVERTISE_URL`. An SNO stays `file`.
+- A client pair renewed under a running instance is picked up (it would
+  otherwise lose etcd at expiry).
+- First load over local volumes the store does not hold (a node that joined):
+  state copy kept, `store_displaced_volumes` condition, Error event.
+- Live check against a real fastetcd (mTLS; with auth on, a CN user limited
+  to the prefix): tests/fastetcd.rs, `SC_TOOLS=fastetcd sc-build
+  scripts/e2e-fastetcd.sh`.
+- Then: Service/RBAC/pair on stormcos#354, env.d on stormcluster#89, entry via
+  the master, placement only on storage members (#102).
+Done: 83168f6 + fixes; sc-build on 57ed862 passes (`--locked` build + test +
+clippy -D warnings). `SC_TOOLS=fastetcd sc-build scripts/e2e-fastetcd.sh` PASSED
+on 946acfb against fastetcd 1.38.0. Its first run found a real bug #34's mock
+could not: fastetcd's TLS port offers only h2 in ALPN and our reqwest had no
+http2, so no instance could reach a real mutual-TLS fastetcd (fixed, h2 in the
+lock). With auth off (as stormcos ships) and on (CN user, role on one prefix).
+Not seen on a node: nothing changes until stormcluster#89 sets the env. Mock
+apiserver, not rustkube, for Endpoints and ClusterMembers.
+
+### Migrate onto a named place on the target (#106, P1, stormcos#806) — DONE 2026-11-07
+`POST /api/v1/nodes/{S}/volumes/{id}/migrate {to, placement?}`. The engine
+today takes only `placement.array_id` on a /v1 create (stormblock#150);
+slab/drive at create is stormblock#426 (closed since; the pass-through is #107). Plan:
+- `placement {array|slab|drive}` (exactly one, else 400). Resolved on T
+  before any record: array by uuid or set name from `GET /api/v1/arrays`
+  (room = its `slab.free_bytes`; no slab → 409); slab by id, drive by
+  serial/WWN/path from `GET /api/v1/slabs` (room = free of its slabs).
+  Missing → 404, room < size → 409, slab/drive with room → 501 naming
+  stormblock#426 (never sent and ignored).
+- `VmMigration.placement {kind, name, id}`; `advance` creates T's volume
+  with `create_pinned_volume` for an array, so new extents stay there.
+- Detached volume: nothing here needs an attachment (stormblock's mirror
+  works on the volume handle); test it with the mock, cutover right after
+  synced. Restart: record read by id from a new AppState over the state
+  file, then complete.
+- Tests: unit (find/check), tests/vmmigrate.rs (onto a set, refusals,
+  detached + restart).
+- Then: comment the create-time contract on stormblock#426; follow-up issue
+  here for slab/drive pass-through, proposed after stormblock#426.
+Done: ca1294d; sc-build passes (`--locked` build + test + clippy -D
+warnings: 103 unit incl. 3 new, tests/vmmigrate.rs 8/8). Contract posted
+on stormblock#426; slab/drive is #107 (proposed after stormblock#426).
+Not run on real engines: the live run is #101 (stormcos#806 tests 1–5).
+
+### API health probes in the registry (#82, P0, stormcentral#596)
+stormd probes each declared API inside the container (healthy / slow /
+stalled / down); `/api/v1/health` takes no lock, so it says nothing about
+stuck work. Declaration (the registry is the owner's setting, #829: the
+master runs it; the check endpoint is admin-only too):
+`apis=[{registry,/api/v1/nodes,50/500ms,10s},{volumes,/api/v1/volumes,
+100/1000ms,10s},{pools,/api/v1/pools,100/1000ms,10s}]`. Each takes the
+locks real work takes (`fed`, `heads`, `inventory`) and calls no engine;
+all are open GETs (no `token_file`). No `restart_after_stalled_secs`: a
+restart mid-orchestration is worse than a stall an operator looks at.
+Here: README "API health", a test that the probes stay open with a token
+set, changelog. Then: note to the master with the command; close once
+`component export` shows `apis` and the golden is requested.
+Status 2026-11-13: 8e5bc6e pushed (README, test, changelog); sc-build passes
+(build + test + clippy -D warnings, probe test ok). Note sent to the master;
+`wait-owner --action` card with the command. Next: once `component export`
+shows `apis`, request the golden, close #82.
+
+### Other open
+- [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
+      request stormcos#312 (2026-10-07).
+- [x] #12 engine token default path and peer calls (done 2026-10-06).
+- [x] #15 reassemble after head engine restart (done 2026-10-06).
+- [x] #14 re-head — opt-in, off by default (done 2026-10-06).
+- [x] #56 one cluster instance (done 2026-11-06): turned on by stormcos#354 and stormcluster#89.
+- [x] #35 closed with nothing built (owner, 2026-10-09): one node registry — stormfs reads `GET /api/v1/nodes`; no forwarding. Docs say so; recorded on stormfs#64.
+- [x] #42 done 2026-10-06: step 2 in ef3af98; the entry fix
+      (stormcentral#72) via `component edit stormstorage --set config=…`:
+      `token_file` is now under `[local]` (checked with `component export`).
+- Docs refreshed from the code 2026-09-28, and again 2026-10-02 (#38's
+  engine token and back-off; the component entry lives in stormcentral's
+  database, #37; auth covers assemble; replicate carries orphans); the
+  promises without code are #30–#36.
+
