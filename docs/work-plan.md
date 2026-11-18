@@ -1055,13 +1055,19 @@ preparation for a vm moving." Found while reading:
   Pools are config, not API: `mirror2` goes to the master as a note; the
   test uses it when present, else `replicaSlaves: 1` with `spread: node`.
 Plan:
-1. [ ] rejoin in orchestrate.rs + tests/rejoin.rs cases; README, CHANGELOG.
-2. [ ] test: `test/requires.toml` (medium: topology two-node, faults,
-       cluster reads, StorageClass write), `raid1-two-nodes` in medium,
-       steps as above, a skip naming the issue for each missing mechanism.
-3. [ ] file: stormcentral (worker hard power-off + restore), stormblock
-       (live bitmap re-add); note to the master (mirror2 pool).
-4. [ ] sc-build; golden; propose #113 after the blockers.
+1. [x] rejoin in orchestrate.rs + tests/leg_rejoin.rs; README, CHANGELOG
+       (cfe06af, f879533; sc-build: 108 unit + leg_rejoin 3/3, clippy clean).
+2. [x] test: `test/requires.toml` (medium: topology two-node, cluster
+       reads, StorageClass write; `faults` waits on stormcentral#1454),
+       `raid1-two-nodes` in medium (test/src/pair.rs, pattern.rs, kube.rs),
+       a skip naming the issue for each missing mechanism (4667ceb).
+3. [x] filed stormcentral#1454 (stop-worker), stormblock#657 (live readd).
+       [ ] note to the master: a `mirror2` pool (the suite uses spread=node
+       without it).
+4. [ ] sc-build on 4667ceb; golden; wait-owner on the VM-root question
+       (posted on #113, recommended A: stormstorage seeds legs from a golden).
+Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
+try `readd` first; the VM steps per the owner's answer.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
