@@ -1013,6 +1013,19 @@ Status 2026-11-13: 8e5bc6e pushed (README, test, changelog); sc-build passes
 `wait-owner --action` card with the command. Next: once `component export`
 shows `apis`, request the golden, close #82.
 
+### Volume owner on create (#109, P1, for stormblock-csi#69)
+`POST /api/v1/volumes` takes `owner {kind, namespace?, name, uid?}`
+(stormblock#115's shape; kind and name required). Plan:
+- `DistVolume.owner` (recorded, replicated, on GET and the listing). A
+  clone takes the request's owner, never its parent's.
+- Sent in the engine's `/v1` create body (legs, served mirror, clone;
+  stormblock#649 `require_on_clone` needs it on the clone's create).
+- A reconciler each poll (leader): every leg (`vol.name` on its node) and
+  the served volume (`served_name` on `export.node`) as the inventory sees
+  it; an owner that differs is set with `PUT /api/v1/volumes/{local id}/owner`.
+  Level-triggered, so a promote, re-export, re-leg or move is covered.
+  Matched by name (a /v1 id is not the engine-local id the route takes).
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
