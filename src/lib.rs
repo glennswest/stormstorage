@@ -15,6 +15,7 @@ pub mod inventory;
 pub mod kube;
 pub mod model;
 pub mod orchestrate;
+pub mod owner;
 pub mod migrate;
 pub mod placement;
 pub mod rebalance;

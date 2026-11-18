@@ -119,6 +119,7 @@ async fn setup() -> (Arc<AppState>, M) {
             migration: None,
             clone_of: None,
             expanding: None,
+            owner: None,
         },
     );
     let state = Arc::new(AppState::new(config, fed, None));

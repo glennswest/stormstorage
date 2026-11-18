@@ -121,9 +121,10 @@ side: a mirrored volume is created here (`POST /api/v1/volumes` with
 `replicas: 2`), not by `/v1` create. So a stormblock-csi that wants
 mirrored volumes, failover and moves talks to stormstorage for them:
 
-- create: `POST /api/v1/volumes {name, size_bytes, replicas, bandwidth_class?, extent_size_bytes?}`
+- create: `POST /api/v1/volumes {name, size_bytes, replicas, bandwidth_class?, extent_size_bytes?, owner?}`
   (`extent_size_bytes`: the StorageClass's `extentSize`, on every leg and
-  every replacement leg, #59)
+  every replacement leg, #59; `owner {kind, namespace?, name, uid?}`: the
+  claim, recorded and written to every engine volume it is made of, #109)
 - state: `GET /api/v1/volumes/{name}/replicas`
 - prestage, fence, promote, dual-attach: the routes below, which take the
   `/v1` bodies and return the `/v1` error envelope.

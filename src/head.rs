@@ -1521,6 +1521,7 @@ mod tests {
             migration: None,
             clone_of: None,
             expanding: None,
+            owner: None,
         }
     }
 

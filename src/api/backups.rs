@@ -244,7 +244,7 @@ pub(super) async fn restore(
     let node = b.node.clone().expect("checked");
     let master = b.target_master.clone().unwrap_or_else(|| node.clone());
     let r = engine
-        .create_clone(&body.name, b.size_bytes, &master, &point)
+        .create_clone(&body.name, b.size_bytes, &master, &point, None)
         .await
         .map_err(|e| ApiError::upstream(format!("{node}: restore: {e:#}")))?;
     let id = r.get("id").and_then(|x| x.as_str()).ok_or_else(|| ApiError::upstream(format!("{node}: no id in {r}")))?;
@@ -283,6 +283,7 @@ pub(super) async fn restore(
         migration: None,
         clone_of: None,
         expanding: None,
+        owner: None,
     };
     {
         let mut fed = s.fed.write().await;

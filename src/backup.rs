@@ -181,7 +181,7 @@ async fn step(state: &Arc<AppState>, name: &str, now: SystemTime) -> anyhow::Res
     // 2. Its volume there: thin, so a first copy of allocated extents only.
     let Some(target) = b.target_volume_id.clone() else {
         let v = backup_engine
-            .create_volume(&crate::model::backup_target_name(name), b.size_bytes, None)
+            .create_volume(&crate::model::backup_target_name(name), b.size_bytes, None, None)
             .await
             .map_err(|e| anyhow::anyhow!("{node}: backup volume: {e:#}"))?;
         let id = v.get("id").and_then(|x| x.as_str()).ok_or_else(|| anyhow::anyhow!("{node}: no id in {v}"))?.to_string();

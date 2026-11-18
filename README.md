@@ -150,6 +150,25 @@ stormview components feed on **:9093**.
   legs. The served `<name>-mirror` is carved on the head's array, whose
   slot size the engine chooses; it is not given one.
 
+  **Owner (#109, stormblock#115):** `owner {kind, namespace?, name,
+  uid?}` on create, a plain one or a clone, names what the volume
+  belongs to. stormblock-csi sends the PersistentVolumeClaim
+  (stormblock-csi#69). `kind` is free-form. `kind` and `name` are
+  required, so a partial owner is a 400. It is recorded on the volume,
+  returned as `owner` on `GET /api/v1/volumes[/{name}]`, and sent on
+  every `/v1` create made for it: each leg, the served `<name>-mirror`
+  and a clone. That last one matters because stormblock#649 can refuse
+  an ownerless clone. A clone takes the owner it is given, never its
+  source's. Each poll, the leader compares every leg (`<name>` on its
+  node) and the served volume, as the inventory last read them, with the
+  record. It puts the owner back with `PUT /api/v1/volumes/{id}/owner`
+  on any that reads otherwise. That covers a promote or re-export (a new
+  served volume on another head), a new leg, and an engine that dropped
+  the field. Engine volumes are found by name on the node (a /v1 id is
+  not the engine-local id the route takes). A name held twice on a node
+  is left alone. A failure is an event once and is retried each poll.
+  Absent, the volume is unclaimed, as before.
+
   **RAID profile (#68):** `raid` on create (and on the dry run) is one of:
   - `none`: one leg; a `replicas` other than 1 is a 400.
   - `mirror`: RAID1 over legs in distinct domains, as above; `replicas`

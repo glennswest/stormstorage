@@ -423,6 +423,12 @@ pub struct DistVolume {
     /// growing to `to_bytes`; `size_bytes` moves once all three have.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanding: Option<Expansion>,
+    /// What the volume belongs to (#109, stormblock#115): a claim, pod or
+    /// VM, as the creator named it. Written to every leg and the served
+    /// volume on their engines, and put back on any of them that reads
+    /// otherwise (a promote, re-export or new leg). None = unclaimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<crate::inventory::Owner>,
 }
 
 impl DistVolume {

@@ -733,6 +733,28 @@ struct CreateVolumeRequest {
     encrypted: bool,
     #[serde(default)]
     qos_class: Option<String>,
+    /// What it belongs to (#109, stormblock#115): `{kind, namespace?, name,
+    /// uid?}`, e.g. the PersistentVolumeClaim stormblock-csi creates it
+    /// for. Recorded and written to every engine volume it is made of.
+    #[serde(default)]
+    owner: Option<crate::inventory::Owner>,
+}
+
+/// An owner as a request names it (#109): kind and name are required (a
+/// partial owner reads as an answer and is not one, stormblock#115);
+/// surrounding blanks go, and a blank uid is no uid.
+pub(crate) fn owner_record(o: Option<crate::inventory::Owner>) -> Result<Option<crate::inventory::Owner>, ApiError> {
+    let Some(o) = o else { return Ok(None) };
+    let o = crate::inventory::Owner {
+        kind: o.kind.trim().to_string(),
+        namespace: o.namespace.trim().to_string(),
+        name: o.name.trim().to_string(),
+        uid: o.uid.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()),
+    };
+    if o.kind.is_empty() || o.name.is_empty() {
+        return Err(ApiError::bad_request("owner needs a kind and a name ({kind, namespace?, name, uid?})"));
+    }
+    Ok(Some(o))
 }
 
 /// A consumer host to serve a volume to (#51).
@@ -767,6 +789,7 @@ async fn create_volume(
         return Err(ApiError::bad_request("name and size_bytes required"));
     }
     let hosts = host_records(&req.hosts)?;
+    let owner = owner_record(req.owner.clone())?;
     if req.encrypted || req.qos_class.is_some() {
         return Err(ApiError::not_implemented(
             "encrypted and qos_class are not applied by the engine yet (stormblock#319): refused rather than \
@@ -788,7 +811,7 @@ async fn create_volume(
                 crate::orchestrate::MIRROR_SUFFIX
             )));
         }
-        return snapshots::create_clone(&s, &req.name, req.size_bytes, source, hosts).await.map(Json);
+        return snapshots::create_clone(&s, &req.name, req.size_bytes, source, hosts, owner).await.map(Json);
     }
     if let Some(e) = req.extent_size_bytes {
         if !crate::engine::Engine::valid_extent_size(e) {
@@ -856,7 +879,7 @@ async fn create_volume(
                 .ok_or_else(|| ApiError::not_found(format!("node {node_name:?}")))?;
             s.engine_for(node)
         };
-        match engine.create_volume(&req.name, req.size_bytes, req.extent_size_bytes).await {
+        match engine.create_volume(&req.name, req.size_bytes, req.extent_size_bytes, owner.as_ref()).await {
             Ok(v) => legs.push(Leg {
                 node: node_name.clone(),
                 volume_id: v.get("id").and_then(|i| i.as_str()).map(|x| x.to_string()),
@@ -921,6 +944,7 @@ async fn create_volume(
         migration: None,
         clone_of: None,
         expanding: None,
+        owner,
     };
     {
         let mut fed = s.fed.write().await;

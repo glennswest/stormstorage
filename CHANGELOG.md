@@ -3,6 +3,11 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-18 (#109)
+- **feat:** `POST /api/v1/volumes` takes `owner {kind, namespace?, name, uid?}` (stormblock#115's shape), on a plain create and on a clone, for stormblock-csi#69. It is recorded on the volume (and replicated) and returned as `owner` on `GET /api/v1/volumes[/{name}]`. It is sent on every engine `/v1` create made for the volume: legs, replacement legs, the served `<name>-mirror` and the clone (stormblock#649's `require_on_clone`). A clone takes the owner it is given, never its source's. A partial owner (no kind or name) is a 400.
+- **feat:** Each poll the leader puts a volume's owner on any leg or served volume whose engine reads otherwise, with `PUT /api/v1/volumes/{id}/owner`. That covers a promote, a re-export, a new leg, and an engine that dropped the field. Engine volumes are matched by name on their node. A failure is an event once and is retried each poll (src/owner.rs).
+- **test:** tests/owner.rs (mock engine): create, GET and the listing carry the owner, and the `/v1` create sends it. A partial owner is refused. A clone gets its own owner or none. A volume whose engine lost its owner is set on the next poll, once. Unit tests for the plan: legs plus served mirror, only what differs, ambiguous names and unhealthy nodes skipped.
+
 ### 2026-11-13 (#82)
 - **docs:** API health for stormd (stormcentral#596): the registry entry declares `registry` (`/api/v1/nodes`), `volumes` (`/api/v1/volumes`) and `pools` (`/api/v1/pools`) with budgets and a 10 s timeout. Each takes the lock real work takes and calls no engine. README *API health* gives the command; the registry is the owner's setting, so the master applies it.
 - **test:** tests/auth.rs: the three probes answer 200 with no bearer while `api_token` is set.

@@ -483,7 +483,7 @@ async fn build_replacement(
     // New leg: volume, export, head drive, member. Undo what was done if a
     // later step fails, so a failed attempt leaves nothing behind.
     let created = target_engine
-        .create_volume(&vol.name, vol.leg_bytes(), vol.extent_size_bytes)
+        .create_volume(&vol.name, vol.leg_bytes(), vol.extent_size_bytes, vol.owner.as_ref())
         .await
         .map_err(|e| anyhow::anyhow!("{target}: create leg: {e:#}"))?;
     let vid = created
@@ -922,6 +922,8 @@ pub async fn reconcile(state: &Arc<AppState>) {
     if state.recovery_active() {
         crate::head::retry_pending_rates(state).await;
     }
+    // Owners onto engine volumes that read otherwise (#109).
+    crate::owner::sync(state).await;
     // Host withdrawals an engine has not taken yet (#51).
     let pending: std::collections::BTreeSet<String> = {
         let fed = state.fed.read().await;
@@ -1619,7 +1621,7 @@ async fn publish_inner(
             let array_id = at.array_id.as_deref().expect("assembled");
             let created = at
                 .engine
-                .create_pinned_volume(&format!("{name}{MIRROR_SUFFIX}"), vol.leg_bytes(), array_id)
+                .create_pinned_volume(&format!("{name}{MIRROR_SUFFIX}"), vol.leg_bytes(), array_id, vol.owner.as_ref())
                 .await
                 .map_err(|e| anyhow::anyhow!("{}: {e:#}", at.node))?;
             let id = created
@@ -2231,6 +2233,7 @@ mod tests {
             migration: None,
             clone_of: None,
             expanding: None,
+            owner: None,
         }
     }
 

@@ -297,8 +297,8 @@ pub async fn advance(state: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
         // On a named RAID set (#106): every extent of the volume on the
         // array's slab, so writes the mirror lands there stay there.
         let v = match m.placement.as_ref().filter(|p| p.kind == "array") {
-            Some(p) => t.create_pinned_volume(&m.target_name, m.size_bytes, &p.id).await,
-            None => t.create_volume(&m.target_name, m.size_bytes, None).await,
+            Some(p) => t.create_pinned_volume(&m.target_name, m.size_bytes, &p.id, None).await,
+            None => t.create_volume(&m.target_name, m.size_bytes, None, None).await,
         }
         .with_context(|| format!("{tn}: create {}", m.target_name))?;
         let vid = v

@@ -1,6 +1,7 @@
 //! Client for one stormblock engine's management API. stormstorage only
 //! ever *drives* engines — it is never in the data path.
 
+use crate::inventory::Owner;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -103,6 +104,14 @@ fn admin_hint(status: reqwest::StatusCode) -> &'static str {
 }
 
 /// The engine said 404 — check before the error is wrapped in context.
+/// Add `owner` to a /v1 create body when there is one (stormblock#649,
+/// #109): left out when absent, so the body is as before.
+fn with_owner(body: &mut Value, owner: Option<&Owner>) {
+    if let Some(o) = owner {
+        body["owner"] = serde_json::to_value(o).unwrap_or(Value::Null);
+    }
+}
+
 pub fn is_not_found(e: &anyhow::Error) -> bool {
     status_of(e) == Some(reqwest::StatusCode::NOT_FOUND)
 }
@@ -312,6 +321,7 @@ impl Engine {
         name: &str,
         size_bytes: u64,
         extent_size_bytes: Option<u64>,
+        owner: Option<&Owner>,
     ) -> anyhow::Result<Value> {
         let mut body = serde_json::json!({
             "name": name,
@@ -321,6 +331,7 @@ impl Engine {
         if let Some(e) = extent_size_bytes {
             body["extent_size_bytes"] = serde_json::json!(e);
         }
+        with_owner(&mut body, owner);
         let resp = self
             .req(reqwest::Method::POST, "/v1/volumes")
             .json(&body)
@@ -349,16 +360,16 @@ impl Engine {
         name: &str,
         size_bytes: u64,
         array_id: &str,
+        owner: Option<&Owner>,
     ) -> anyhow::Result<Value> {
-        self.v1_post(
-            "/v1/volumes",
-            serde_json::json!({
-                "name": name,
-                "size_bytes": size_bytes,
-                "replica_tier": { "slaves": 0 },
-                "placement": { "array_id": array_id },
-            }),
-        )
+        let mut body = serde_json::json!({
+            "name": name,
+            "size_bytes": size_bytes,
+            "replica_tier": { "slaves": 0 },
+            "placement": { "array_id": array_id },
+        });
+        with_owner(&mut body, owner);
+        self.v1_post("/v1/volumes", body)
         .await
         .map_err(|e| anyhow::anyhow!("create {name} on array {array_id}: {e:#}"))
     }
@@ -747,6 +758,28 @@ impl Engine {
         .await
     }
 
+    /// PUT /api/v1/volumes/{id}/owner {owner} (stormblock#115, #109): say
+    /// what an engine volume belongs to. `id` is the engine-local id or a
+    /// name (a /v1 id is neither). Idempotent.
+    pub async fn set_owner(&self, id: &str, owner: Option<&Owner>) -> anyhow::Result<()> {
+        let path = format!("/api/v1/volumes/{id}/owner");
+        let resp = self
+            .req(reqwest::Method::PUT, &path)
+            .json(&serde_json::json!({ "owner": owner }))
+            .send()
+            .await?;
+        check_refused(&resp, &path)?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            anyhow::bail!(
+                "{path}: {status}: {}",
+                body.get("message").or_else(|| body.get("error")).and_then(|m| m.as_str()).unwrap_or("no message")
+            );
+        }
+        Ok(())
+    }
+
     /// PUT /api/v1/arrays/{id}/rebuild — cap its rebuilds (0 = unlimited).
     pub async fn set_rebuild_rate(&self, array_id: &str, bytes_per_sec: u64) -> anyhow::Result<()> {
         let path = format!("/api/v1/arrays/{array_id}/rebuild");
@@ -992,18 +1025,19 @@ impl Engine {
         size_bytes: u64,
         master_node: &str,
         source: &str,
+        owner: Option<&Owner>,
     ) -> anyhow::Result<Value> {
-        self.v1_post(
-            "/v1/volumes",
-            serde_json::json!({
-                "name": name,
-                "size_bytes": size_bytes,
-                "master_node": master_node,
-                "replica_tier": { "slaves": 0 },
-                "source": { "kind": "volume", "id": source },
-            }),
-        )
-        .await
+        let mut body = serde_json::json!({
+            "name": name,
+            "size_bytes": size_bytes,
+            "master_node": master_node,
+            "replica_tier": { "slaves": 0 },
+            "source": { "kind": "volume", "id": source },
+        });
+        // stormblock#649: an engine with `[owners] require_on_clone` refuses
+        // a clone that names no owner.
+        with_owner(&mut body, owner);
+        self.v1_post("/v1/volumes", body).await
     }
 
     /// POST /v1/snapshots {name, volume_id} (#49): a sealed COW snapshot of
