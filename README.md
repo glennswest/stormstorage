@@ -314,8 +314,20 @@ stormview components feed on **:9093**.
   never blocks the rebuild. A leg volume that cannot be deleted is
   recorded as an **orphan** (`GET /api/v1/orphans`) and deleted when its
   node answers again. A failed attempt waits `recovery.cooldown_secs`
-  before the next. A lost leg stays lost even if its node comes back, so a
-  flapping node gives one re-leg. A lost **head** is reported and not
+  before the next. A lost leg is not marked back just because its node
+  answers; it **rejoins** (#113): while its node is down it waits for a
+  re-leg target (with two nodes there is none), and once its node answers
+  the head's array is read. If its member is active again the leg is
+  `created`, nothing copied. Otherwise the same leg volume (still on its
+  node; if it is gone, an error event and a re-leg's turn) is attached to
+  the head again, its stale member removed, the drive reopened and added
+  back, and rebuilt as a replacement marked `rejoin` (restart-resume and
+  `rebuild_timeout_secs` as for a re-leg; a failed one keeps the leg volume
+  and retries after `cooldown_secs`, its own `next_rejoin_after`). The
+  rebuild is full: stormblock re-adds a returning member from its
+  write-intent bitmap only at assembly, not into a running set. The volume
+  carries `last_resync {node, mode: member-active|rebuild, bytes, secs,
+  finished_at}`, and an event says the same. A lost **head** is reported and not
   re-legged automatically, because the array lives there: fence it and
   promote a surviving leg's node (#33, below), or turn on automatic re-head
   (`[recovery] rehead`, #14: off by default, see the key). A head that

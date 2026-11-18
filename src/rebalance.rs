@@ -256,6 +256,8 @@ mod tests {
             migration: None,
             clone_of: None,
             expanding: None,
+            last_resync: None,
+            next_rejoin_after: None,
             owner: None,
         }
     }
@@ -312,7 +314,7 @@ mod tests {
         let mut f = fed();
         let leg = f.volumes["w"].legs[1].clone();
         f.volumes.get_mut("w").unwrap().replacing =
-            Some(Replacement { from: "a".into(), leg, reason: "rebalance".into(), started_at: now });
+            Some(Replacement { from: "a".into(), leg, reason: "rebalance".into(), started_at: now, rejoin: false });
         let p = plan(&f, &[pool(Some(0.8), Some(0.4))], &rungs(), 0.3, &|_| false, now);
         assert!(p.moves.is_empty() && p.held[0].why.contains("in flight"), "{p:?}");
         // Busy or cooling down: skipped; w (smaller) goes instead.

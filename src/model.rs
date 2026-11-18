@@ -183,6 +183,31 @@ pub struct Replacement {
     /// Why: "operator move" or "node lost".
     pub reason: String,
     pub started_at: SystemTime,
+    /// A leg rejoining on its own node (#113): `from` and the new leg are
+    /// the same node and the same leg volume, put back into the array after
+    /// its node answered again. Nothing is retired when it is active, and a
+    /// rejoin that fails leaves the leg volume where it is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rejoin: bool,
+}
+
+/// The last time a leg came back into its head's array after its node
+/// answered again (#113): what it cost, for a test report and the console.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Resync {
+    /// The node whose leg came back.
+    pub node: String,
+    /// `member-active`: the head's array already had the member active
+    /// again, nothing was copied. `rebuild`: the leg was added back and
+    /// rebuilt in full (stormblock re-adds a returning member from its
+    /// write-intent bitmap only at assembly, not into a running set).
+    pub mode: String,
+    /// Bytes copied onto the leg: its size for a full rebuild, 0 for
+    /// `member-active`.
+    pub bytes: u64,
+    /// From the start of the rejoin to the member reading active.
+    pub secs: f64,
+    pub finished_at: SystemTime,
 }
 
 /// A leg volume left on a node that could not be reached to delete it.
@@ -429,6 +454,14 @@ pub struct DistVolume {
     /// otherwise (a promote, re-export or new leg). None = unclaimed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<crate::inventory::Owner>,
+    /// The last rejoin of a leg whose node came back (#113).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_resync: Option<Resync>,
+    /// No rejoin attempt before this — set after a failed one (#113). Its
+    /// own, so a re-leg that failed while the node was down (nowhere to go)
+    /// does not hold back the leg's return.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_rejoin_after: Option<SystemTime>,
 }
 
 impl DistVolume {

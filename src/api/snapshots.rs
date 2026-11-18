@@ -498,6 +498,8 @@ pub(super) async fn create_clone(
         migration: None,
         clone_of: Some(CloneOf { source: source.clone(), parent: parent.name.clone() }),
         expanding: None,
+        last_resync: None,
+        next_rejoin_after: None,
         // The clone's own, never its parent's (stormblock#115: a clone
         // belongs to whoever asked for it).
         owner,

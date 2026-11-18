@@ -701,6 +701,8 @@ mod tests {
             migration: None,
             clone_of: None,
             expanding: None,
+            last_resync: None,
+            next_rejoin_after: None,
             owner: None,
         };
         let c = volume_component(&v, None);

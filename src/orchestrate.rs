@@ -14,7 +14,7 @@
 
 use crate::api::AppState;
 use crate::events::Severity;
-use crate::model::{AssemblyState, DistVolume, Leg, LegState, Orphan, Replacement};
+use crate::model::{AssemblyState, DistVolume, Leg, LegState, Orphan, Replacement, Resync};
 use crate::placement::domain_at;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -550,6 +550,7 @@ async fn build_replacement(
             leg,
             reason: reason.to_string(),
             started_at: SystemTime::now(),
+            rejoin: false,
         });
         fed.revision += 1;
     }
@@ -586,6 +587,250 @@ async fn undo_leg(
     }
 }
 
+/// Put a lost leg back into its head's array once its node answers again
+/// (#113). A lost non-head leg had no way back before: the re-leg (#1)
+/// looks for another domain, and with two nodes there is none, so a node
+/// that was powered off and came back left its volume degraded for good.
+///
+/// The head's array is read first. A member already active again (the
+/// head's initiator reconnected and the engine took it back) is the leg
+/// back, nothing copied. Otherwise the same leg volume, still on its node,
+/// is attached to the head again, its stale member leaves the array, the
+/// drive is reopened and added back, and the rebuild is waited on as a
+/// replacement marked `rejoin` (claim, restart-resume and timeout are the
+/// re-leg's). The rebuild is full: stormblock re-adds a returning member
+/// from its write-intent bitmap only at assembly, not into a running set.
+pub async fn start_rejoin(state: &Arc<AppState>, name: &str, node: &str) -> anyhow::Result<()> {
+    if !claim(state, name) {
+        anyhow::bail!("{name}: a leg replacement is already in progress");
+    }
+    match build_rejoin(state, name, node).await {
+        Ok(true) => {
+            let st = state.clone();
+            let n = name.to_string();
+            tokio::spawn(async move { finish_replacement(st, n).await });
+            Ok(())
+        }
+        Ok(false) => {
+            release(state, name);
+            Ok(())
+        }
+        Err(e) => {
+            release(state, name);
+            Err(e)
+        }
+    }
+}
+
+/// Ok(true): a rebuild was started and recorded; Ok(false): the leg was
+/// already back (member active), nothing to wait for.
+async fn build_rejoin(state: &Arc<AppState>, name: &str, node: &str) -> anyhow::Result<bool> {
+    let started = SystemTime::now();
+    let (vol, leg, head, array_id, head_engine, leg_engine) = {
+        let fed = state.fed.read().await;
+        let vol = fed
+            .volumes
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        if vol.replacing.is_some() {
+            anyhow::bail!("{name}: a leg replacement is already in progress");
+        }
+        let head = vol.head.clone().ok_or_else(|| anyhow::anyhow!("{name}: no head"))?;
+        if head == node {
+            anyhow::bail!("{name}: {node} is the head — its leg comes back with the head (#26)");
+        }
+        let array_id = vol.array_id.clone().ok_or_else(|| anyhow::anyhow!("{name}: no array id"))?;
+        let leg = vol
+            .legs
+            .iter()
+            .find(|l| l.node == node && l.state == LegState::Lost)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{name}: no lost leg on {node}"))?;
+        for n in [head.as_str(), node] {
+            if !fed.nodes.get(n).is_some_and(|x| x.status.healthy) {
+                anyhow::bail!("{name}: {n} is unreachable");
+            }
+        }
+        let he = engine_of(state, &fed, &head)?;
+        let le = engine_of(state, &fed, node)?;
+        (vol, leg, head, array_id, he, le)
+    };
+
+    let reading = head_engine
+        .find_array(&array_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("{head}: read array {array_id}: {e:#}"))?
+        .map(|v| crate::head::parse_array(&head, &array_id, &v))
+        .ok_or_else(|| anyhow::anyhow!("{head} no longer holds array {array_id} (#15)"))?;
+    let stale = crate::head::member_of(&leg, &reading).cloned();
+    if stale.as_ref().is_some_and(|m| m.state.eq_ignore_ascii_case("active")) {
+        let mut back = leg.clone();
+        back.state = LegState::Created;
+        back.message = None;
+        let resync = Resync {
+            node: node.to_string(),
+            mode: "member-active".into(),
+            bytes: 0,
+            secs: secs_since(started),
+            finished_at: SystemTime::now(),
+        };
+        leg_back(state, name, back, resync).await;
+        event(
+            state,
+            name,
+            Severity::Info,
+            format!("{name}: leg on {node} back — its member of array {array_id} on {head} is active again, nothing copied"),
+        )
+        .await;
+        return Ok(false);
+    }
+
+    let vid = leg.volume_id.clone().ok_or_else(|| anyhow::anyhow!("{name}: leg on {node} has no volume id"))?;
+    leg_engine
+        .get_any_volume(&vid)
+        .await
+        .map_err(|e| anyhow::anyhow!("{node}: leg volume {vid} is not there ({e:#}) — a re-leg is needed"))?;
+    if let Some(m) = &stale {
+        head_engine
+            .array_remove_member(&array_id, &m.uuid)
+            .await
+            .map_err(|e| anyhow::anyhow!("{head}: remove the stale member: {e:#}"))?;
+    }
+    if let Some(uri) = leg.export.as_ref().map(|x| x.drive_uri()) {
+        let _ = head_engine.delete_drive(&uri, true).await;
+    }
+    let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
+    let mut back = Leg {
+        state: LegState::Created,
+        message: Some("rebuilding".into()),
+        export: None,
+        drive_uuid: None,
+        member_uuid: None,
+        ..leg.clone()
+    };
+    let wired: anyhow::Result<()> = async {
+        let host = state.config.legs.host_nqn_for(&head);
+        let att = leg_engine
+            .attach_leg(&vid, &master, leg.epoch, Some(&host))
+            .await
+            .map_err(|e| anyhow::anyhow!("{node}: attach: {e:#}"))?;
+        let uri = att.drive_uri();
+        back.export = Some(att);
+        let drive = head_engine
+            .add_drive_idempotent(&uri)
+            .await
+            .map_err(|e| anyhow::anyhow!("{head}: open leg drive: {e:#}"))?;
+        back.drive_uuid = Some(drive.clone());
+        // The rebuild cap first: add_member starts the copy (#65).
+        let _ = head_engine
+            .set_rebuild_rate(&array_id, state.config.recovery.rate(vol.bandwidth_class))
+            .await;
+        let member = head_engine
+            .array_add_member(&array_id, &drive)
+            .await
+            .map_err(|e| anyhow::anyhow!("{head}: add member: {e:#}"))?;
+        back.member_uuid = Some(member);
+        Ok(())
+    }
+    .await;
+    if let Err(e) = wired {
+        if let Some(uri) = back.export.as_ref().map(|x| x.drive_uri()) {
+            let _ = head_engine.delete_drive(&uri, true).await;
+        }
+        // The stale member is gone either way: say so on the leg, so the
+        // next attempt does not look for it.
+        let mut fed = state.fed.write().await;
+        if let Some(l) = fed.volumes.get_mut(name).and_then(|v| v.legs.iter_mut().find(|l| l.node == node)) {
+            l.member_uuid = None;
+            l.drive_uuid = None;
+        }
+        return Err(e);
+    }
+    {
+        let mut fed = state.fed.write().await;
+        let Some(v) = fed.volumes.get_mut(name) else {
+            anyhow::bail!("{name}: deleted while its leg was rejoining");
+        };
+        v.replacing = Some(Replacement {
+            from: node.to_string(),
+            leg: back,
+            reason: "node back".into(),
+            started_at: started,
+            rejoin: true,
+        });
+        fed.revision += 1;
+    }
+    crate::replicate::push_to_peers(state.clone());
+    state.persist().await;
+    event(
+        state,
+        name,
+        Severity::Info,
+        format!("{name}: leg on {node} rejoining — its node answers again; added back to array {array_id} on {head}, rebuild started"),
+    )
+    .await;
+    Ok(true)
+}
+
+/// A rejoin's member is active: the leg is back, with the cost recorded.
+async fn finish_rejoin(state: &Arc<AppState>, name: &str, rep: &Replacement) {
+    let bytes = {
+        let fed = state.fed.read().await;
+        fed.volumes.get(name).map(|v| v.leg_bytes()).unwrap_or_default()
+    };
+    let mut back = rep.leg.clone();
+    back.message = None;
+    let resync = Resync {
+        node: rep.from.clone(),
+        mode: "rebuild".into(),
+        bytes,
+        secs: secs_since(rep.started_at),
+        finished_at: SystemTime::now(),
+    };
+    let secs = resync.secs;
+    let assembled = leg_back(state, name, back, resync).await;
+    event(
+        state,
+        name,
+        Severity::Info,
+        format!(
+            "{name}: leg on {} back — rebuilt {bytes} bytes in {secs:.1}s{}",
+            rep.from,
+            if assembled { "; volume assembled" } else { "; another leg is still lost" }
+        ),
+    )
+    .await;
+}
+
+/// Put `leg` in its node's slot, clear the replacement, record the resync
+/// and work out the assembly. Returns whether the volume is assembled.
+async fn leg_back(state: &Arc<AppState>, name: &str, leg: Leg, resync: Resync) -> bool {
+    let assembled = {
+        let mut fed = state.fed.write().await;
+        let Some(v) = fed.volumes.get_mut(name) else { return false };
+        match v.legs.iter_mut().find(|l| l.node == leg.node) {
+            Some(slot) => *slot = leg,
+            None => v.legs.push(leg),
+        }
+        v.replacing = None;
+        v.next_releg_after = None;
+        v.next_rejoin_after = None;
+        v.last_resync = Some(resync);
+        let assembled = !v.legs.iter().any(|l| l.state == LegState::Lost);
+        v.assembly = if assembled { AssemblyState::Assembled } else { AssemblyState::Degraded };
+        fed.revision += 1;
+        assembled
+    };
+    crate::replicate::push_to_peers(state.clone());
+    state.persist().await;
+    assembled
+}
+
+fn secs_since(t: SystemTime) -> f64 {
+    SystemTime::now().duration_since(t).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
 /// Wait for the recorded replacement's member to rebuild, then retire the
 /// old leg — or, if it never converges, undo the new one. Holds the
 /// volume's claim (taken by the caller) and releases it at the end.
@@ -614,6 +859,39 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
     let from = rep.from.clone();
     let to = rep.leg.node.clone();
 
+    if !ok && rep.rejoin {
+        // The leg volume stays on its node: only the member and the drive go.
+        if let Some(m) = &rep.leg.member_uuid {
+            let _ = head_engine.array_remove_member(&array_id, m).await;
+        }
+        if let Some(uri) = rep.leg.export.as_ref().map(|x| x.drive_uri()) {
+            let _ = head_engine.delete_drive(&uri, true).await;
+        }
+        {
+            let mut fed = state.fed.write().await;
+            if let Some(v) = fed.volumes.get_mut(name) {
+                v.replacing = None;
+                v.next_rejoin_after = Some(
+                    SystemTime::now() + Duration::from_secs(state.config.recovery.cooldown_secs),
+                );
+            }
+            fed.revision += 1;
+        }
+        crate::replicate::push_to_peers(state.clone());
+        state.persist().await;
+        event(
+            state,
+            name,
+            Severity::Error,
+            format!("{name}: leg on {to} did not rebuild on {head} after rejoining — still degraded, retried after the cooldown"),
+        )
+        .await;
+        return;
+    }
+    if rep.rejoin {
+        finish_rejoin(state, name, &rep).await;
+        return;
+    }
     if !ok {
         undo_leg(&head_engine, &array_id, &target_engine, &rep.leg).await;
         {
@@ -750,6 +1028,9 @@ pub struct Plan {
     pub head_lost: Vec<(String, String)>,
     /// (volume, from) re-legs to start.
     pub start: Vec<(String, String)>,
+    /// (volume, node) lost legs whose node answers again: put the same leg
+    /// back into the head's array (#113) rather than re-leg elsewhere.
+    pub rejoin: Vec<(String, String)>,
     /// Volumes with a recorded replacement to resume waiting on.
     pub resume: Vec<String>,
     /// Pending volumes to retry assembling: every leg created, every leg
@@ -829,6 +1110,18 @@ pub fn plan_recovery(
         if head_lost {
             continue;
         }
+        // A lost leg whose node answers again comes back as itself (#113):
+        // its volume is still there and with two domains a re-leg has
+        // nowhere else to go. Not while fenced: the head role is moving.
+        let back = vol.legs.iter().find(|l| {
+            l.state == LegState::Lost && l.volume_id.is_some() && healthy.get(&l.node) == Some(&true)
+        });
+        if let Some(leg) = back {
+            if !vol.fenced && !vol.next_rejoin_after.is_some_and(|t| now < t) {
+                plan.rejoin.push((vol.name.clone(), leg.node.clone()));
+            }
+            continue;
+        }
         if vol.next_releg_after.map(|t| now < t).unwrap_or(false) {
             continue;
         }
@@ -881,6 +1174,25 @@ pub async fn reconcile(state: &Arc<AppState>) {
         if claim(state, &name) {
             let st = state.clone();
             tokio::spawn(async move { finish_replacement(st, name).await });
+        }
+    }
+    for (name, node) in plan.rejoin {
+        if let Err(e) = start_rejoin(state, &name, &node).await {
+            let cooldown = state.config.recovery.cooldown_secs;
+            {
+                let mut fed = state.fed.write().await;
+                if let Some(v) = fed.volumes.get_mut(&name) {
+                    v.next_rejoin_after = Some(now + Duration::from_secs(cooldown));
+                }
+            }
+            state.persist().await;
+            event(
+                state,
+                &name,
+                Severity::Error,
+                format!("{name}: leg on {node} answers again but did not rejoin, retry in {cooldown}s: {e:#}"),
+            )
+            .await;
         }
     }
     for (name, from) in plan.start {
@@ -2233,6 +2545,8 @@ mod tests {
             migration: None,
             clone_of: None,
             expanding: None,
+            last_resync: None,
+            next_rejoin_after: None,
             owner: None,
         }
     }
@@ -2423,9 +2737,43 @@ mod tests {
             Some((HeadReturn::Restored { assembled: false }, true))
         );
         assert_eq!(v.assembly, AssemblyState::Degraded);
-        // The head is back, so the other lost leg is now re-legged.
+        // The head is back and b answers: b's own leg rejoins (#113).
+        let p = plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
+        assert_eq!(p.rejoin, vec![("v".to_string(), "b".to_string())]);
+        assert!(p.start.is_empty());
+        // With b down, it is re-legged elsewhere.
+        fed.nodes.get_mut("b").unwrap().status.healthy = false;
         let p = plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
         assert_eq!(p.start, vec![("v".to_string(), "b".to_string())]);
+        assert!(p.rejoin.is_empty());
+    }
+
+    /// #113: a non-head leg whose node answers again rejoins as itself,
+    /// never re-legged elsewhere; not while busy, cooling down, fenced, or
+    /// with recovery off.
+    #[test]
+    fn leg_whose_node_is_back_rejoins() {
+        let mut fed = fed_with(&["a", "b"], &["b"]);
+        let now = SystemTime::now();
+        let p = plan_recovery(&mut fed, true, now, &|_| true);
+        assert_eq!(p.lost.len(), 1);
+        fed.nodes.get_mut("b").unwrap().status.healthy = true;
+        let p = plan_recovery(&mut fed, true, now, &|_| false);
+        assert_eq!(p.rejoin, vec![("v".to_string(), "b".to_string())]);
+        assert!(p.start.is_empty() && p.lost.is_empty());
+        assert_eq!(fed.volumes["v"].assembly, AssemblyState::Degraded, "degraded until rebuilt");
+
+        assert!(plan_recovery(&mut fed, true, now, &|_| true).rejoin.is_empty(), "busy");
+        assert!(plan_recovery(&mut fed, false, now, &|_| false).rejoin.is_empty(), "recovery off");
+        // A re-leg that failed while b was down does not hold the rejoin.
+        fed.volumes.get_mut("v").unwrap().next_releg_after = Some(now + Duration::from_secs(60));
+        assert_eq!(plan_recovery(&mut fed, true, now, &|_| false).rejoin.len(), 1, "re-leg cooldown");
+        fed.volumes.get_mut("v").unwrap().next_rejoin_after = Some(now + Duration::from_secs(60));
+        assert!(plan_recovery(&mut fed, true, now, &|_| false).rejoin.is_empty(), "cooling down");
+        fed.volumes.get_mut("v").unwrap().next_rejoin_after = None;
+        fed.volumes.get_mut("v").unwrap().fenced = true;
+        let p = plan_recovery(&mut fed, true, now, &|_| false);
+        assert!(p.rejoin.is_empty() && p.start.is_empty(), "fenced: {p:?}");
     }
 
     #[test]
@@ -2477,6 +2825,7 @@ mod tests {
             leg: Leg { node: "c".into(), ..leg },
             reason: "node lost".into(),
             started_at: SystemTime::now(),
+            rejoin: false,
         });
         let p = plan_recovery(&mut fed, true, SystemTime::now(), &|_| false);
         assert_eq!(p.resume, vec!["v".to_string()]);
