@@ -1031,6 +1031,38 @@ tests/owner.rs 4/4). Golden requested (build 58643ca97fd8); shipped with
 stormblock-csi#69's proof. Not run on real engines yet: the proof is the
 first pvetest node with the CSI test claim.
 
+### RAID1 across two nodes, proven (#113, P0) — IN PROGRESS 2026-11-18
+Owner: "test raid1 of pvc and vm drives too … a raid1 across two nodes, in
+preparation for a vm moving." Found while reading:
+- **A lost non-head leg never comes back.** Only the head's leg has a
+  return path (#26). With two nodes a re-leg has nowhere to go, so after
+  node B's power cycle the volume stayed `degraded` for good. Build here:
+  **rejoin** — B answers again and still holds the leg volume: if the
+  head's array shows its member active, the leg is back; otherwise the
+  stale member leaves the array, the leg is attached to the head again,
+  reopened and added back, and rebuilt (a `Replacement` with `rejoin`, so
+  the claim, restart-resume and timeout are the re-leg's). The rebuild is
+  full: stormblock re-adds a returning member from its bitmap only at
+  assembly (raid-sets.md), so "only changed extents" is filed on stormblock.
+  `last_resync {node, mode, bytes, secs, finished_at}` on the volume and an
+  event with the numbers, for the test report.
+- **The runner has no power-off for `two-node`**: only `stop-master` (needs
+  a second master) and `drain-reboot-worker` (orderly). The seed runs the Job
+  and the only apiserver, so every power-off is of the worker: node loss =
+  worker holding the non-head leg; head loss after the VM move has put the
+  head on the worker (steps run 1, 2, 3, 4, 6, 5). Filed on stormcentral.
+- PVCs on a replicated class are stormblock-csi's (owner, rustkube-node#68).
+  Pools are config, not API: `mirror2` goes to the master as a note; the
+  test uses it when present, else `replicaSlaves: 1` with `spread: node`.
+Plan:
+1. [ ] rejoin in orchestrate.rs + tests/rejoin.rs cases; README, CHANGELOG.
+2. [ ] test: `test/requires.toml` (medium: topology two-node, faults,
+       cluster reads, StorageClass write), `raid1-two-nodes` in medium,
+       steps as above, a skip naming the issue for each missing mechanism.
+3. [ ] file: stormcentral (worker hard power-off + restore), stormblock
+       (live bitmap re-add); note to the master (mirror2 pool).
+4. [ ] sc-build; golden; propose #113 after the blockers.
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).
