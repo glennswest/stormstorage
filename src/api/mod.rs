@@ -743,7 +743,7 @@ struct CreateVolumeRequest {
 /// An owner as a request names it (#109): kind and name are required (a
 /// partial owner reads as an answer and is not one, stormblock#115);
 /// surrounding blanks go, and a blank uid is no uid.
-pub(crate) fn owner_record(o: Option<crate::inventory::Owner>) -> Result<Option<crate::inventory::Owner>, ApiError> {
+fn owner_record(o: Option<crate::inventory::Owner>) -> Result<Option<crate::inventory::Owner>, ApiError> {
     let Some(o) = o else { return Ok(None) };
     let o = crate::inventory::Owner {
         kind: o.kind.trim().to_string(),
