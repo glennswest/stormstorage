@@ -11,7 +11,9 @@
   60 s; then deleted. #109's first proof read `/apis/storage.storm.io/v1/volumes`
   on the node apiserver, which does not serve that group (stormblock does, on
   :9090, behind the node token), and a fresh install has no claim; this check
-  makes its own owned volume on a test machine instead.
+  makes its own owned volume on a test machine instead. Passed on pvetest2
+  (12.93-flowsdn, run 40e1ef3613); failed as it should on pvetest1 (12.92,
+  before #109, run a091017dfe).
 
 ### 2026-11-18 (#115)
 - **docs:** architecture.md no longer carries "not implemented" markers: the
