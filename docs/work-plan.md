@@ -1036,6 +1036,11 @@ needed), and a fresh install has no claim anyway. Now: short's
 `owner-recorded` check makes an owned volume on a test machine and reads the
 owner back from stormstorage and from the engine (inventory); run the short
 suite on pvetest, then ship with a proof that holds on a fresh install.
+41043ef: sc-build passes (build, test, clippy -D warnings, test stage).
+Runs: a091017dfe on pvetest1 fails `owner-recorded` with `GET owner: null`
+as it should — 12.92 ships stormstorage 620192e, before #109 (a negative
+control). 40e1ef3613 on pvetest2 (12.93-flowsdn, carries 920b13d) is the
+real proof; queued behind the release gate, item proposed --after-run it.
 
 ### RAID1 across two nodes, proven (#113, P0) — IN PROGRESS 2026-11-18
 Owner: "test raid1 of pvc and vm drives too … a raid1 across two nodes, in
