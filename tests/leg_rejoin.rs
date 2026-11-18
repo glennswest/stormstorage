@@ -276,14 +276,18 @@ async fn leg_with_missing_member_is_attached_again_and_rebuilt() {
     assert_eq!((r.node.as_str(), r.mode.as_str(), r.bytes), ("node-b", "rebuild", 1 << 30));
     drop(fed);
 
-    let h = head.lock().unwrap();
-    assert_eq!(h.removed, vec!["m-b".to_string()], "the stale member left");
-    assert_eq!(h.added, vec!["drive-b".to_string()]);
-    let members: Vec<&str> = h.array.as_ref().unwrap().1.iter().map(|(u, _)| u.as_str()).collect();
-    assert_eq!(members, vec!["m-a", "m-new-1"]);
-    drop(h);
-    assert_eq!(b.lock().unwrap().attaches, 1);
-    assert!(b.lock().unwrap().volumes.contains(&"node-b-vol".to_string()), "never deleted");
+    {
+        let h = head.lock().unwrap();
+        assert_eq!(h.removed, vec!["m-b".to_string()], "the stale member left");
+        assert_eq!(h.added, vec!["drive-b".to_string()]);
+        let members: Vec<&str> = h.array.as_ref().unwrap().1.iter().map(|(u, _)| u.as_str()).collect();
+        assert_eq!(members, vec!["m-a", "m-new-1"]);
+    }
+    {
+        let bm = b.lock().unwrap();
+        assert_eq!(bm.attaches, 1);
+        assert!(bm.volumes.contains(&"node-b-vol".to_string()), "never deleted");
+    }
 
     let ev = messages(&state).await;
     assert!(ev.iter().any(|m| m.contains("leg on node-b rejoining")), "{ev:?}");
@@ -310,9 +314,10 @@ async fn leg_whose_member_is_active_again_is_back_with_nothing_copied() {
     let r = v.last_resync.as_ref().expect("resync recorded");
     assert_eq!((r.mode.as_str(), r.bytes), ("member-active", 0));
     drop(fed);
-    let h = head.lock().unwrap();
-    assert!(h.added.is_empty() && h.removed.is_empty());
-    drop(h);
+    {
+        let h = head.lock().unwrap();
+        assert!(h.added.is_empty() && h.removed.is_empty());
+    }
     assert_eq!(b.lock().unwrap().attaches, 0);
     let ev = messages(&state).await;
     assert!(ev.iter().any(|m| m.contains("active again, nothing copied")), "{ev:?}");
@@ -333,9 +338,10 @@ async fn leg_volume_gone_from_its_node_is_not_rejoined() {
     assert!(v.replacing.is_none());
     assert!(v.next_rejoin_after.is_some(), "cooling down");
     drop(fed);
-    let h = head.lock().unwrap();
-    assert!(h.added.is_empty() && h.removed.is_empty(), "nothing changed on the head");
-    drop(h);
+    {
+        let h = head.lock().unwrap();
+        assert!(h.added.is_empty() && h.removed.is_empty(), "nothing changed on the head");
+    }
     let ev = messages(&state).await;
     assert!(ev.iter().any(|m| m.contains("did not rejoin") && m.contains("re-leg is needed")), "{ev:?}");
 }
