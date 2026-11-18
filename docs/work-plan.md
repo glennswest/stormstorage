@@ -1062,10 +1062,14 @@ Plan:
        `raid1-two-nodes` in medium (test/src/pair.rs, pattern.rs, kube.rs),
        a skip naming the issue for each missing mechanism (4667ceb).
 3. [x] filed stormcentral#1454 (stop-worker), stormblock#657 (live readd).
-       [ ] note to the master: a `mirror2` pool (the suite uses spread=node
+       [x] note to the master: a `mirror2` pool (the suite uses spread=node
        without it).
-4. [ ] sc-build on 4667ceb; golden; wait-owner on the VM-root question
-       (posted on #113, recommended A: stormstorage seeds legs from a golden).
+4. [x] sc-build on 4667ceb passes (build, test, clippy -D warnings, musl
+       test stage); golden requested (build a9ecb23083b8 @ 8c342f1).
+   [ ] wait-owner on the VM-root question (posted on #113, recommended A:
+       stormstorage seeds legs from a golden). Also on the pair: stormcluster#89
+       (shared store) or cluster_peers must show the worker to the master's
+       stormstorage, else `pair` fails naming it.
 Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
 try `readd` first; the VM steps per the owner's answer.
 
