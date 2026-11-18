@@ -126,7 +126,7 @@ fn claim(uid: &str) -> Value {
     json!({"kind": "PersistentVolumeClaim", "namespace": "default", "name": "data", "uid": uid})
 }
 
-async fn post(api: &str, body: Value) -> (StatusCode, Value) {
+async fn create(api: &str, body: Value) -> (StatusCode, Value) {
     let r = reqwest::Client::new().post(format!("{api}/api/v1/volumes")).json(&body).send().await.unwrap();
     let status = r.status();
     (status, r.json().await.unwrap_or(Value::Null))
@@ -139,7 +139,7 @@ async fn get_json(url: String) -> Value {
 #[tokio::test]
 async fn create_records_the_owner_returns_it_and_sends_it_to_the_engine() {
     let (api, state, m) = setup().await;
-    let (st, v) = post(&api, json!({"name": "pvc-1", "size_bytes": 1u64 << 30, "owner": claim("u1")})).await;
+    let (st, v) = create(&api, json!({"name": "pvc-1", "size_bytes": 1u64 << 30, "owner": claim("u1")})).await;
     assert!(st.is_success(), "{v}");
     assert_eq!(v["owner"], claim("u1"), "{v}");
     // The /v1 create carried it.
@@ -156,7 +156,7 @@ async fn create_records_the_owner_returns_it_and_sends_it_to_the_engine() {
     assert!(m.lock().unwrap().puts.is_empty());
 
     // No owner: none recorded, none sent.
-    let (st, v) = post(&api, json!({"name": "plain", "size_bytes": 1u64 << 30})).await;
+    let (st, v) = create(&api, json!({"name": "plain", "size_bytes": 1u64 << 30})).await;
     assert!(st.is_success(), "{v}");
     assert!(v.get("owner").is_none_or(|o| o.is_null()), "{v}");
     assert!(m.lock().unwrap().creates[1].get("owner").is_none());
@@ -166,7 +166,7 @@ async fn create_records_the_owner_returns_it_and_sends_it_to_the_engine() {
 async fn a_partial_owner_is_refused() {
     let (api, state, m) = setup().await;
     for bad in [json!({"kind": "PersistentVolumeClaim", "name": " "}), json!({"kind": "", "name": "data"})] {
-        let (st, v) = post(&api, json!({"name": "pvc-x", "size_bytes": 1u64 << 30, "owner": bad})).await;
+        let (st, v) = create(&api, json!({"name": "pvc-x", "size_bytes": 1u64 << 30, "owner": bad})).await;
         assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
     }
     assert!(m.lock().unwrap().creates.is_empty());
@@ -176,9 +176,9 @@ async fn a_partial_owner_is_refused() {
 #[tokio::test]
 async fn a_clone_takes_its_own_owner_never_its_sources() {
     let (api, _state, m) = setup().await;
-    let (st, v) = post(&api, json!({"name": "src", "size_bytes": 1u64 << 30, "owner": claim("u-src")})).await;
+    let (st, v) = create(&api, json!({"name": "src", "size_bytes": 1u64 << 30, "owner": claim("u-src")})).await;
     assert!(st.is_success(), "{v}");
-    let (st, v) = post(
+    let (st, v) = create(
         &api,
         json!({"name": "cl", "size_bytes": 1u64 << 30, "source": {"kind": "volume", "id": "src"}, "owner": claim("u-cl")}),
     )
@@ -200,7 +200,7 @@ async fn a_clone_takes_its_own_owner_never_its_sources() {
 #[tokio::test]
 async fn an_engine_volume_that_reads_otherwise_is_set_on_the_next_poll() {
     let (api, state, m) = setup().await;
-    let (st, v) = post(&api, json!({"name": "pvc-2", "size_bytes": 1u64 << 30, "owner": claim("u2")})).await;
+    let (st, v) = create(&api, json!({"name": "pvc-2", "size_bytes": 1u64 << 30, "owner": claim("u2")})).await;
     assert!(st.is_success(), "{v}");
     // The engine lost it (an older engine dropped it on create, or the
     // served volume came across on a promote with none).
