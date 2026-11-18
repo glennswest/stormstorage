@@ -191,7 +191,7 @@ async fn a_clone_takes_its_own_owner_never_its_sources() {
 
     // Without one: unclaimed, not the source's.
     let (st, v) =
-        post(&api, json!({"name": "cl2", "size_bytes": 1u64 << 30, "source": {"kind": "volume", "id": "src"}})).await;
+        create(&api, json!({"name": "cl2", "size_bytes": 1u64 << 30, "source": {"kind": "volume", "id": "src"}})).await;
     assert!(st.is_success(), "{v}");
     assert!(v.get("owner").is_none_or(|o| o.is_null()), "{v}");
     assert!(m.lock().unwrap().creates.last().unwrap().get("owner").is_none());
