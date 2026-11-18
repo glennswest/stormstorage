@@ -1013,7 +1013,7 @@ Status 2026-11-13: 8e5bc6e pushed (README, test, changelog); sc-build passes
 `wait-owner --action` card with the command. Next: once `component export`
 shows `apis`, request the golden, close #82.
 
-### Volume owner on create (#109, P1, for stormblock-csi#69)
+### Volume owner on create (#109, P1, for stormblock-csi#69) — DONE 2026-11-18
 `POST /api/v1/volumes` takes `owner {kind, namespace?, name, uid?}`
 (stormblock#115's shape; kind and name required). Plan:
 - `DistVolume.owner` (recorded, replicated, on GET and the listing). A
@@ -1025,6 +1025,11 @@ shows `apis`, request the golden, close #82.
   it; an owner that differs is set with `PUT /api/v1/volumes/{local id}/owner`.
   Level-triggered, so a promote, re-export, re-leg or move is covered.
   Matched by name (a /v1 id is not the engine-local id the route takes).
+Done 2026-11-18: 766dd6a (+ fixes 8a9817d); sc-build passes (`--locked`
+build + test + clippy -D warnings; 107 unit incl. 4 in owner.rs,
+tests/owner.rs 4/4). Golden requested (build 58643ca97fd8); shipped with
+stormblock-csi#69's proof. Not run on real engines yet: the proof is the
+first pvetest node with the CSI test claim.
 
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
