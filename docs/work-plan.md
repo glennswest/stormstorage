@@ -1073,6 +1073,13 @@ Plan:
 Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
 try `readd` first; the VM steps per the owner's answer.
 
+### No stubs (#115, P-1, stormcentral#1455) — DONE 2026-11-18
+
+- Only markers were in docs/architecture.md (header line, an empty
+  "Not implemented yet:" bullet, StormFS "*Design.*"). Reworded: all
+  sections describe what runs; StormFS's remaining work is stormfs#64.
+- Proof grep empty (case-insensitive too).
+
 ### Other open
 - [x] Golden for #59 and #60: golden-stormstorage-0768c8488a1c, release
       request stormcos#312 (2026-10-07).

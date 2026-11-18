@@ -2,8 +2,9 @@
 
 **Status:** v1, 2026-08-26. Written with stormblock v9.13.0, stormdrive
 v0.3.0, and stormfs v2 (in design) as the surrounding stack. Checked
-against the code on 2026-09-24 (v0.3.0). Sections that describe what
-does not run yet are marked **Design, not implemented**. The
+against the code on 2026-09-24 (v0.3.0). Every section describes what
+runs; where the work is another component's (StormFS consuming the
+registry), the section names that component's issue. The
 [README](../README.md) documents what runs, including every config key
 and route.
 
@@ -242,7 +243,6 @@ optimization.
   members active and the old leg's volume deleted.
 - **Served to consumers** (*implemented, #2*): a volume pinned to the
   head's array, attached over NVMe-TCP — see *Consumer serving* below.
-- **Not implemented yet:**
 - **Serving to named consumer hosts** (*implemented, #51/#53*): a
   consumer names its `host_nqn` (`POST …/export/hosts`, or `hosts` on
   create and export), and the serving engine serves the volume to that
@@ -404,8 +404,8 @@ on an interval, N kept), not a synchronous mirror member. See
 
 ### StormFS
 
-*Design.* The stormstorage side exists (`GET /api/v1/nodes`,
-`POST /api/v1/volumes`). Consuming it is stormfs#64. There is one node
+*stormstorage's side runs* (`GET /api/v1/nodes`,
+`POST /api/v1/volumes`). Consuming it is stormfs's work (stormfs#64). There is one node
 registry in the fleet: stormfs reads stormstorage's, and stormstorage does
 not forward announcements anywhere (owner, 2026-10-09, #35).
 

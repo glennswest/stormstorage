@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-18 (#115)
+- **docs:** architecture.md no longer carries "not implemented" markers: the
+  header says every section describes what runs, a dangling "Not implemented
+  yet:" bullet is gone, and StormFS names its side as stormfs's work
+  (stormfs#64). No stub in code or docs (stormcentral#1455 sweep).
+
 ### 2026-11-18 (#113)
 - **fix:** A lost leg on a node that is not the head comes back when its node answers again. Before, only the head's leg had a way back (#26): the re-leg looked for another failure domain, and with two nodes there is none, so a node powered off and on left its volumes `degraded` for good. Now the head's array is read: a member active again is the leg back with nothing copied; otherwise the same leg volume is attached to the head again, its stale member removed, the drive reopened and added back, and rebuilt (a replacement marked `rejoin`, resumed after a restart, undone without deleting the leg volume if it fails). The volume records `last_resync {node, mode, bytes, secs, finished_at}`, with an event. A leg volume gone from its node is left to a re-leg. Its own cooldown (`next_rejoin_after`), so a re-leg that failed during the outage does not delay it.
 - **test:** medium's `raid1-two-nodes` (test/src/pair.rs): RAID1 across the runner's two-node pair. Two volumes, one headed on each node; one hard power cycle of the worker is node loss for one and head loss for the other. A stormblock-csi claim with a writer pod (`/test pattern write|verify`, the test image itself) where the driver is deployed. Steps, the proof line and `/results/raid1-two-nodes/<step>.json` in the README. `test/requires.toml`: medium is `topology = "two-node"`, reads Nodes, PVs and CSIDrivers, and writes StorageClasses; the Job mounts its ServiceAccount token and gets `STORM_IMAGE`. Power steps skip until the runner's `stop-worker` (stormcentral#1454); VM steps skip until the owner decides how a mirrored VM root is made.
