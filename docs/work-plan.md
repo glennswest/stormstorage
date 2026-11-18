@@ -1030,6 +1030,12 @@ build + test + clippy -D warnings; 107 unit incl. 4 in owner.rs,
 tests/owner.rs 4/4). Golden requested (build 58643ca97fd8); shipped with
 stormblock-csi#69's proof. Not run on real engines yet: the proof is the
 first pvetest node with the CSI test claim.
+**Reopened 2026-11-18:** that proof read `/apis/storage.storm.io/v1/volumes`
+on the node apiserver: 404 (stormblock serves the group on :9090, token
+needed), and a fresh install has no claim anyway. Now: short's
+`owner-recorded` check makes an owned volume on a test machine and reads the
+owner back from stormstorage and from the engine (inventory); run the short
+suite on pvetest, then ship with a proof that holds on a fresh install.
 
 ### RAID1 across two nodes, proven (#113, P0) — IN PROGRESS 2026-11-18
 Owner: "test raid1 of pvc and vm drives too … a raid1 across two nodes, in

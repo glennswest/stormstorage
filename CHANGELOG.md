@@ -3,6 +3,16 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-18 (#109, live proof)
+- **test:** short's `owner-recorded` (test/src/checks.rs): a single-leg
+  create with an owner `{kind: PersistentVolumeClaim, namespace, name, uid}`
+  is read back on `GET` and the listing, and the leg's engine volume carries
+  it in the node's inventory (the engine's own record, stormblock#115) within
+  60 s; then deleted. #109's first proof read `/apis/storage.storm.io/v1/volumes`
+  on the node apiserver, which does not serve that group (stormblock does, on
+  :9090, behind the node token), and a fresh install has no claim; this check
+  makes its own owned volume on a test machine instead.
+
 ### 2026-11-18 (#115)
 - **docs:** architecture.md no longer carries "not implemented" markers: the
   header says every section describes what runs, a dangling "Not implemented

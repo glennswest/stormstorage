@@ -985,7 +985,7 @@ devices, and carries no stormblock of its own.
 
 | suite | budget | what it checks |
 |---|---|---|
-| `short` | < 2 min | the API answers; a healthy storage node (the adopted local engine); slab pools and the feed; a single-leg volume created, served as its leg, and deleted |
+| `short` | < 2 min | the API answers; a healthy storage node (the adopted local engine); slab pools and the feed; a single-leg volume created, served as its leg, and deleted; `owner-recorded` (#109): a create with a `PersistentVolumeClaim` owner carries it on `GET` and the listing, and the leg's engine volume shows it in the node's inventory within 60 s |
 | `medium` | < 30 min | the short checks, plus: the leg is a real volume on the engine and goes on delete; placement dry run (fits, and an explained refusal); refusals (duplicate 409, reserved `-mirror`, unplaceable replicas leave nothing); republish unchanged; assemble and move refused on a single leg; 404s; auth (open, or closed to writes without the token); RAID1 across two nodes (skip with fewer); events; no orphans; then **`raid1-two-nodes`** (#113, below); cleanup. Declared `topology = "two-node"` (`test/requires.toml`): it runs on the runner's pair, not on one machine |
 | `long` | the night window | waves of 64 MiB volumes sized from the healthy nodes' free bytes (4 to 64, `STORM_WAVE_MAX` caps), 8 at a time: create p50/max per wave, then delete and settle, then count what is left (volumes, engine legs, orphans). A wave with errors, a residue, or a p50 over twice wave 1's fails; `trend` names the first regressed wave |
 

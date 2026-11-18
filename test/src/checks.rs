@@ -93,6 +93,62 @@ pub async fn single_leg_lifecycle(api: &Api, env: &Env, tag: &str) -> Outcome {
     Ok(detail)
 }
 
+/// #109: a create with an owner records it (`GET` and the listing) and the
+/// leader writes it to the engine volume (stormblock#115), seen through the
+/// node's inventory — what stormblock-csi sends for a claim.
+pub async fn owner_recorded(api: &Api, env: &Env, tag: &str) -> Outcome {
+    if free_bytes(api).await? < 4 * SIZE {
+        return Err(Why::Skip(format!("less than {} MiB free on healthy nodes", 4 * SIZE / MIB)));
+    }
+    let name = env.vol(tag);
+    let uid = format!("stormstorage-test-{}", env.run_id);
+    let owner = json!({"kind": "PersistentVolumeClaim", "namespace": "stormstorage-test", "name": name, "uid": uid});
+    let r = api
+        .post(
+            "/api/v1/volumes",
+            json!({"name": name, "size_bytes": SIZE, "replicas": 1,
+                   "hosts": [{"host_nqn": crate::api::CONSUMER_NQN}], "owner": owner}),
+        )
+        .await?;
+    if !r.ok() {
+        return Err(Why::Fail(format!("create {name}: {} {}", r.status, r.body)));
+    }
+    let result = async {
+        let v = api.get(&format!("/api/v1/volumes/{name}")).await?;
+        ensure(v["owner"] == owner, format!("GET owner: {}", v["owner"]))?;
+        let listed = api.volumes().await?;
+        let l = listed.iter().find(|x| x["name"] == name.as_str());
+        ensure(l.is_some_and(|l| l["owner"] == owner), "the listing does not carry the owner")?;
+        let node = v["legs"][0]["node"].as_str().unwrap_or_default().to_string();
+        ensure(!node.is_empty(), format!("no leg node: {v}"))?;
+        // The inventory refreshes once per poll; the create already sent it
+        // and the poll re-applies it, so a few polls are plenty.
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let inv = api.get(&format!("/api/v1/nodes/{node}/inventory")).await?;
+            let ev = inv["volumes"]
+                .as_array()
+                .and_then(|a| a.iter().find(|x| x["name"] == name.as_str()).cloned());
+            if let Some(ev) = &ev {
+                let o = &ev["owner"];
+                if o["kind"] == "PersistentVolumeClaim" && o["uid"] == uid.as_str() && o["name"] == name.as_str() {
+                    return Ok::<_, Why>(format!("{name}: owner on the record, the listing and {node}'s engine volume ({o})"));
+                }
+            }
+            if std::time::Instant::now() >= end {
+                return Err(Why::Fail(format!(
+                    "{node}'s engine volume {name} after 60 s: {}",
+                    ev.map_or("not in the inventory".to_string(), |e| format!("owner {}", e["owner"]))
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    }
+    .await;
+    api.remove(&name).await?;
+    result
+}
+
 /// Delete every volume this run created (by name prefix). Best-effort; the
 /// count of what could not be removed.
 pub async fn cleanup(api: &Api, env: &Env) -> usize {
