@@ -9,8 +9,11 @@
 mod api;
 mod checks;
 mod env;
+mod kube;
 mod long;
 mod medium;
+mod pair;
+mod pattern;
 mod report;
 mod short;
 
@@ -19,6 +22,11 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
+    // The two-node suite's claim pods run this image as their workload (#113).
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("pattern") {
+        std::process::exit(pattern::main(&args[2..]));
+    }
     let suite = std::env::args()
         .nth(1)
         .or_else(|| std::env::var("STORM_SUITE").ok())

@@ -986,7 +986,7 @@ devices, and carries no stormblock of its own.
 | suite | budget | what it checks |
 |---|---|---|
 | `short` | < 2 min | the API answers; a healthy storage node (the adopted local engine); slab pools and the feed; a single-leg volume created, served as its leg, and deleted |
-| `medium` | < 30 min | the short checks, plus: the leg is a real volume on the engine and goes on delete; placement dry run (fits, and an explained refusal); refusals (duplicate 409, reserved `-mirror`, unplaceable replicas leave nothing); republish unchanged; assemble and move refused on a single leg; 404s; auth (open, or closed to writes without the token); RAID1 across two nodes (skip with fewer); events; no orphans; cleanup |
+| `medium` | < 30 min | the short checks, plus: the leg is a real volume on the engine and goes on delete; placement dry run (fits, and an explained refusal); refusals (duplicate 409, reserved `-mirror`, unplaceable replicas leave nothing); republish unchanged; assemble and move refused on a single leg; 404s; auth (open, or closed to writes without the token); RAID1 across two nodes (skip with fewer); events; no orphans; then **`raid1-two-nodes`** (#113, below); cleanup. Declared `topology = "two-node"` (`test/requires.toml`): it runs on the runner's pair, not on one machine |
 | `long` | the night window | waves of 64 MiB volumes sized from the healthy nodes' free bytes (4 to 64, `STORM_WAVE_MAX` caps), 8 at a time: create p50/max per wave, then delete and settle, then count what is left (volumes, engine legs, orphans). A wave with errors, a residue, or a p50 over twice wave 1's fails; `trend` names the first regressed wave |
 
 Every volume is named `t-<run id>-…` and is deleted on success, on failure
@@ -998,6 +998,30 @@ Nothing connects to it; the checks read that host's coordinates. With the node's
 Results are JSON lines on stdout and in `/results/results.jsonl`. Exit
 codes: 0 all passed, 1 a test failed, 2 the run could not happen (no
 `STORM_NODE`, or stormstorage not answering).
+
+**`raid1-two-nodes`** (#113, `test/src/pair.rs`) proves RAID1 across the
+pair's two nodes. Every power-off is the worker's: the master runs the Job
+and the only apiserver. So two 256 MiB volumes are made, `M` headed on the
+master and `W` on the worker (`prefer_node`), and one power cycle of the
+worker is node loss for `M` and head loss for `W`. Steps: `pair` (master
+and worker Ready, both healthy storage nodes); `volumes` (two legs each,
+one per node, every copy `in_sync`); `claim` (a stormblock-csi class with
+one slave per node, pool `mirror2` when it exists; a pod on the master
+writing a 32 MiB pattern and a tick a second, `/test pattern`; its PV a
+volume with a leg on each node; skip where stormblock-csi is not deployed);
+`vm` (skip, see below); `power-off-worker` (the runner's `stop-worker`
+fault, stormcentral#1454; skip until it exists); `node-loss` (`M` degraded,
+the worker's leg lost, an event; the claim's writer still writing);
+`head-loss` (`W` re-served from the master by the automatic re-head when
+it is on, else fence + promote; seconds from power-off); `power-on-worker`;
+`resync` (every volume `assembled` again, the leg back with `last_resync`
+mode, bytes and seconds); `claim-intact` (a reader pod finds the pattern
+intact); `vm-move` (skip). A VM whose root disk is mirrored across nodes
+cannot be made yet (VM roots are node-local golden clones), and that is
+the owner's decision on #113. Each step writes the volumes, replicas, PV
+and claim to `/results/raid1-two-nodes/<step>.json`. Last comes a plain
+line `raid1-two-nodes <detail> pass`, only when every step passed (a skip
+is no proof), and the result `raid1-two-nodes`.
 
 `test/build.sh` builds only the test crate (static musl) and stages it in
 `test/.stage/`. `STAGE_ONLY=1` stops there; otherwise it also runs

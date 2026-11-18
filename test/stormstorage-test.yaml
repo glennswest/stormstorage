@@ -7,8 +7,10 @@
 #                            stormstorage, which drives the node's stormblock)
 #             raid1-across-nodes needs 2 healthy storage nodes registered with
 #             that stormstorage; with fewer it reports skip, never pass.
-#   api:      none          (no ServiceAccount token; nothing is created in the
-#                            cluster)
+#   api:      short, long: none. medium (#113, raid1-two-nodes): the run's
+#             ServiceAccount (its token mounted) reads Nodes, PVs and
+#             CSIDrivers, writes one StorageClass, and makes a claim and two
+#             pods in its namespace (test/requires.toml). topology two-node.
 #   node:     STORM_NODE:9093, the node's stormstorage. Reads are open. Writes
 #             create volumes named t-<run id>-… (64 MiB, one leg unless the
 #             test says otherwise) on the node's engine(s) and delete them, on
@@ -40,7 +42,8 @@ spec:
       labels: { storm.io/test-run: "${RUN_ID}" }
     spec:
       restartPolicy: Never
-      automountServiceAccountToken: false
+      # medium's raid1-two-nodes talks to the apiserver (#113).
+      automountServiceAccountToken: true
       containers:
         - name: stormstorage-test
           image: ${IMAGE}
@@ -53,6 +56,8 @@ spec:
             - { name: STORM_TIMEOUT, value: "${TIMEOUT}" }
             - { name: STORM_COMPONENT, value: stormstorage }
             - { name: STORM_COMMIT, value: "${COMMIT}" }
+            # The claim's pods run this image (`/test pattern …`, #113).
+            - { name: STORM_IMAGE, value: "${IMAGE}" }
           volumeMounts:
             - { name: results, mountPath: /results }
           securityContext:

@@ -1,0 +1,27 @@
+# What stormstorage's suites need beyond the runner's namespace-only Role
+# (stormcentral docs/test-standard.md). short and long need nothing: they
+# drive the node's stormstorage over its REST API.
+
+[medium]
+# #113: RAID1 across two nodes (raid1-two-nodes, test/src/pair.rs). On the
+# runner's two-node pair, a master and a worker (stormcentral#1271), with
+# the Job on the master. On one machine the runner skips the suite.
+topology = "two-node"
+# The hard power-off of the worker the node-loss and head-loss steps need
+# is stormcentral#1454 (`stop-worker`). A fault the runner does not know
+# refuses the suite, so it is declared once that lands:
+#   faults = ["stop-worker"]
+# Until then those steps report skip naming it, never pass.
+cluster_read = [
+  # The pair: which node is the master and which the worker, their IPs.
+  { apiGroup = "", resource = "nodes" },
+  # The claim's PV: its volume handle is the stormstorage volume.
+  { apiGroup = "", resource = "persistentvolumes" },
+  # Whether stormblock-csi is deployed (it is optional on stormcos).
+  { apiGroup = "storage.k8s.io", resource = "csidrivers" },
+]
+# The replicated class the claim is made on (run-labelled, removed by the
+# runner's cleanup as well as the suite's).
+cluster_write = [
+  { apiGroup = "storage.k8s.io", resource = "storageclasses" },
+]

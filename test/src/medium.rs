@@ -27,6 +27,8 @@ pub async fn run(env: &Env, api: &Api, r: &mut Report) -> Result<(), String> {
     r.run("auth-guard", auth_guard(api)).await;
     r.run("raid1-across-nodes", raid1(api, env)).await;
     r.run("events-and-orphans", events_and_orphans(api, env)).await;
+    // #113: RAID1 across the pair, node loss, the leg back, head loss.
+    crate::pair::run(env, api, r).await;
     let left = checks::cleanup(api, env).await;
     r.run("cleanup", async move {
         ensure(left == 0, format!("{left} volume(s) of this run could not be deleted"))?;
