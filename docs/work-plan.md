@@ -1118,7 +1118,7 @@ try `readd` first; the VM steps per the owner's answer.
   SECRETS.md), and the kubelet's `--stormstorage-token-file` can name one:
   no rustkube-node flag. Code: `src/api/kubeauth.rs`, `auth.rs`; test
   `tests/migration_bearer.rs`.
-- Left to stormcos#682: point `--stormstorage-token-file` at a token on every
+- [x] Done b97f800; sc-build passed; image build 30694919e592 requested; issue closed. Left to stormcos#682 (commented there): point `--stormstorage-token-file` at a token on every
   node and grant its SA `create`/`update` on `storage.storm.io`
   `vmmigrations`; stormstorage's own SA needs `system:auth-delegator`.
 
