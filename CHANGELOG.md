@@ -3,6 +3,9 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-18 (docs refresh)
+- **docs:** architecture.md: leg rejoin (#113) and volume owner (#109) added; checked-against date moved to 2026-11-18. README, replication.md and CLAUDE.md already matched the code since 2026-11-12.
+
 ### 2026-11-18 (#109, live proof)
 - **test:** short's `owner-recorded` (test/src/checks.rs): a single-leg
   create with an owner `{kind: PersistentVolumeClaim, namespace, name, uid}`

@@ -2,7 +2,7 @@
 
 **Status:** v1, 2026-08-26. Written with stormblock v9.13.0, stormdrive
 v0.3.0, and stormfs v2 (in design) as the surrounding stack. Checked
-against the code on 2026-09-24 (v0.3.0). Every section describes what
+against the code on 2026-11-18 (v0.3.0). Every section describes what
 runs; where the work is another component's (StormFS consuming the
 registry), the section names that component's issue. The
 [README](../README.md) documents what runs, including every config key
@@ -220,7 +220,13 @@ optimization.
   active, and the volume is assembled again (#26); a head that answers
   without the array (its engine restarted) gets the same array put back
   together from the legs' superblocks (*implemented, #15*). With replication peers,
-  exactly one instance acts (`[recovery] enabled = true`). Unit-tested;
+  exactly one instance acts (`[recovery] enabled = true`). A lost leg
+  whose node answers again **rejoins** (*implemented, #113*): its member
+  active again is the leg back with nothing copied; otherwise the same
+  leg volume is re-attached to the head and rebuilt in full (a
+  replacement marked `rejoin`, its own cooldown `next_rejoin_after`), and
+  the volume records `last_resync`. This is the way back when there is no
+  other failure domain to re-leg onto (two nodes). Unit-tested;
   live-verified with `scripts/e2e-releg.sh` (three stormblock 20.0.0
   engines, 2026-10-13).
   ```
@@ -345,6 +351,13 @@ Live-verified against stormblock 20.0.0 (`scripts/e2e-replication.sh`,
 2026-10-13). The backup tier (#46) holds
 point-in-time backups (owner decision B, 2026-10-09). See
 [async-legs.md](async-legs.md); the copy waits on stormblock#399/#400.
+
+**Owner (*implemented, #109*).** A create may carry `owner {kind,
+namespace?, name, uid?}` (stormblock#115's shape; a PVC for
+stormblock-csi). It is recorded on the DistVolume and written to every
+engine volume made for it (legs, replacement legs, the served mirror, a
+clone), so the engine's own inventory names the claim.
+`PUT /api/v1/volumes/{id}/owner` puts it back. See the README.
 
 ### Placement
 
