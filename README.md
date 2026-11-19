@@ -843,7 +843,7 @@ with a token set, their Delete/Publish actions get 401.
 | Method | Path | What |
 |---|---|---|
 | GET | `/`, `/ui`, `/ui/` | Embedded UI. |
-| GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. After a state file was recovered at startup (#81) it adds `conditions: [{type: "state_recovered", severity, message, error, kept_as, started_from (previous/empty), at}]`; status stays `ok` (the process serves). |
+| GET | `/api/v1/health` | `{"status":"ok","version":"…"}`: the liveness/health check. After a state file was recovered at startup (#81) it adds `conditions: [{type: "state_recovered", severity, message, error, kept_as, started_from (previous/empty), at}]`; status stays `ok` (the process serves). With `[kubernetes]` enabled it adds `migration_bearer: {review: "TokenReview+SubjectAccessReview", resource: "storage.storm.io/vmmigrations"}`: the disk-migration verbs take a Kubernetes bearer (#117). |
 | GET | `/api/v1/nodes` | Registry: name, engine_url, tier, effective labels, status (with `source`: `static`, `registered`, `local` or `member`). |
 | GET | `/api/v1/nodes/{name}/inventory` | That node's slabs and engine volumes, each volume as the engine reports it (with `placement`, `kind`, `in_use`, `attachments`, `consumer` when the engine sends them) plus `slabs` and `placed_by` (`engine`, else `slots`, `parent`, `role`, `unknown`); each slab with its `drive`; `fetched_at`, `error`. |
 | GET | `/api/v1/topology` | Rungs, plus each node's label chain, tier and health. |

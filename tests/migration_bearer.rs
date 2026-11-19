@@ -193,3 +193,24 @@ async fn no_apiserver_is_a_503_not_a_pass() {
     assert_eq!(r.status(), 503);
     assert_eq!(r.json::<Value>().await.unwrap()["code"], "review_unavailable");
 }
+
+/// The node shows the review is on (the #117 `shipped` proof reads this):
+/// health names it with `[kubernetes]` enabled, and not without.
+#[tokio::test]
+async fn health_says_whether_the_bearer_is_reviewed() {
+    let s = stormstorage("https://127.0.0.1:1", "health").await;
+    let h: Value = reqwest::get(format!("{s}/health")).await.unwrap().json().await.unwrap();
+    assert_eq!(
+        h["migration_bearer"],
+        json!({"review": "TokenReview+SubjectAccessReview", "resource": "storage.storm.io/vmmigrations"}),
+        "{h}"
+    );
+
+    let mut config = Config::default();
+    config.local.enabled = false;
+    config.kubernetes.enabled = false;
+    let state = Arc::new(AppState::new(config, FedState::default(), None));
+    let off = serve(stormstorage::api::router(state)).await;
+    let h: Value = reqwest::get(format!("{off}/api/v1/health")).await.unwrap().json().await.unwrap();
+    assert!(h.get("migration_bearer").is_none(), "{h}");
+}

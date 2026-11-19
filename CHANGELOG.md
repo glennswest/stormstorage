@@ -3,6 +3,13 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-19 (#117, health proof)
+- **feat:** `/api/v1/health` adds `migration_bearer {review, resource}` when
+  `[kubernetes]` is enabled: the disk-migration verbs take a Kubernetes bearer
+  (#117). The startup log line was not a usable proof: a `log:` proof reads
+  the install's log, which never carries stormstorage's own output. The proof
+  is now `get:http://{node}:9093/api/v1/health ~ migration_bearer`.
+
 ### 2026-11-19 (#117, proof)
 - **feat:** at startup, stormstorage logs that the disk-migration verbs take a
   Kubernetes bearer (TokenReview + SubjectAccessReview on

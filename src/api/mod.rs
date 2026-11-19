@@ -354,6 +354,14 @@ async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     if !conditions.is_empty() {
         h["conditions"] = json!(conditions);
     }
+    if s.config.kubernetes.enabled {
+        // #117: the disk-migration verbs also take a Kubernetes bearer,
+        // reviewed against this apiserver (src/api/auth.rs).
+        h["migration_bearer"] = json!({
+            "review": "TokenReview+SubjectAccessReview",
+            "resource": format!("storage.storm.io/{}", kubeauth::RESOURCE),
+        });
+    }
     if let Some(store) = &s.store {
         let st = store.status();
         h["store"] = json!({ "backend": "etcd", "role": st.role, "leader": st.leader, "publish": st.publish });

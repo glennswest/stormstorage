@@ -1125,4 +1125,9 @@ try `readd` first; the VM steps per the owner's answer.
   wait on it. Fix: a startup log line naming the bearer review ("disk-migration
   verbs take a Kubernetes bearer"), which becomes the `shipped --proof`. The full
   end to end stays with #101 and MOBILITY test 2.
+- [ ] Reopened again: the proof `log:disk-migration verbs take a Kubernetes
+  bearer` failed on pvetest2 (12.96-flowsdn): a `log:` proof reads the
+  install's log, not stormstorage's. Fix: `/api/v1/health` reports
+  `migration_bearer` with `[kubernetes]` on; proof
+  `get:http://{node}:9093/api/v1/health ~ migration_bearer`.
 

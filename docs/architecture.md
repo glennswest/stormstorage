@@ -595,7 +595,7 @@ up to 64 MiB of slot table inline (stormblock#397).
 
 ```
 GET  / , /ui , /ui/                   embedded UI
-GET  /api/v1/health                   {status, version}
+GET  /api/v1/health                   {status, version, migration_bearer?}
 GET  /api/v1/nodes                    registry + status
 GET  /api/v1/nodes/{name}/inventory   slabs + engine volumes placed on them
 GET  /api/v1/topology                 rungs + each node's label chain
