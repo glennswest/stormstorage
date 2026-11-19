@@ -3,6 +3,20 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-19 (#117)
+- **feat:** the disk-migration verbs a kubelet calls in a live migration
+  (`POST /api/v1/nodes/{n}/volumes/{v}/migrate`, `POST
+  /api/v1/migrations/{id}/{cutover|complete|abort|retry}`) take a
+  Kubernetes bearer as well as `[api] api_token`. It is reviewed against
+  `[kubernetes]`: TokenReview, then a SubjectAccessReview on
+  `storage.storm.io` `vmmigrations` (`create` to start, `update` + the
+  migration id for a step); 401/403/503 as not valid / no role / no
+  apiserver, answers kept a minute. On a multi-node cluster the leader's
+  `api_token` is on its own node only, so a kubelet elsewhere had nothing
+  the leader accepted (rustkube-node#40, stormcos#682). The kubelet's
+  `--stormstorage-token-file` names a cluster-issued token instead; no new
+  kubelet flag. Every other write is unchanged.
+
 ### 2026-11-18 (docs refresh)
 - **docs:** architecture.md: leg rejoin (#113) and volume owner (#109) added; checked-against date moved to 2026-11-18. README, replication.md and CLAUDE.md already matched the code since 2026-11-12.
 

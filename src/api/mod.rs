@@ -3,6 +3,7 @@
 
 pub mod auth;
 mod backups;
+pub mod kubeauth;
 mod snapshots;
 mod vmmigrations;
 
@@ -56,6 +57,8 @@ pub struct AppState {
     pub state_recovery: Option<crate::model::StateRecovery>,
     /// The cluster's membership as last read from the apiserver (#56).
     pub members: std::sync::RwLock<Members>,
+    /// Kubernetes bearers reviewed for the disk-migration verbs (#117).
+    pub reviews: kubeauth::Reviews,
 }
 
 /// What this instance last read of stormcluster's `ClusterMember`s (#56).
@@ -97,6 +100,7 @@ impl AppState {
             store,
             state_recovery: None,
             members: Default::default(),
+            reviews: Default::default(),
         })
     }
 

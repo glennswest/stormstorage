@@ -14,6 +14,12 @@
 //!   heartbeat sends no token, and a node enrolls with no engine change.
 //!   They close once the heartbeat can carry one (stormblock#214).
 //!
+//! The disk-migration verbs a kubelet calls (`POST
+//! /api/v1/nodes/{n}/volumes/{v}/migrate` and a migration's cutover,
+//! complete, abort and retry) also take a Kubernetes bearer the cluster
+//! issued, reviewed against `[kubernetes]` (#117, [`super::kubeauth`]): on a
+//! multi-node cluster the leader's `api_token` is on the leader's node only.
+//!
 //! An empty token leaves the API open, as before.
 
 use super::AppState;
@@ -42,6 +48,14 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+fn refuse(status: StatusCode, code: &str, error: String) -> Response {
+    let mut r = (status, Json(json!({ "error": error, "code": code }))).into_response();
+    if status == StatusCode::UNAUTHORIZED {
+        r.headers_mut().insert(header::WWW_AUTHENTICATE, header::HeaderValue::from_static("Bearer"));
+    }
+    r
+}
+
 pub async fn require_token(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let token = s.config.api.api_token.as_bytes();
     if token.is_empty() || !guarded(req.method(), req.uri().path()) {
@@ -52,22 +66,54 @@ pub async fn require_token(State(s): State<Arc<AppState>>, req: Request, next: N
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim);
-    match presented {
-        Some(t) if same(t.as_bytes(), token) => next.run(req).await,
-        _ => {
-            tracing::warn!("unauthorized {} {}", req.method(), req.uri().path());
-            (
-                StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Bearer")],
-                Json(json!({
-                    "error": "this request needs Authorization: Bearer <api.api_token>",
-                    "code": "unauthorized",
-                })),
-            )
-                .into_response()
-        }
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    if presented.as_deref().is_some_and(|t| same(t.as_bytes(), token)) {
+        return next.run(req).await;
     }
+    let (method, path) = (req.method().clone(), req.uri().path().to_string());
+    // A disk-migration verb with a bearer that is not ours: the cluster's
+    // apiserver says whether it may (#117).
+    if let (Some(bearer), Some(ask)) = (presented.as_deref(), super::kubeauth::migration_ask(&method, &path)) {
+        use super::kubeauth::{Review, RESOURCE};
+        return match s.reviews.review(&s.config.kubernetes, bearer, &ask).await {
+            Review::Allowed(user) => {
+                tracing::info!(%user, verb = ask.verb, "{method} {path}: Kubernetes bearer allowed");
+                next.run(req).await
+            }
+            Review::Denied(user, why) => {
+                tracing::warn!(%user, "{method} {path}: forbidden: {why}");
+                refuse(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    format!("{user} may not {} storage.storm.io {RESOURCE}: {why}", ask.verb),
+                )
+            }
+            Review::Unauthenticated(why) => {
+                tracing::warn!("{method} {path}: bearer is neither api_token nor a valid Kubernetes token: {why}");
+                refuse(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    format!("this request needs Authorization: Bearer <api.api_token> or a Kubernetes bearer: {why}"),
+                )
+            }
+            Review::Unavailable(why) => {
+                tracing::warn!("{method} {path}: cannot review a Kubernetes bearer: {why}");
+                refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "review_unavailable",
+                    format!("the bearer is not api_token, and the apiserver could not review it: {why}"),
+                )
+            }
+        };
+    }
+    tracing::warn!("unauthorized {method} {path}");
+    refuse(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "this request needs Authorization: Bearer <api.api_token>".into(),
+    )
 }
 
 #[cfg(test)]

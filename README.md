@@ -807,8 +807,8 @@ want a node whose `engine_url` other engines can reach (`[[nodes]]`).
 
 ## API (:9093)
 
-Errors return `{"error": "...", "code": "not_found|bad_request|conflict|engine|unauthorized"}`
-with HTTP 404/400/409/502/401.
+Errors return `{"error": "...", "code": "not_found|bad_request|conflict|engine|unauthorized|forbidden|review_unavailable"}`
+with HTTP 404/400/409/502/401/403/503.
 
 **Auth (#6).** With `[api] api_token` set, these need
 `Authorization: Bearer <token>`, else 401 `unauthorized`: every request
@@ -819,6 +819,22 @@ without a token:
   Anyone who can reach the port may look (the family posture).
 - `storage/register` and `storage/deregister`: stormblock's heartbeat sends
   no token yet (stormblock#214).
+
+**A node's Kubernetes bearer for the disk-migration verbs (#117).** On a
+multi-node cluster one stormstorage leads (#56) and its `api_token` is on
+its own node, so a kubelet elsewhere (rustkube-node#40) holds none. The
+verbs a live migration calls — `POST /api/v1/nodes/{n}/volumes/{v}/migrate`
+and `POST /api/v1/migrations/{id}/{cutover|complete|abort|retry}` — also take
+a Kubernetes bearer, which stormstorage reviews against `[kubernetes]`: a
+TokenReview, then a SubjectAccessReview on `storage.storm.io`
+`vmmigrations`, verb `create` to start and `update` (named by the migration
+id) for a step. Not a valid token: 401 `unauthorized`; valid without the
+role: 403 `forbidden`; the apiserver cannot be asked: 503
+`review_unavailable`. An answer is kept a minute per (bearer, verb, name).
+The reviews are asked with stormstorage's own `[kubernetes]` token, which
+needs `create` on `tokenreviews` and `subjectaccessreviews`
+(`system:auth-delegator`). Every other write still takes the `api_token`
+alone.
 
 The embedded UI asks for the token the first time a change gets a 401 and
 keeps it for the tab. stormd's proxy and stormconsole send no token, so

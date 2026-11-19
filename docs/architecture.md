@@ -630,7 +630,11 @@ when set, is required as a bearer token on every inbound write (volume
 create/delete/move/export/assemble, replicate) and sent on outbound peer pushes.
 Reads, the placement dry run and stormblock self-registration stay open;
 register/deregister close once the heartbeat carries a token
-(stormblock#214). Empty = open (#6).
+(stormblock#214). Empty = open (#6). The disk-migration verbs (a VM disk's
+`migrate`, a migration's cutover/complete/abort/retry) also take a
+Kubernetes bearer, reviewed against `[kubernetes]` (TokenReview, then a
+SubjectAccessReview on `storage.storm.io` `vmmigrations`), since a kubelet on
+a node that does not lead holds no `api_token` the leader accepts (#117).
 
 ## UI
 

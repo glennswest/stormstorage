@@ -188,7 +188,7 @@ pub fn join(node: &str, inv: &mut NodeInventory, claims: &BTreeMap<(String, Stri
     }
 }
 
-fn client(cfg: &KubeConfig) -> anyhow::Result<reqwest::Client> {
+pub(crate) fn client(cfg: &KubeConfig) -> anyhow::Result<reqwest::Client> {
     let mut http = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .danger_accept_invalid_certs(cfg.skip_tls_verify());

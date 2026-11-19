@@ -1110,3 +1110,15 @@ try `readd` first; the VM steps per the owner's answer.
   database, #37; auth covers assemble; replicate carries orphans); the
   promises without code are #30–#36.
 
+### 2026-11-19 — #117 (P2): a kubelet's credential for the cluster stormstorage
+- Chosen: option B (a Kubernetes bearer, TokenReview + SubjectAccessReview on
+  `storage.storm.io` `vmmigrations`). The kubelet presents no client pair to
+  stormstorage, which serves plain http; every node already holds
+  cluster-issued SA tokens (`/data/stormcert/<sa>.token`, stormcos
+  SECRETS.md), and the kubelet's `--stormstorage-token-file` can name one:
+  no rustkube-node flag. Code: `src/api/kubeauth.rs`, `auth.rs`; test
+  `tests/migration_bearer.rs`.
+- Left to stormcos#682: point `--stormstorage-token-file` at a token on every
+  node and grant its SA `create`/`update` on `storage.storm.io`
+  `vmmigrations`; stormstorage's own SA needs `system:auth-delegator`.
+
