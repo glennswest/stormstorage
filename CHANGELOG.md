@@ -3,6 +3,12 @@
 ## [Unreleased]
 <!-- New unreleased changes go here -->
 
+### 2026-11-19 (#117, proof)
+- **feat:** at startup, stormstorage logs that the disk-migration verbs take a
+  Kubernetes bearer (TokenReview + SubjectAccessReview on
+  `storage.storm.io/vmmigrations`) whenever `[kubernetes]` is enabled. This
+  shows live that a node runs the #117 code.
+
 ### 2026-11-19 (#117)
 - **feat:** the disk-migration verbs a kubelet calls in a live migration
   (`POST /api/v1/nodes/{n}/volumes/{v}/migrate`, `POST

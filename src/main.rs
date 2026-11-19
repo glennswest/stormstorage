@@ -64,6 +64,13 @@ async fn main() -> anyhow::Result<()> {
         pools = config.pools.len(),
         "federation state loaded"
     );
+    if config.kubernetes.enabled {
+        tracing::info!(
+            server = %config.kubernetes.server,
+            "disk-migration verbs take a Kubernetes bearer: TokenReview + SubjectAccessReview on storage.storm.io/{} (#117)",
+            stormstorage::api::kubeauth::RESOURCE
+        );
+    }
 
     let listen = config.listen_addr.clone();
     let mut state = AppState::try_new(config, fed, state_path)?;
