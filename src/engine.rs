@@ -48,6 +48,22 @@ impl AttachedLeg {
     }
 }
 
+/// Percent-encode `s` as one URL path segment (#123): everything but the
+/// RFC 3986 unreserved characters, `:` and `@` is escaped, so `/`, `?`,
+/// `&`, `#`, `%` and spaces in an identifier (a drive URI's
+/// `?nsid=…&hostnqn=…`) stay inside the segment the engine decodes.
+pub fn path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b':' | b'@') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 /// An engine answered a call with an error status. Typed so a caller can
 /// tell a 404 (the thing is gone, #40) from any other failure.
 #[derive(Debug)]
@@ -1031,7 +1047,9 @@ impl Engine {
     /// DELETE /api/v1/drives/{id_or_path} — close an opened drive. 404 is
     /// success from our side (already gone).
     pub async fn delete_drive(&self, id_or_path: &str, force: bool) -> anyhow::Result<()> {
-        let enc = id_or_path.replace('%', "%25").replace('/', "%2F");
+        // The whole identifier is one path segment (#123): a drive URI
+        // carries `?nsid=…&hostnqn=…`, which must not become the query.
+        let enc = path_segment(id_or_path);
         let q = if force { "?force=true" } else { "" };
         let resp = self
             .admin_send(reqwest::Method::DELETE, &format!("/api/v1/drives/{enc}{q}"), None)

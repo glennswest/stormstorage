@@ -1210,3 +1210,11 @@ try `readd` first; the VM steps per the owner's answer.
 - [x] tests/vmmigrate.rs: 202 + what the create carried; 501 on v23.24.0
       and no version route, nothing sent. README migrate section updated.
 - [x] sc-build green on f64a58b (build + clippy -D warnings + tests, sc-build-d39f3af1ed); image requested; issue closed.
+
+### 2026-11-20 — #123 (P1): drive close dropped the URI query (finding 10f005bf5a0e)
+`Engine::delete_drive` escaped only `%` and `/`; a leg's drive URI carries
+`?nsid=…&hostnqn=…`, which became the HTTP query, so the engine 404'd and
+the close looked successful. Fix: `engine::path_segment` encodes the whole
+id as one segment; `force=true` is the only query. Test tests/drive_close.rs.
+Not done: closing by recorded drive UUID instead of URI (the callers hold the
+URI, not the UUID; the encoded URI is exact, so it is not needed for the fix).

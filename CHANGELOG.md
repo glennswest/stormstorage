@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### 2026-11-20 (#123)
+- **fix:** Closing a drive by its URI (moves, teardown, stale-head cleanup)
+  sent `nvme-tcp://…?nsid=…&hostnqn=…` with `?` and `&` unescaped, so the
+  engine saw a truncated drive id plus a mangled query, answered 404, and
+  the close was counted as done while the NVMe drive stayed open. The id
+  is now percent-encoded as one path segment (`engine::path_segment`:
+  everything but unreserved, `:` and `@`), and `force=true` is the only
+  query. Review finding 10f005bf5a0e. Test: tests/drive_close.rs (an
+  engine records the decoded id and raw query).
+
 ### 2026-11-20 (#107)
 - **feat:** A node-volume migration lands on a named slab or drive on the
   target: `placement: {slab}` / `{drive}` is sent as `placement.slab_id` /
