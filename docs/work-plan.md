@@ -1209,4 +1209,4 @@ try `readd` first; the VM steps per the owner's answer.
       the version before the create. Drive sent by serial/WWN/path (id).
 - [x] tests/vmmigrate.rs: 202 + what the create carried; 501 on v23.24.0
       and no version route, nothing sent. README migrate section updated.
-- [ ] sc-build; image; close.
+- [x] sc-build green on f64a58b (build + clippy -D warnings + tests, sc-build-d39f3af1ed); image requested; issue closed.
