@@ -6,6 +6,13 @@
 - **docs:** #113: a golden-cloned leg cannot be a mirrored VM root. The RAID1 superblock takes a member's first MiB, and the served volume is a new carve on the array. The narrowed question is with the owner, and #116 is on hold.
 <!-- New unreleased changes go here -->
 
+### 2026-11-20 (#82)
+- **docs:** the API-health declaration is in the registry (applied by the
+  master). README *API health*: a registry change reaches a node only through
+  a newly built golden, whose stormd config carries the `[[process.api]]`
+  blocks; the node's health snapshot then lists
+  `stormstorage/stormstorage/{registry,volumes,pools}`.
+
 ### 2026-11-19 (#117, health proof)
 - **feat:** `/api/v1/health` adds `migration_bearer {review, resource}` when
   `[kubernetes]` is enabled: the disk-migration verbs take a Kubernetes bearer

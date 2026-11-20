@@ -1012,6 +1012,14 @@ Status 2026-11-13: 8e5bc6e pushed (README, test, changelog); sc-build passes
 (build + test + clippy -D warnings, probe test ok). Note sent to the master;
 `wait-owner --action` card with the command. Next: once `component export`
 shows `apis`, request the golden, close #82.
+Status 2026-11-20: the master applied the edit (`component export` shows the
+three `[[component.apis]]`). The newest image (1a365d447f60, built 02:59 UTC)
+predates it, and a registry change alone builds nothing ("no new commit"):
+the `[[process.api]]` blocks are written into the golden's stormd config at
+build time. This commit is the new one; golden requested. Proof:
+`get:http://{node}:9094/api/plugins/health/snapshot ~
+"key":"stormstorage/stormstorage/registry"` (pvetest1 had no stormstorage rows
+before).
 
 ### Volume owner on create (#109, P1, for stormblock-csi#69) — DONE 2026-11-18
 `POST /api/v1/volumes` takes `owner {kind, namespace?, name, uid?}`

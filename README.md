@@ -1110,6 +1110,13 @@ is the owner's setting:
 stormcentral component edit stormstorage --set 'apis=[{"name":"registry","probe":"/api/v1/nodes","p50_ms":50,"p99_ms":500,"timeout_s":10},{"name":"volumes","probe":"/api/v1/volumes","p50_ms":100,"p99_ms":1000,"timeout_s":10},{"name":"pools","probe":"/api/v1/pools","p50_ms":100,"p99_ms":1000,"timeout_s":10}]'
 ```
 
+It is applied (2026-11-20). The `[[process.api]]` blocks are written into
+the golden's stormd config when the golden is built, so a change to the
+entry reaches a node only with a newly built golden (a registry edit alone
+builds nothing). Live, the node's health snapshot
+(`:9094/api/plugins/health/snapshot`, stormconsole) has the rows
+`stormstorage/stormstorage/registry`, `…/volumes` and `…/pools`.
+
 A commit here does not reach a node until a golden is built and a
 release composed. When an issue's work is complete, request the golden
 once:
