@@ -1177,3 +1177,12 @@ try `readd` first; the VM steps per the owner's answer.
   `get:http://{node}:9093/api/v1/health ~ migration_bearer`. Done 8292209;
   sc-build-40e6bb5c52 passed; image 8c9a504b767e; re-shipped `--commit 8292209`.
 
+
+### 2026-11-20 — #121 (P0): three critical review findings
+- [ ] `0f9c037af419` vmmigrations: reserve (target_node, target_name) at insert,
+      under the same lock as the source check; held until the record is gone.
+- [ ] `337e802c1378` backup: backup targets in a name space users cannot
+      create in; ownership checked before adopting or deleting a target.
+- [ ] `793da313e6de` orchestrate: replacement workers bound to the
+      leadership term; a deposed worker stops before engine mutations and
+      never rolls back (leaves the persisted intent for the new leader).
