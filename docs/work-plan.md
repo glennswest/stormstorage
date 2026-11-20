@@ -1084,6 +1084,17 @@ Plan:
        stormstorage seeds legs from a golden). Also on the pair: stormcluster#89
        (shared store) or cluster_peers must show the worker to the master's
        stormstorage, else `pair` fails naming it.
+   [x] Owner answered A (2026-11-19, relayed): "no copy at create (Unless it
+       has a spec for one)"; RAID1 asked in the PVC/VM disk spec, second leg
+       placed by load where the workload could move, with the space.
+   [x] Reading the engine for #116: A cannot work. A RAID1 member's first
+       1 MiB is the superblock (stormblock DATA_OFFSET), and the served volume
+       is a new carve on the head's array (create_pinned_volume), not the
+       legs' raw content; stormblock refuses a carve that is also a clone.
+       Golden-cloned legs serve a blank disk. Narrowed question posted on
+       #113 (A' new RAID layout / B' copy the golden once into the carve,
+       recommended / C data disk only); #116 on hold, commented.
+   [ ] wait-owner on the narrowed question.
 Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
 try `readd` first; the VM steps per the owner's answer.
 

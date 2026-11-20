@@ -1,6 +1,9 @@
 # Changelog
 
 ## [Unreleased]
+
+### 2026-11-19
+- **docs:** #113: a golden-cloned leg cannot be a mirrored VM root. The RAID1 superblock takes a member's first MiB, and the served volume is a new carve on the array. The narrowed question is with the owner, and #116 is on hold.
 <!-- New unreleased changes go here -->
 
 ### 2026-11-19 (#117, health proof)
