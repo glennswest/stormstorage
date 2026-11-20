@@ -197,8 +197,13 @@ struct Fx {
 
 /// "root" is assembled on head node-a (array "arr", legs on node-a and
 /// node-b); its carve `root-mirror` is made on the array and served to no
-/// one; the golden is on node-a; the seed has not started.
+/// one; the golden is on node-a. The first poll's reconcile starts the
+/// seed. `before` changes the head's mock before that poll.
 async fn setup() -> Fx {
+    setup_with(|_| {}).await
+}
+
+async fn setup_with(before: impl FnOnce(&mut Mock)) -> Fx {
     let mut config = Config::default();
     config.local.enabled = false;
     config.kubernetes.enabled = false;
@@ -214,6 +219,7 @@ async fn setup() -> Fx {
             "carve-uuid".into(),
             Vol { name: "root-mirror".into(), size: 8 << 30, lba: 4096, ..Default::default() },
         );
+        before(&mut h);
     }
     let host = config.legs.host_nqn_for("node-a");
     let mut fed = FedState::default();
@@ -293,9 +299,7 @@ async fn call(method: reqwest::Method, url: String, body: Option<Value>) -> (u16
 #[tokio::test]
 async fn a_golden_is_copied_into_the_carve_then_served() {
     let fx = setup().await;
-    assert!(stormstorage::seed::step(&fx.state, "root").await.unwrap());
-
-    // A clone of the golden on the head, mirrored into the carve, which is
+    // The reconcile of the first poll started it: a clone of the golden on the head, mirrored into the carve, which is
     // served to the head's own host alone.
     let seed = seed_of(&fx).await;
     assert_eq!(seed.state, SeedState::Copying);
@@ -380,11 +384,13 @@ async fn a_failed_copy_undoes_itself_and_retries_later() {
 
 #[tokio::test]
 async fn a_golden_laid_in_other_blocks_is_refused() {
-    let fx = setup().await;
-    fx.head.lock().unwrap().vols.get_mut("golden-uuid").unwrap().lba = 512;
-    let e = stormstorage::seed::step(&fx.state, "root").await.expect_err("refused");
-    assert!(format!("{e:#}").contains("512-byte"), "{e:#}");
+    let fx = setup_with(|h| h.vols.get_mut("golden-uuid").unwrap().lba = 512).await;
+    // The first poll's reconcile tried it and recorded the refusal.
+    let seed = seed_of(&fx).await;
+    assert_eq!(seed.state, SeedState::Failed);
+    assert!(seed.message.as_deref().unwrap_or("").contains("512-byte"), "{seed:?}");
     assert!(clone_id(&fx.head).is_none(), "nothing made");
+    assert!(fx.head.lock().unwrap().shared_attach.is_empty(), "never served");
 }
 
 #[tokio::test]
