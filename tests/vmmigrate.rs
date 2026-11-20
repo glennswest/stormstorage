@@ -550,9 +550,10 @@ async fn two_starts_onto_one_target_name_one_is_refused() {
     assert_eq!(sts, [202, 409], "{av} / {bv}");
     let refused = if a == 409 { &av } else { &bv };
     assert!(refused.to_string().contains("is the target of migration"), "{refused}");
-    let t = fx.t.lock().unwrap();
-    assert_eq!(t.vols.values().filter(|v| v.name == "ns.shared").count(), 1);
-    assert_eq!(t.log.iter().filter(|l| l.starts_with("create ns.shared")).count(), 1, "{:?}", t.log);
-    drop(t);
+    {
+        let t = fx.t.lock().unwrap();
+        assert_eq!(t.vols.values().filter(|v| v.name == "ns.shared").count(), 1);
+        assert_eq!(t.log.iter().filter(|l| l.starts_with("create ns.shared")).count(), 1, "{:?}", t.log);
+    }
     assert_eq!(fx.state.fed.read().await.vm_migrations.len(), 1);
 }

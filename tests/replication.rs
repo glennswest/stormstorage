@@ -1460,12 +1460,12 @@ async fn a_deposed_worker_leaves_the_replacement_to_the_leader() {
 
     // Well past the stall timeout: a worker still acting would have undone.
     tokio::time::sleep(Duration::from_millis(2500)).await;
-    let t = mocks[&third].lock().unwrap();
-    assert!(!t.log.iter().any(|l| l.starts_with("delete")), "the new leg is kept: {:?}", t.log);
-    drop(t);
-    let h = mocks[&head].lock().unwrap();
-    assert!(!h.log.iter().any(|l| l.starts_with("remove member")), "the new member is kept: {:?}", h.log);
-    drop(h);
+    {
+        let t = mocks[&third].lock().unwrap();
+        assert!(!t.log.iter().any(|l| l.starts_with("delete")), "the new leg is kept: {:?}", t.log);
+        let h = mocks[&head].lock().unwrap();
+        assert!(!h.log.iter().any(|l| l.starts_with("remove member")), "the new member is kept: {:?}", h.log);
+    }
     let rec = etcd_mock.lock().unwrap().get("/stormstorage/volumes/r").expect("in the store");
     let rec: Value = serde_json::from_str(&rec).unwrap();
     assert_eq!(rec["replacing"]["leg"]["node"], third.as_str(), "left for the leader: {rec}");
