@@ -499,7 +499,10 @@ stormview components feed on **:9093**.
   changed goes in one transaction guarded by the leader key still being
   its own, so a deposed leader writes nothing. Only the leader runs the
   reconciler (re-leg, re-head, reassembly, rebalance, migration, backups)
-  and republishes. Followers poll the engines themselves (status is local),
+  and republishes. A leg replacement waiting on a rebuild belongs to the
+  leadership term it started in (#121): once that instance steps down it
+  makes no further engine change (it never undoes the new leg) and leaves
+  the recorded replacement for the next leader to resume. Followers poll the engines themselves (status is local),
   reload the records when `meta` moves, answer reads, and forward every
   write (`POST`/`PUT`/`DELETE` under `/api/`, register included) to the
   leader's `advertise_url` with its headers and body; the reply carries

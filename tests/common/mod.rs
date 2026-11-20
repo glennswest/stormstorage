@@ -3,6 +3,8 @@
 
 // Each test crate uses a part of this.
 #![allow(dead_code)]
+pub mod etcd;
+
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};

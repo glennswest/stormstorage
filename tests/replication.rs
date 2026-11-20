@@ -27,6 +27,8 @@ use stormstorage::api::AppState;
 use stormstorage::config::{Config, NodeConfig};
 use stormstorage::model::FedState;
 
+mod common;
+
 /// What lives on the legs themselves: member superblocks (leg namespace →
 /// array id) and each array's slab (array id → [(volume id, name)]).
 #[derive(Default)]
@@ -1413,6 +1415,61 @@ async fn a_stalled_rebuild_is_undone() {
     let m = mocks[third].lock().unwrap();
     assert!(m.log.iter().any(|l| l.starts_with("create r ")), "{:?}", m.log);
     assert!(m.log.iter().any(|l| l.starts_with("delete ")), "{:?}", m.log);
+}
+
+/// Finding 793da313e6de (#121): a replacement worker is bound to the
+/// leadership term it started in. Here the rebuild stalls, which after the
+/// 1 s stall timeout would undo the new leg; but the instance loses its
+/// lease first. The deposed worker changes nothing on any engine (a new
+/// leader may have kept that leg and retired the old one): the new leg
+/// stays, the member stays, and the store still holds the replacement for
+/// the leader to resume.
+#[tokio::test]
+async fn a_deposed_worker_leaves_the_replacement_to_the_leader() {
+    let etcd_mock: common::etcd::Mock = Default::default();
+    let etcd = common::etcd::mock_etcd(etcd_mock.clone()).await;
+    let (api, state, mocks) = setup_cfg(&["node-a", "node-b", "node-c"], |c| {
+        c.recovery.rebuild_timeout_secs = 1;
+        c.store.backend = stormstorage::config::StoreBackend::Etcd;
+        c.store.endpoints = vec![etcd.clone()];
+        c.store.lease_ttl_secs = 30;
+        c.store.instance = Some("a".into());
+        c.store.advertise_url = Some("http://127.0.0.1:9".into());
+    })
+    .await;
+    let store = state.store.clone().unwrap();
+    store.step(&state).await;
+    assert!(state.leads(), "{:?}", store.status());
+    let (head, slave, _) = create_mirror(&api, "r").await;
+    mocks[&head].lock().unwrap().rebuild_step = Some(0);
+    let (st, r) = call(format!("{api}/api/v1/volumes/r/move"), json!({"from": slave})).await;
+    assert_eq!(st, 200, "{r}");
+    let third = mocks.keys().find(|n| **n != head && **n != slave).unwrap().clone();
+    assert!(mocks[&third].lock().unwrap().log.iter().any(|l| l.starts_with("create r ")));
+
+    // The lease goes (the instance hung, say): it steps down.
+    {
+        let mut e = etcd_mock.lock().unwrap();
+        let ids: Vec<i64> = e.leases.keys().copied().collect();
+        for id in ids {
+            e.revoke(id);
+        }
+    }
+    store.step(&state).await;
+    assert!(!state.leads(), "{:?}", store.status());
+
+    // Well past the stall timeout: a worker still acting would have undone.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let t = mocks[&third].lock().unwrap();
+    assert!(!t.log.iter().any(|l| l.starts_with("delete")), "the new leg is kept: {:?}", t.log);
+    drop(t);
+    let h = mocks[&head].lock().unwrap();
+    assert!(!h.log.iter().any(|l| l.starts_with("remove member")), "the new member is kept: {:?}", h.log);
+    drop(h);
+    let rec = etcd_mock.lock().unwrap().get("/stormstorage/volumes/r").expect("in the store");
+    let rec: Value = serde_json::from_str(&rec).unwrap();
+    assert_eq!(rec["replacing"]["leg"]["node"], third.as_str(), "left for the leader: {rec}");
+    assert!(!state.replacing.lock().unwrap().contains("r"), "the claim is released");
 }
 
 /// #68: `raid` on create. `mirror` is RAID1 over two legs by default and

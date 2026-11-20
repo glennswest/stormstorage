@@ -537,6 +537,14 @@ impl Store {
         self.status().role == Role::Leader
     }
 
+    /// The leadership this instance holds now: the leader key's
+    /// `create_revision`, new on every election, so a term lost and won
+    /// again is another term (#121). None while it follows.
+    pub fn leader_term(&self) -> Option<i64> {
+        let st = self.status();
+        st.leader_revision.filter(|_| st.role == Role::Leader)
+    }
+
     /// Where writes go: the leader's API, when another instance leads.
     pub fn leader_url(&self) -> Option<String> {
         self.status().leader.map(|l| l.url)

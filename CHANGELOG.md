@@ -15,6 +15,16 @@
   (`target_owned` false) touches nothing until the engine shows it, and a
   purge deletes the backup volume only when it is ours, else answers
   `left`. tests/replication.rs `backups_never_adopt_or_delete_a_volume_not_theirs`.
+- **fix:** A leg replacement's worker (re-leg, move, rejoin) is bound to the
+  leadership term it started in (finding 793da313e6de). It checks the term
+  on every wait tick and before every engine change; once the instance no
+  longer leads under it, it stops, changes nothing on any engine (never
+  undoes the new leg), releases its claim and leaves the recorded
+  replacement for the leader to resume. A term is the leader key's
+  create revision, so a term lost and won again is another
+  (`AppState::lead_term`/`still_leads`). The mock etcd moved to
+  tests/common/etcd.rs; tests `a_deposed_worker_leaves_the_replacement_to_the_leader`,
+  `a_leader_whose_lease_expired_steps_down`.
 
 ### 2026-11-20 (#113, #116)
 - **feat:** `from_golden` on `POST /api/v1/volumes`: a mirrored volume

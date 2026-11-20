@@ -408,7 +408,8 @@ pub async fn start_replacement(
         Ok(target) => {
             let st = state.clone();
             let n = name.to_string();
-            tokio::spawn(async move { finish_replacement(st, n).await });
+            let term = state.lead_term();
+            tokio::spawn(async move { finish_replacement(st, n, term).await });
             Ok(target)
         }
         Err(e) => {
@@ -608,7 +609,8 @@ pub async fn start_rejoin(state: &Arc<AppState>, name: &str, node: &str) -> anyh
         Ok(true) => {
             let st = state.clone();
             let n = name.to_string();
-            tokio::spawn(async move { finish_replacement(st, n).await });
+            let term = state.lead_term();
+            tokio::spawn(async move { finish_replacement(st, n, term).await });
             Ok(())
         }
         Ok(false) => {
@@ -834,28 +836,57 @@ fn secs_since(t: SystemTime) -> f64 {
 /// Wait for the recorded replacement's member to rebuild, then retire the
 /// old leg — or, if it never converges, undo the new one. Holds the
 /// volume's claim (taken by the caller) and releases it at the end.
-async fn finish_replacement(state: Arc<AppState>, name: String) {
-    finish_inner(&state, &name).await;
+///
+/// Bound to the leadership `term` it was started under (finding
+/// 793da313e6de): once this instance no longer leads under it, the worker
+/// stops before its next engine change and changes nothing, leaving the
+/// recorded replacement for the leader to resume. A deposed worker never
+/// undoes a leg: the new leader may have kept it and retired the old one.
+async fn finish_replacement(state: Arc<AppState>, name: String, term: Option<i64>) {
+    if let Err(Deposed) = finish_inner(&state, &name, term).await {
+        tracing::warn!("{name}: replacement left to the leader: this instance no longer leads under the term it started in");
+        event(
+            &state,
+            &name,
+            Severity::Warning,
+            format!("{name}: this instance no longer leads; the replacement is left as recorded for the leader to resume"),
+        )
+        .await;
+    }
     release(&state, &name);
 }
 
-async fn finish_inner(state: &Arc<AppState>, name: &str) {
+/// A worker's leadership term has ended (see [`finish_replacement`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Deposed;
+
+fn leads(state: &AppState, term: Option<i64>) -> Result<(), Deposed> {
+    if state.still_leads(term) {
+        Ok(())
+    } else {
+        Err(Deposed)
+    }
+}
+
+async fn finish_inner(state: &Arc<AppState>, name: &str, term: Option<i64>) -> Result<(), Deposed> {
+    leads(state, term)?;
     let (rep, head_engine, target_engine, array_id, head) = {
         let fed = state.fed.read().await;
-        let Some(vol) = fed.volumes.get(name) else { return };
-        let Some(rep) = vol.replacing.clone() else { return };
+        let Some(vol) = fed.volumes.get(name) else { return Ok(()) };
+        let Some(rep) = vol.replacing.clone() else { return Ok(()) };
         let (Some(head), Some(array_id)) = (vol.head.clone(), vol.array_id.clone()) else {
-            return;
+            return Ok(());
         };
         let (Ok(he), Ok(te)) = (engine_of(state, &fed, &head), engine_of(state, &fed, &rep.leg.node))
         else {
-            return;
+            return Ok(());
         };
         (rep, he, te, array_id, head)
     };
     let member = rep.leg.member_uuid.clone().unwrap_or_default();
     let stall = Duration::from_secs(state.config.recovery.rebuild_timeout_secs.max(1));
-    let ok = wait_member_active(state, name, &head_engine, &array_id, &member, stall).await;
+    let ok = wait_member_active(state, name, &head_engine, &array_id, &member, stall, term).await?;
+    leads(state, term)?;
     let from = rep.from.clone();
     let to = rep.leg.node.clone();
 
@@ -886,11 +917,11 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
             format!("{name}: leg on {to} did not rebuild on {head} after rejoining — still degraded, retried after the cooldown"),
         )
         .await;
-        return;
+        return Ok(());
     }
     if rep.rejoin {
         finish_rejoin(state, name, &rep).await;
-        return;
+        return Ok(());
     }
     if !ok {
         undo_leg(&head_engine, &array_id, &target_engine, &rep.leg).await;
@@ -916,7 +947,7 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
             ),
         )
         .await;
-        return;
+        return Ok(());
     }
 
     // Retire the old leg. Its node may be dead: every step is allowed to
@@ -932,11 +963,13 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
     let mut orphan = None;
     if let Some(old) = &old {
         if let Some(mu) = &old.member_uuid {
+            leads(state, term)?;
             if let Err(e) = head_engine.array_remove_member(&array_id, mu).await {
                 notes.push(format!("remove member: {e:#}"));
             }
         }
         if let Some(uri) = old.export.as_ref().map(|x| x.drive_uri()) {
+            leads(state, term)?;
             if let Err(e) = head_engine.delete_drive(&uri, true).await {
                 notes.push(format!("head drive: {e:#}"));
             }
@@ -951,6 +984,7 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
             };
             let deleted = match engine {
                 Some(engine) => {
+                    leads(state, term)?;
                     let master = old.master_node.clone().unwrap_or_else(|| "localhost".into());
                     let _ = engine.detach_volume(vid, &master).await;
                     match engine.delete_volume(vid).await {
@@ -978,6 +1012,7 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
             }
         }
     }
+    leads(state, term)?;
     {
         let mut fed = state.fed.write().await;
         if let Some(o) = orphan {
@@ -1017,6 +1052,7 @@ async fn finish_inner(state: &Arc<AppState>, name: &str) {
         },
     )
     .await;
+    Ok(())
 }
 
 /// What the reconciler decided for one poll (pure, so it is testable).
@@ -1173,7 +1209,8 @@ pub async fn reconcile(state: &Arc<AppState>) {
     for name in plan.resume {
         if claim(state, &name) {
             let st = state.clone();
-            tokio::spawn(async move { finish_replacement(st, name).await });
+            let term = state.lead_term();
+            tokio::spawn(async move { finish_replacement(st, name, term).await });
         }
     }
     for (name, node) in plan.rejoin {
@@ -2460,7 +2497,9 @@ pub async fn republish_on(state: &Arc<AppState>, node: &str) {
 /// reports no `rebuilt_bytes` gets `stall` from the last state change.
 /// While waiting, the volume's rebuild cap is put again every minute: the
 /// engine holds it in memory only, so a restart of the head's engine
-/// would resume the copy unthrottled.
+/// would resume the copy unthrottled. Err once this instance no longer
+/// leads under `term` (checked every tick, #121): the wait is the long
+/// await a deposed worker would otherwise sleep through.
 async fn wait_member_active(
     state: &Arc<AppState>,
     name: &str,
@@ -2468,13 +2507,15 @@ async fn wait_member_active(
     array_id: &str,
     member_uuid: &str,
     stall: Duration,
-) -> bool {
+    term: Option<i64>,
+) -> Result<bool, Deposed> {
     let tick = (stall / 4).clamp(Duration::from_millis(100), Duration::from_secs(3));
     let reput = Duration::from_secs(60);
     let mut deadline = tokio::time::Instant::now() + stall;
     let mut last_put = tokio::time::Instant::now();
     let mut seen: Option<(String, Option<u64>)> = None;
     loop {
+        leads(state, term)?;
         if let Ok(arr) = engine.get_array(array_id).await {
             let m = arr
                 .get("members")
@@ -2488,8 +2529,8 @@ async fn wait_member_active(
                 .map(|s| s.to_lowercase());
             let rebuilt = m.and_then(|m| m.get("rebuilt_bytes")).and_then(|b| b.as_u64());
             match st.as_deref() {
-                Some("active") => return true,
-                Some("failed") => return false,
+                Some("active") => return Ok(true),
+                Some("failed") => return Ok(false),
                 _ => {}
             }
             let now_seen = st.map(|s| (s, rebuilt));
@@ -2499,9 +2540,10 @@ async fn wait_member_active(
             }
         }
         if tokio::time::Instant::now() > deadline {
-            return false;
+            return Ok(false);
         }
         if last_put.elapsed() >= reput {
+            leads(state, term)?;
             let class = state.fed.read().await.volumes.get(name).map(|v| v.bandwidth_class);
             if let Some(class) = class {
                 let _ = engine.set_rebuild_rate(array_id, state.config.recovery.rate(class)).await;

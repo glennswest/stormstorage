@@ -174,6 +174,26 @@ impl AppState {
         }
     }
 
+    /// The leadership term this instance acts under (#121, finding
+    /// 793da313e6de): the store's leader term, or 0 without a store (it
+    /// always acts, [`Self::leads`]). None while another instance leads. A
+    /// worker that outlives one poll (a replacement waiting on a rebuild)
+    /// takes it when it is started and checks [`Self::still_leads`] before
+    /// every engine change: a deposed worker stops and leaves its recorded
+    /// intent to the instance that leads now.
+    pub fn lead_term(&self) -> Option<i64> {
+        match &self.store {
+            Some(s) => s.leader_term(),
+            None => Some(0),
+        }
+    }
+
+    /// Whether `term` (from [`Self::lead_term`]) is still the one this
+    /// instance leads under.
+    pub fn still_leads(&self, term: Option<i64>) -> bool {
+        term.is_some() && self.lead_term() == term
+    }
+
     /// state.json alone (a follower's is a cache of the store).
     pub async fn persist_file(&self) {
         let Some(path) = &self.state_path else {
