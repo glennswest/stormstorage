@@ -1020,6 +1020,8 @@ build time. This commit is the new one; golden requested. Proof:
 `get:http://{node}:9094/api/plugins/health/snapshot ~
 "key":"stormstorage/stormstorage/registry"` (pvetest1 had no stormstorage rows
 before).
+Shipped: sc-build passed on 5a7a0aa, golden build 27637d4884ff, `shipped`
+with that proof (closes on it). The skipped rebuild is filed as stormcentral#1521.
 
 ### Volume owner on create (#109, P1, for stormblock-csi#69) — DONE 2026-11-18
 `POST /api/v1/volumes` takes `owner {kind, namespace?, name, uid?}`
