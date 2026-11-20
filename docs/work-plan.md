@@ -1107,7 +1107,7 @@ Plan:
    [x] Owner answered B' (2026-11-19, relayed by the master): no copy at
        create by default; one copy of the golden's allocated extents into
        the carve only when the spec asks for RAID1.
-5. [ ] B' with no engine change (#116, done here): stormblock's live mirror
+5. [x] B' with no engine change (#116, done here): stormblock's live mirror
        (#295) already copies a volume's mapped extents into an NVMe-TCP
        namespace, and a COW clone of a golden maps every extent of it. So:
        `from_golden` on POST /api/v1/volumes (≥ 2 legs, the golden on a
@@ -1120,8 +1120,15 @@ Plan:
        volume and an event. A delete mid-seed stops the mirror and deletes
        the clone. lba: the carve must present the golden's block size, else
        the seed fails naming it.
-6. [ ] file rustkube-node: a VM root on a stormstorage volume made
-       `from_golden` (boot from the served volume once `seed` is done).
+       Done 2ef4b37 + 6fd0f04; sc-build passes (tests/seed.rs 5/5, clippy
+       -D warnings); #116 closed. Live proof rides on #113's pair test.
+6. [x] rustkube-node#404 (filed earlier for A) got the B' contract as a
+       comment: create `from_golden`, wait `seed.state == done`, serve to the
+       node's host NQN, boot.
+7. [ ] #113 proposed --after stormcentral#1454 (stop-worker fault) and
+       rustkube-node#404 (VM root on the volume). Also open, not blocking the
+       PVC half: stormblock#657 (bitmap readd), stormblock-csi#56 (claim's
+       head on its consumer), stormvm#29 (VM move).
    Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
 try `readd` first; the VM steps per the owner's answer.
 
