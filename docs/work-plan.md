@@ -1198,4 +1198,4 @@ try `readd` first; the VM steps per the owner's answer.
       the lease ends, but a hung instance learns only after), so a
       check-to-request window remains. Closing it needs engine fencing
       by term (leg epochs exist; arrays have none) — a follow-up if wanted.
-- [ ] sc-build green on HEAD; image requested; issue closed.
+- [x] sc-build green on e40bb94 (clippy -D warnings + 213 tests, sc-build-41e4ccbeac); image requested; issue closed.
