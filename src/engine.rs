@@ -374,6 +374,43 @@ impl Engine {
         .map_err(|e| anyhow::anyhow!("create {name} on array {array_id}: {e:#}"))
     }
 
+    /// POST /v1/volumes on a named slab or drive of this engine
+    /// (stormblock#426, v23.25.0): `key` is `slab_id` or `drive`. Every
+    /// extent goes there. An older engine ignores the field: ask
+    /// [`Engine::engine_version`] first.
+    pub async fn create_placed_volume(
+        &self,
+        name: &str,
+        size_bytes: u64,
+        key: &str,
+        value: &str,
+        owner: Option<&Owner>,
+    ) -> anyhow::Result<Value> {
+        let mut body = serde_json::json!({
+            "name": name,
+            "size_bytes": size_bytes,
+            "replica_tier": { "slaves": 0 },
+            "placement": { key: value },
+        });
+        with_owner(&mut body, owner);
+        self.v1_post("/v1/volumes", body)
+            .await
+            .map_err(|e| anyhow::anyhow!("create {name} on {key} {value}: {e:#}"))
+    }
+
+    /// GET /api/v1/version: the engine's release (`version`). `Ok(None)`
+    /// when the engine has no such route (404) or answers no version.
+    pub async fn engine_version(&self) -> anyhow::Result<Option<String>> {
+        let path = "/api/v1/version";
+        let resp = self.get(path).send().await?;
+        check_refused(&resp, path)?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let v: Value = resp.error_for_status()?.json().await?;
+        Ok(v.get("version").and_then(|x| x.as_str()).map(str::to_string))
+    }
+
     /// What stormblock#156 accepts as an extent size: a power of two of
     /// 4 KiB or more.
     pub fn valid_extent_size(bytes: u64) -> bool {

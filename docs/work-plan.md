@@ -1199,3 +1199,14 @@ try `readd` first; the VM steps per the owner's answer.
       check-to-request window remains. Closing it needs engine fencing
       by term (leg epochs exist; arrays have none) — a follow-up if wanted.
 - [x] sc-build green on e40bb94 (clippy -D warnings + 213 tests, sc-build-41e4ccbeac); image requested; issue closed.
+
+### 2026-11-20 — #107 (P2): slab / drive placement on migrate's target
+- [x] `Engine::engine_version` (`GET /api/v1/version`, 404 → None),
+      `Engine::create_placed_volume` (`placement.{slab_id|drive}`).
+- [x] `vmmigrate::takes_slab_drive` (>= 23.25.0); `check_placement` takes
+      T's version: slab/drive → placement on a new engine, 501 "needs
+      stormblock >= v23.25.0" on an older/unknown one. `advance` re-reads
+      the version before the create. Drive sent by serial/WWN/path (id).
+- [x] tests/vmmigrate.rs: 202 + what the create carried; 501 on v23.24.0
+      and no version route, nothing sent. README migrate section updated.
+- [ ] sc-build; image; close.

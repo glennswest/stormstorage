@@ -111,7 +111,13 @@ async fn resolve_placement(
         "slab" => vmmigrate::find_slab(&t.list_slabs().await.map_err(up)?, &name),
         _ => vmmigrate::find_drive(&t.list_slabs().await.map_err(up)?, &name),
     };
-    vmmigrate::check_placement(target, kind, &name, size, lookup).map_err(|r| match r {
+    // A slab or drive only to an engine that takes one (stormblock#426,
+    // v23.25.0): an older one ignores it and answers 2xx.
+    let version = match kind {
+        "array" => None,
+        _ => t.engine_version().await.map_err(up)?,
+    };
+    vmmigrate::check_placement(target, kind, &name, size, lookup, version.as_deref()).map_err(|r| match r {
         vmmigrate::PlaceRefusal::Missing(m) => ApiError::not_found(m),
         vmmigrate::PlaceRefusal::NoRoom(m) => ApiError::conflict(m),
         vmmigrate::PlaceRefusal::NotYet(m) => ApiError::not_implemented(m),

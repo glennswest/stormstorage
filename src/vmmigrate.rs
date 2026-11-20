@@ -99,8 +99,38 @@ async fn healthy(state: &Arc<AppState>, node: &str) -> bool {
     state.fed.read().await.nodes.get(node).is_some_and(|n| n.status.healthy)
 }
 
-/// The engine issue a create-time slab or drive placement waits on.
-pub const SLAB_DRIVE_PLACEMENT_ISSUE: &str = "stormblock#426";
+/// The first stormblock that takes `placement.slab_id` / `placement.drive`
+/// on a `/v1` create (stormblock#426). An older one ignores both and answers
+/// 2xx with the volume somewhere else, so it is never sent one.
+pub const SLAB_DRIVE_MIN_ENGINE: (u64, u64, u64) = (23, 25, 0);
+
+/// `major.minor.patch` of an engine's `version` (`23.25.0`, `v23.25.0`,
+/// `23.25.0-rc1`). Pure.
+pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let v = v.trim().trim_start_matches('v');
+    let core = v.split(['-', '+']).next()?;
+    let mut it = core.split('.');
+    let major = it.next()?.parse().ok()?;
+    let minor = it.next().unwrap_or("0").parse().ok()?;
+    let patch = it.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+/// Whether an engine of `version` takes a slab or drive at create. Unknown
+/// (no `/api/v1/version`, or a version that does not parse): no. Pure.
+pub fn takes_slab_drive(version: Option<&str>) -> bool {
+    version.and_then(parse_version).is_some_and(|v| v >= SLAB_DRIVE_MIN_ENGINE)
+}
+
+/// The 501 for a slab or drive on an engine that would ignore it.
+fn slab_drive_too_old(target: &str, what: &str, name: &str, version: Option<&str>) -> String {
+    let (a, b, c) = SLAB_DRIVE_MIN_ENGINE;
+    format!(
+        "{target}: {what} {name:?} is there with room, but a {what} placement on a create needs stormblock >= \
+         v{a}.{b}.{c} and {target}'s engine is {}; name a RAID set (\"array\") or leave placement out",
+        version.map(|v| format!("v{}", v.trim_start_matches('v'))).unwrap_or_else(|| "of an unknown version".into())
+    )
+}
 
 /// What a named place on T turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,15 +195,16 @@ pub enum PlaceRefusal {
 
 /// Check a named placement on T against what T reports: it must exist and
 /// have room for `size` bytes. A slab or drive is refused after those
-/// checks until T's engine takes one at create (stormblock#426): sending
-/// it and having the volume land elsewhere would be the move undoing
-/// itself. Pure.
+/// checks when T's engine (`engine_version`) is older than
+/// [`SLAB_DRIVE_MIN_ENGINE`]: it would ignore the field and put the volume
+/// elsewhere, the move undoing itself. Pure.
 pub fn check_placement(
     target: &str,
     kind: &str,
     name: &str,
     size: u64,
     lookup: PlaceLookup,
+    engine_version: Option<&str>,
 ) -> Result<TargetPlacement, PlaceRefusal> {
     let what = match kind {
         "array" => "RAID set (array)",
@@ -193,11 +224,8 @@ pub fn check_placement(
             "{target}: {what} {name:?} has {free} bytes free, the volume is {size}"
         )));
     }
-    if kind != "array" {
-        return Err(PlaceRefusal::NotYet(format!(
-            "{target}: {what} {name:?} is there with room, but its engine takes no {kind} placement on a create yet \
-             ({SLAB_DRIVE_PLACEMENT_ISSUE}); name a RAID set (\"array\") or leave placement out"
-        )));
+    if kind != "array" && !takes_slab_drive(engine_version) {
+        return Err(PlaceRefusal::NotYet(slab_drive_too_old(target, what, name, engine_version)));
     }
     Ok(TargetPlacement { kind: kind.into(), name: name.into(), id })
 }
@@ -295,9 +323,20 @@ pub async fn advance(state: &Arc<AppState>, id: &str) -> anyhow::Result<()> {
     let tn = &m.target_node;
     if m.target_volume_id.is_none() {
         // On a named RAID set (#106): every extent of the volume on the
-        // array's slab, so writes the mirror lands there stay there.
-        let v = match m.placement.as_ref().filter(|p| p.kind == "array") {
-            Some(p) => t.create_pinned_volume(&m.target_name, m.size_bytes, &p.id, None).await,
+        // array's slab, so writes the mirror lands there stay there. On a
+        // named slab or drive (#107, stormblock#426): every extent there.
+        // The engine is asked again here: one replaced by an older release
+        // since the start would ignore the field.
+        let v = match m.placement.as_ref() {
+            Some(p) if p.kind == "array" => t.create_pinned_volume(&m.target_name, m.size_bytes, &p.id, None).await,
+            Some(p) => {
+                let version = t.engine_version().await.with_context(|| format!("{tn}: version"))?;
+                if !takes_slab_drive(version.as_deref()) {
+                    return refuse(slab_drive_too_old(tn, &p.kind, &p.name, version.as_deref()));
+                }
+                let key = if p.kind == "slab" { "slab_id" } else { "drive" };
+                t.create_placed_volume(&m.target_name, m.size_bytes, key, &p.id, None).await
+            }
             None => t.create_volume(&m.target_name, m.size_bytes, None, None).await,
         }
         .with_context(|| format!("{tn}: create {}", m.target_name))?;
@@ -821,17 +860,38 @@ mod tests {
     }
 
     #[test]
-    fn only_a_raid_set_with_room_is_taken_today() {
+    fn a_place_with_room_is_taken_and_slab_or_drive_only_from_v23_25() {
         let found = |free| PlaceLookup::Found { id: "u".into(), free_bytes: free };
-        let p = check_placement("t", "array", "set", 5, found(5)).unwrap();
+        let new = Some("23.25.0");
+        let p = check_placement("t", "array", "set", 5, found(5), None).unwrap();
         assert_eq!((p.kind.as_str(), p.name.as_str(), p.id.as_str()), ("array", "set", "u"));
-        assert!(matches!(check_placement("t", "array", "set", 6, found(5)), Err(PlaceRefusal::NoRoom(_))));
-        assert!(matches!(check_placement("t", "slab", "s", 1, PlaceLookup::Missing), Err(PlaceRefusal::Missing(_))));
-        assert!(matches!(check_placement("t", "drive", "d", 9, found(5)), Err(PlaceRefusal::NoRoom(_))));
-        match check_placement("t", "slab", "s", 1, found(5)) {
-            Err(PlaceRefusal::NotYet(m)) => assert!(m.contains(SLAB_DRIVE_PLACEMENT_ISSUE), "{m}"),
-            other => panic!("{other:?}"),
+        assert!(matches!(check_placement("t", "array", "set", 6, found(5), new), Err(PlaceRefusal::NoRoom(_))));
+        assert!(matches!(check_placement("t", "slab", "s", 1, PlaceLookup::Missing, new), Err(PlaceRefusal::Missing(_))));
+        assert!(matches!(check_placement("t", "drive", "d", 9, found(5), new), Err(PlaceRefusal::NoRoom(_))));
+        for kind in ["slab", "drive"] {
+            let p = check_placement("t", kind, "s", 1, found(5), new).unwrap();
+            assert_eq!((p.kind.as_str(), p.id.as_str()), (kind, "u"));
+            for old in [Some("23.24.9"), Some("garbage"), None] {
+                match check_placement("t", kind, "s", 1, found(5), old) {
+                    Err(PlaceRefusal::NotYet(m)) => assert!(m.contains("needs stormblock >= v23.25.0"), "{m}"),
+                    other => panic!("{kind} {old:?}: {other:?}"),
+                }
+            }
         }
+    }
+
+    #[test]
+    fn engine_versions_parse_and_compare() {
+        assert_eq!(parse_version("23.25.0"), Some((23, 25, 0)));
+        assert_eq!(parse_version("v23.25.1-rc1"), Some((23, 25, 1)));
+        assert_eq!(parse_version("24"), Some((24, 0, 0)));
+        assert_eq!(parse_version("x.1"), None);
+        assert!(takes_slab_drive(Some("23.25.0")));
+        assert!(takes_slab_drive(Some("v24.0.0")));
+        assert!(takes_slab_drive(Some("23.100.0")), "numeric, not string, order");
+        assert!(!takes_slab_drive(Some("23.24.99")));
+        assert!(!takes_slab_drive(Some("23.9.0")));
+        assert!(!takes_slab_drive(None));
     }
 
     #[test]

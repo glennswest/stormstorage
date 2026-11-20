@@ -42,6 +42,9 @@ struct Mock {
     /// starts both pass the target-name lookup before either creates
     /// (finding 0f9c037af419).
     lookup_delay_ms: u64,
+    /// `GET /api/v1/version`'s `version`; None: no such route (404), as an
+    /// engine from before it.
+    version: Option<String>,
     log: Vec<String>,
 }
 
@@ -190,6 +193,15 @@ async fn mock_engine(node: &str) -> (String, M) {
         .route("/api/v1/volumes/{id}/mirror", post(mirror_start).delete(mirror_stop))
         .route("/api/v1/arrays", get(|State(m): State<M>| async move { Json(json!({"items": m.lock().unwrap().arrays.clone()})) }))
         .route("/api/v1/slabs", get(|State(m): State<M>| async move { Json(json!({"items": m.lock().unwrap().slabs.clone()})) }))
+        .route(
+            "/api/v1/version",
+            get(|State(m): State<M>| async move {
+                match m.lock().unwrap().version.clone() {
+                    Some(v) => (StatusCode::OK, Json(json!({"service": "stormblock", "version": v}))),
+                    None => not_found("route"),
+                }
+            }),
+        )
         .with_state(m.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -459,9 +471,6 @@ async fn a_named_placement_is_refused_up_front_with_the_reason() {
         (json!({"array": "bare"}), 409, "carries no slab"),
         (json!({"slab": "nope"}), 404, "has no slab"),
         (json!({"drive": "SN9"}), 404, "has no drive"),
-        // There, with room, but the engine cannot take it at create yet.
-        (json!({"slab": "slab-nvme0"}), 501, "stormblock#426"),
-        (json!({"drive": "/dev/nvme0n1"}), 501, "stormblock#426"),
         (json!({"array": "shelf1-a", "slab": "slab-nvme0"}), 400, "exactly one"),
         (json!({}), 400, "exactly one"),
     ] {
@@ -471,6 +480,56 @@ async fn a_named_placement_is_refused_up_front_with_the_reason() {
     }
     assert!(fx.t.lock().unwrap().vols.is_empty(), "nothing made on T");
     assert!(fx.state.fed.read().await.vm_migrations.is_empty(), "no record kept");
+}
+
+/// A slab or drive goes to T's create as `placement.slab_id` / `.drive`
+/// (#107, stormblock#426) on an engine of v23.25.0 or later.
+#[tokio::test]
+async fn onto_a_named_slab_or_drive_on_a_v23_25_engine() {
+    for (p, sent, kept) in [
+        (json!({"slab": "slab-nvme0"}), json!({"slab_id": "slab-nvme0"}), json!({"kind": "slab", "name": "slab-nvme0", "id": "slab-nvme0"})),
+        // By path, sent by serial: the drive's stable name.
+        (json!({"drive": "/dev/nvme0n1"}), json!({"drive": "SN0"}), json!({"kind": "drive", "name": "/dev/nvme0n1", "id": "SN0"})),
+    ] {
+        let fx = setup().await;
+        give_t_storage(&fx.t);
+        fx.t.lock().unwrap().version = Some("23.25.0".into());
+        let (st, m) = call(
+            reqwest::Method::POST,
+            format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api),
+            Some(json!({"to": "node-t", "placement": p})),
+        )
+        .await;
+        assert_eq!(st, 202, "{p}: {m}");
+        assert_eq!(m["state"], "copying", "{p}");
+        assert_eq!(m["placement"], kept, "{p}");
+        assert_eq!(fx.t.lock().unwrap().created_placement["ns.vm-disk"], sent, "{p}");
+    }
+}
+
+/// An engine older than v23.25.0 ignores `placement.slab_id` / `.drive`
+/// and answers 2xx with the volume somewhere else (the mock, like it,
+/// takes the create whatever it carries). So it is never sent one: 501,
+/// and nothing is made.
+#[tokio::test]
+async fn a_slab_or_drive_on_an_older_engine_is_501_not_misplaced() {
+    for version in [Some("23.24.0"), None] {
+        let fx = setup().await;
+        give_t_storage(&fx.t);
+        fx.t.lock().unwrap().version = version.map(str::to_string);
+        let url = format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api);
+        for p in [json!({"slab": "slab-nvme0"}), json!({"drive": "/dev/nvme0n1"})] {
+            let (st, e) = call(reqwest::Method::POST, url.clone(), Some(json!({"to": "node-t", "placement": p}))).await;
+            assert_eq!(st, 501, "{version:?} {p}: {e}");
+            assert!(e["error"].as_str().unwrap_or_default().contains("needs stormblock >= v23.25.0"), "{p}: {e}");
+        }
+        // An array needs no version: stormblock#150 is long in.
+        let (st, e) = call(reqwest::Method::POST, url, Some(json!({"to": "node-t", "placement": {"array": "shelf1-a"}}))).await;
+        assert_eq!(st, 202, "{version:?}: {e}");
+        let t = fx.t.lock().unwrap();
+        assert_eq!(t.created_placement.len(), 1, "only the array create reached T: {:?}", t.created_placement);
+        assert!(t.created_placement["ns.vm-disk"].get("array_id").is_some());
+    }
 }
 
 /// A stopped VM's disk or a claim no pod uses: detached on S. It mirrors

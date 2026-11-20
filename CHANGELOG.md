@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### 2026-11-20 (#107)
+- **feat:** A node-volume migration lands on a named slab or drive on the
+  target: `placement: {slab}` / `{drive}` is sent as `placement.slab_id` /
+  `placement.drive` on T's `/v1` create (stormblock#426), so every extent
+  is there. Only when T's `GET /api/v1/version` is v23.25.0 or later; an
+  older engine (or one with no version route) would ignore the field and
+  answer 2xx with the volume elsewhere, so that stays a 501, now worded
+  "needs stormblock >= v23.25.0". The version is read again before T's
+  create. Tests: unit (version parse/compare, check_placement by version),
+  tests/vmmigrate.rs (slab and drive → 202 with what the create carried;
+  v23.24.0 and no-version mocks → 501, nothing sent).
+
 ### 2026-11-20 (#121)
 - **fix:** A disk migration reserves its target (node, name) as well as its
   source when it is recorded, under one lock: two concurrent migrations onto
