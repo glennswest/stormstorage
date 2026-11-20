@@ -38,8 +38,9 @@ struct Mock {
     slabs: Vec<Value>,
     /// The `placement` each /v1 create carried, by name.
     created_placement: BTreeMap<String, Value>,
-    /// Hold every volume lookup this long, so concurrent starts both pass
-    /// the target-name lookup before either creates (finding 0f9c037af419).
+    /// Answer the volume list this long after reading it, so concurrent
+    /// starts both pass the target-name lookup before either creates
+    /// (finding 0f9c037af419).
     lookup_delay_ms: u64,
     log: Vec<String>,
 }
@@ -83,17 +84,18 @@ async fn v1_delete(State(m): State<M>, Path(id): Path<String>) -> StatusCode {
 }
 
 async fn list(State(m): State<M>) -> Json<Value> {
-    let delay = m.lock().unwrap().lookup_delay_ms;
+    // What is there when asked, answered after the delay.
+    let (items, delay): (Vec<Value>, u64) = {
+        let m = m.lock().unwrap();
+        let items =
+            m.vols.iter().map(|(id, v)| json!({"id": id, "name": v.name, "virtual_size_bytes": v.size})).collect();
+        (items, m.lookup_delay_ms)
+    };
     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-    let m = m.lock().unwrap();
-    let items: Vec<Value> =
-        m.vols.iter().map(|(id, v)| json!({"id": id, "name": v.name, "virtual_size_bytes": v.size})).collect();
     Json(json!({"items": items}))
 }
 
 async fn get_vol(State(m): State<M>, Path(key): Path<String>) -> (StatusCode, Json<Value>) {
-    let delay = m.lock().unwrap().lookup_delay_ms;
-    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     let m = m.lock().unwrap();
     let Some(id) = find(&m, &key) else { return not_found(&key) };
     let v = &m.vols[&id];
@@ -534,8 +536,7 @@ async fn two_starts_onto_one_target_name_one_is_refused() {
         "s-disk2-uuid".into(),
         Vol { name: "ns.vm-disk2".into(), size: 8 << 30, ..Default::default() },
     );
-    fx.s.lock().unwrap().lookup_delay_ms = 200;
-    fx.t.lock().unwrap().lookup_delay_ms = 200;
+    fx.t.lock().unwrap().lookup_delay_ms = 300;
     let go = |disk: &'static str| {
         call(
             reqwest::Method::POST,
