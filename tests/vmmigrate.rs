@@ -38,6 +38,9 @@ struct Mock {
     slabs: Vec<Value>,
     /// The `placement` each /v1 create carried, by name.
     created_placement: BTreeMap<String, Value>,
+    /// Hold every volume lookup this long, so concurrent starts both pass
+    /// the target-name lookup before either creates (finding 0f9c037af419).
+    lookup_delay_ms: u64,
     log: Vec<String>,
 }
 
@@ -53,9 +56,15 @@ fn not_found(what: &str) -> (StatusCode, Json<Value>) {
 
 async fn v1_create(State(m): State<M>, Json(b): Json<Value>) -> Json<Value> {
     let mut m = m.lock().unwrap();
+    let name = b["name"].as_str().unwrap().to_string();
+    // Name-idempotent, as stormblock's /v1 create is: a second create of a
+    // name answers the first volume.
+    if let Some(v) = m.vols.values().find(|v| v.name == name) {
+        let v1 = v.v1.clone().unwrap_or_default();
+        return Json(json!({"id": v1, "name": name, "replicas": [{"node": m.node, "role": "master"}]}));
+    }
     m.next += 1;
     let (node, n) = (m.node.clone(), m.next);
-    let name = b["name"].as_str().unwrap().to_string();
     let v1 = format!("{node}-v1-{n}");
     m.log.push(format!("create {name} {}", b["size_bytes"]));
     m.created_placement.insert(name.clone(), b.get("placement").cloned().unwrap_or(Value::Null));
@@ -74,6 +83,8 @@ async fn v1_delete(State(m): State<M>, Path(id): Path<String>) -> StatusCode {
 }
 
 async fn list(State(m): State<M>) -> Json<Value> {
+    let delay = m.lock().unwrap().lookup_delay_ms;
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     let m = m.lock().unwrap();
     let items: Vec<Value> =
         m.vols.iter().map(|(id, v)| json!({"id": id, "name": v.name, "virtual_size_bytes": v.size})).collect();
@@ -81,6 +92,8 @@ async fn list(State(m): State<M>) -> Json<Value> {
 }
 
 async fn get_vol(State(m): State<M>, Path(key): Path<String>) -> (StatusCode, Json<Value>) {
+    let delay = m.lock().unwrap().lookup_delay_ms;
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     let m = m.lock().unwrap();
     let Some(id) = find(&m, &key) else { return not_found(&key) };
     let v = &m.vols[&id];
@@ -507,4 +520,38 @@ async fn a_detached_volume_moves_and_is_found_by_id_after_a_restart() {
     assert_eq!((st, d["state"].clone()), (200, json!("completed")), "{d}");
     assert!(!fx.s.lock().unwrap().vols.contains_key("s-disk-uuid"));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Finding 0f9c037af419: two different disks on S migrated at once onto
+/// the same name on T. Both pass the name lookup (T holds neither yet, and
+/// the mock holds every lookup); T's create is name-idempotent, so without
+/// a reservation both would share one target. One starts; the other is a
+/// 409 naming the migration that holds the name, and T holds one volume.
+#[tokio::test]
+async fn two_starts_onto_one_target_name_one_is_refused() {
+    let fx = setup().await;
+    fx.s.lock().unwrap().vols.insert(
+        "s-disk2-uuid".into(),
+        Vol { name: "ns.vm-disk2".into(), size: 8 << 30, ..Default::default() },
+    );
+    fx.s.lock().unwrap().lookup_delay_ms = 200;
+    fx.t.lock().unwrap().lookup_delay_ms = 200;
+    let go = |disk: &'static str| {
+        call(
+            reqwest::Method::POST,
+            format!("{}/api/v1/nodes/node-s/volumes/{disk}/migrate", fx.api),
+            Some(json!({"to": "node-t", "name": "ns.shared"})),
+        )
+    };
+    let ((a, av), (b, bv)) = tokio::join!(go("ns.vm-disk"), go("ns.vm-disk2"));
+    let mut sts = [a, b];
+    sts.sort();
+    assert_eq!(sts, [202, 409], "{av} / {bv}");
+    let refused = if a == 409 { &av } else { &bv };
+    assert!(refused.to_string().contains("is the target of migration"), "{refused}");
+    let t = fx.t.lock().unwrap();
+    assert_eq!(t.vols.values().filter(|v| v.name == "ns.shared").count(), 1);
+    assert_eq!(t.log.iter().filter(|l| l.starts_with("create ns.shared")).count(), 1, "{:?}", t.log);
+    drop(t);
+    assert_eq!(fx.state.fed.read().await.vm_migrations.len(), 1);
 }

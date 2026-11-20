@@ -576,6 +576,30 @@ async fn abort_steps(state: &Arc<AppState>, m: &VmMigration) -> anyhow::Result<(
     undo_target(state, m).await
 }
 
+/// Why a new migration of `source_node`'s volume `source_id` onto
+/// `target_name` on `target_node` may not start: a live (not terminal)
+/// migration already holds that source, or that target. `None`: free.
+pub fn reserved<'a>(
+    all: impl IntoIterator<Item = &'a VmMigration>,
+    source_node: &str,
+    source_id: &str,
+    target_node: &str,
+    target_name: &str,
+) -> Option<String> {
+    all.into_iter().filter(|m| !m.state.terminal()).find_map(|m| {
+        if m.source_node == source_node && m.source_volume_id == source_id {
+            Some(format!("{} on {source_node} is in migration {} ({:?})", m.source_name, m.id, m.state))
+        } else if m.target_node == target_node && m.target_name == target_name {
+            Some(format!(
+                "{target_name:?} on {target_node} is the target of migration {} ({:?}); name another with \"name\"",
+                m.id, m.state
+            ))
+        } else {
+            None
+        }
+    })
+}
+
 /// Withdraw and delete T's volume (abort; a first start that failed).
 pub async fn undo_target(state: &Arc<AppState>, m: &VmMigration) -> anyhow::Result<()> {
     if m.target_volume_id.is_none() && m.target_local_id.is_none() {

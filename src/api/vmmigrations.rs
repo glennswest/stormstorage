@@ -178,12 +178,14 @@ pub(super) async fn start(
     let id = new_id();
     {
         let mut fed = s.fed.write().await;
-        if let Some(open) = fed
-            .vm_migrations
-            .values()
-            .find(|m| m.source_node == node && m.source_volume_id == sid && !m.state.terminal())
-        {
-            return Err(ApiError::conflict(format!("{sname} on {node} is in migration {} ({:?})", open.id, open.state)));
+        // Both ends are reserved under this one write lock (finding
+        // 0f9c037af419): T's create is name-idempotent, so two migrations
+        // that passed the lookup above with the same (to, name) would
+        // otherwise share one target volume. A record holds its
+        // reservation until it is terminal (Aborted only once T's volume
+        // is deleted) or removed.
+        if let Some(why) = vmmigrate::reserved(fed.vm_migrations.values(), &node, &sid, &body.to, &target_name) {
+            return Err(ApiError::conflict(why));
         }
         let now = crate::backup::now_ms(std::time::SystemTime::now());
         fed.vm_migrations.insert(

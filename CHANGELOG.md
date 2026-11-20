@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-11-20 (#121)
+- **fix:** A disk migration reserves its target (node, name) as well as its
+  source when it is recorded, under one lock: two concurrent migrations onto
+  the same name on T no longer share one (name-idempotent) target volume;
+  the second is a 409 naming the first (finding 0f9c037af419).
+
 ### 2026-11-20 (#113, #116)
 - **feat:** `from_golden` on `POST /api/v1/volumes`: a mirrored volume
   filled once from a golden (a mirrored VM root, owner's answer B' on
