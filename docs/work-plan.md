@@ -1104,8 +1104,25 @@ Plan:
        Golden-cloned legs serve a blank disk. Narrowed question posted on
        #113 (A' new RAID layout / B' copy the golden once into the carve,
        recommended / C data disk only); #116 on hold, commented.
-   [ ] wait-owner on the narrowed question.
-Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
+   [x] Owner answered B' (2026-11-19, relayed by the master): no copy at
+       create by default; one copy of the golden's allocated extents into
+       the carve only when the spec asks for RAID1.
+5. [ ] B' with no engine change (#116, done here): stormblock's live mirror
+       (#295) already copies a volume's mapped extents into an NVMe-TCP
+       namespace, and a COW clone of a golden maps every extent of it. So:
+       `from_golden` on POST /api/v1/volumes (≥ 2 legs, the golden on a
+       placed node, which becomes the head; size ≥ the golden's). After
+       assembly the carve is made but served to no one while `seed` runs
+       (src/seed.rs, each reconcile): clone the golden on the head
+       (`<name>-seed`), serve the carve to the head's own host NQN, mirror
+       the clone into it, wait `synced`, stop (flushed), withdraw, delete
+       the clone, then publish. `seed {golden, state, bytes, secs}` on the
+       volume and an event. A delete mid-seed stops the mirror and deletes
+       the clone. lba: the carve must present the golden's block size, else
+       the seed fails naming it.
+6. [ ] file rustkube-node: a VM root on a stormstorage volume made
+       `from_golden` (boot from the served volume once `seed` is done).
+   Then: declare `faults = ["stop-worker"]` once #1454 lands; stormblock#657 →
 try `readd` first; the VM steps per the owner's answer.
 
 ### No stubs (#115, P-1, stormcentral#1455) — DONE 2026-11-18
