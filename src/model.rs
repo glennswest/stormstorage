@@ -210,6 +210,89 @@ pub struct Resync {
     pub finished_at: SystemTime,
 }
 
+/// Where a seed from a golden is (#113, #116).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SeedState {
+    /// Waiting for the array and its served volume (the carve).
+    Pending,
+    /// The head's mirror of the golden's clone into the carve is copying.
+    Copying,
+    /// Every byte is in the carve and on both legs; the clone is gone and
+    /// the volume is served.
+    Done,
+    /// Stopped; `message` says why. Retried after the recovery cooldown.
+    Failed,
+}
+
+/// One copy of a golden into a mirrored volume's served volume, made once
+/// at create (owner on #113: "no copy at create, unless it has a spec for
+/// one"). The head clones the golden (copy-on-write, nothing copied) and
+/// mirrors the clone into the carve on the array (stormblock#295), which
+/// copies only the golden's allocated extents, through the RAID1 onto
+/// every leg. Recorded step by step so a restart resumes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Seed {
+    /// The golden, by name or id, on the head's engine.
+    pub golden: String,
+    pub state: SeedState,
+    /// The node the copy runs on: the head when it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// The head's temporary clone of the golden, `<name>-seed`, by its
+    /// engine-local id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clone_id: Option<String>,
+    /// The carve as the head connects to it (`nvme-tcp://…&hostnqn=`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror_target: Option<String>,
+    /// The mirror's reading: what it walks and what is left.
+    #[serde(default)]
+    pub bytes_total: u64,
+    #[serde(default)]
+    pub bytes_remaining: u64,
+    pub started_at: SystemTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<SystemTime>,
+    /// From the start to `done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secs: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// No retry of a failed seed before this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<SystemTime>,
+}
+
+impl Seed {
+    pub fn new(golden: &str, now: SystemTime) -> Self {
+        Self {
+            golden: golden.to_string(),
+            state: SeedState::Pending,
+            node: None,
+            clone_id: None,
+            mirror_target: None,
+            bytes_total: 0,
+            bytes_remaining: 0,
+            started_at: now,
+            finished_at: None,
+            secs: None,
+            message: None,
+            retry_after: None,
+        }
+    }
+
+    /// The volume may be served to consumers.
+    pub fn done(&self) -> bool {
+        self.state == SeedState::Done
+    }
+}
+
+/// Whether a volume may be served to consumers: not while a seed fills it.
+pub fn seeding(vol: &DistVolume) -> bool {
+    vol.seed.as_ref().is_some_and(|s| !s.done())
+}
+
 /// A leg volume left on a node that could not be reached to delete it.
 /// Reaped when the node answers again.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,6 +545,11 @@ pub struct DistVolume {
     /// does not hold back the leg's return.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_rejoin_after: Option<SystemTime>,
+    /// The served volume filled from a golden (#113, #116): set by a create
+    /// `from_golden`. Until it is `done` the volume is served to no
+    /// consumer, so nothing reads a half-copied disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<Seed>,
 }
 
 impl DistVolume {

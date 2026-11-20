@@ -306,6 +306,33 @@ stormview components feed on **:9093**.
   volume at a time. If the new member fails, or makes no progress for
   `recovery.rebuild_timeout_secs`, the new leg is undone and the old one
   kept.
+- **A mirrored volume filled from a golden (#113, #116).** A create with
+  `from_golden: <golden>` makes a mirrored volume (≥ 2 legs) whose served
+  volume starts as a copy of that golden: a mirrored VM root. The owner's
+  rule is "no copy at create, unless it has a spec for one", and this is
+  that spec. The golden must be on one of the placed nodes. That node is
+  put first, so it is the head, and `size_bytes` must be at least the
+  golden's. Legs and array are made as for any volume. The served volume
+  (`<name>-mirror`, carved on the array) is made and **served to no
+  consumer** until the copy is done. A publish holds it (`export.state`
+  `none`, with a message), and a consumer host is refused. Then the
+  reconciler, on the instance that acts on recovery: the head clones the
+  golden (`<name>-seed`, copy-on-write, nothing copied); the carve is
+  served to the head's own `[legs] host_nqn`; and
+  `POST /api/v1/volumes/{clone}/mirror` (stormblock#295) copies the clone's
+  mapped extents, the golden's allocated bytes, into the carve. The copy
+  goes through the RAID1 onto every leg, and extents that read as zeros
+  are skipped. At `synced` the mirror is stopped (synced and flushed, else
+  a failure), the head's own serve is withdrawn, the clone is deleted, and
+  the volume is published. The volume carries `seed {golden, state:
+  pending|copying|done|failed, node, clone_id, mirror_target, bytes_total,
+  bytes_remaining, started_at, finished_at, secs, message, retry_after}`,
+  and events say each step. A failure (the mirror failed or vanished, the
+  head moved, a golden laid in other blocks than the served volume, a
+  secret golden) undoes what the seed made on the engine and starts again
+  after `recovery.cooldown_secs`. A delete mid-copy stops the mirror and
+  deletes the clone first. No stormblock change was needed: the live
+  mirror of #44's disk move does the copy.
 - **Re-leg on node loss (#1).** After every poll a reconciler checks the
   assembled volumes. A leg whose node has crossed `poll.fail_threshold` is
   marked `lost` and the volume `degraded`. The lost leg is then replaced
@@ -851,8 +878,8 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/pools` | Every pool with its `kind`. `policy`: matched/healthy node counts and a capacity rollup over healthy nodes. `slab`: `node`, `slab`, `tier`, `role`, `domain`, total/free/allocated bytes, `volumes`. `tier`: `nodes`, `slabs`, summed bytes, `volumes`. |
 | POST | `/api/v1/placement/plan` | Dry run. Body `{size_bytes, pool?, replicas?, rung?, tier?}` returns `{replicas, rung, legs:[node…]}`. |
 | GET | `/api/v1/volumes` | All distributed volumes. |
-| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, source?: {kind: snapshot|volume, id}, hosts?: [{host_nqn, dhchap?}]}` (`source`: a copy-on-write clone, #49; `encrypted`/`qos_class`: 501, not carried to the engine; `raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
-| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `extent_size_bytes` (when asked at create), `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`), and `raid {level, members, health, rebuilding}` (#68). `GET /api/v1/volumes` lists the same. |
+| POST | `/api/v1/volumes` | Create. Body `{name, size_bytes, pool?, replicas?, rung?, tier?, bandwidth_class?, prefer_node?, extent_size_bytes?, raid?, source?: {kind: snapshot|volume, id}, from_golden?, hosts?: [{host_nqn, dhchap?}]}` (`source`: a copy-on-write clone, #49; `from_golden`: a mirrored volume filled once from that golden and served when the copy is done, #116, 400 with `source` or one leg, 409 when no placed node holds the golden; `encrypted`/`qos_class`: 501, not carried to the engine; `raid`: `none`/`mirror`, parity 501, #68; `prefer_node`: soft head placement, #50; `extent_size_bytes`: every leg's extent size, #59; the answer then carries `prefer_node_honored`) (hosts: served per host, #51). Places, creates the legs and assembles. Returns the volume as `GET` shows it. |
+| GET | `/api/v1/volumes/{name}` | One volume: legs (node, volume id, state, export, drive/member uuids, `epoch`), head, array id, assembly, `export` (what consumers attach), `epoch`, `fenced`, `bandwidth_class`, `extent_size_bytes` (when asked at create), `dual_attach`, and from the last reading of the head: `replica_sync` (the `/v1` replica list), `health`, `sync_read_at`, `sync_source` (`head` or `superblock`), and `raid {level, members, health, rebuilding}` (#68); `seed` for a volume made `from_golden` (#116). `GET /api/v1/volumes` lists the same. |
 | POST | `/api/v1/snapshots` | Snapshot `{name, volume_id}` on the node serving the volume (#49): /v1's `Snapshot` (`id` = name) plus `parent`, `node`, `engine_name`, `engine_id`. Idempotent on name. |
 | GET | `/api/v1/snapshots` | Bare array (as /v1); `?name=`, `?source_volume=`. `GET /api/v1/snapshots/{id}` one, `DELETE` removes it (409 for a group's member). |
 | POST | `/api/v1/group-snapshots` | `{name, volume_ids}`: one point in time across volumes served from one node (else 409). /v1's `GroupSnapshot` (`snapshots` in full). `GET` lists (`?name=`), `GET`/`DELETE /api/v1/group-snapshots/{id}`. |
@@ -909,7 +936,9 @@ There is no metrics endpoint. The health check is `/api/v1/health`.
   `PUT arrays/{id}/rebuild` (bandwidth class),
   `POST arrays/{id}/members`, `DELETE arrays/{id}/members/{member}`,
   `GET volumes/{id}` and `POST|DELETE volumes/{id}/mirror` (S's live
-  mirror for a VM-disk migration, #44; admin credential).
+  mirror for a VM-disk migration, #44, and the head's copy of a golden's
+  clone into a served volume, #116; admin credential). A `from_golden`
+  seed also makes its clone with `/v1` `POST volumes` `source`.
 
 Assembly needs a stormblock with stormblock#73 (nvme-tcp drives as RAID
 members, 2026-08-28 or later) and an engine NVMe-oF target that is

@@ -500,6 +500,7 @@ pub(super) async fn create_clone(
         expanding: None,
         last_resync: None,
         next_rejoin_after: None,
+        seed: None,
         // The clone's own, never its parent's (stormblock#115: a clone
         // belongs to whoever asked for it).
         owner,

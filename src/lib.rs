@@ -22,6 +22,7 @@ pub mod rebalance;
 pub mod refusal;
 pub mod registry;
 pub mod replicate;
+pub mod seed;
 pub mod store;
 pub mod vmmigrate;
 

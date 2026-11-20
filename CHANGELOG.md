@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### 2026-11-20 (#113, #116)
+- **feat:** `from_golden` on `POST /api/v1/volumes`: a mirrored volume
+  filled once from a golden (a mirrored VM root, owner's answer B' on
+  #113). The golden's node is the head. The served volume is held from
+  consumers while the head mirrors a copy-on-write clone of the golden
+  into it (stormblock#295's live mirror, no engine change). It is served
+  when `seed.state` is `done`. Failures undo and retry after the cooldown;
+  a delete mid-copy cleans up. src/seed.rs, tests/seed.rs.
+
 ### 2026-11-19
 - **docs:** #113: a golden-cloned leg cannot be a mirrored VM root. The RAID1 superblock takes a member's first MiB, and the served volume is a new carve on the array. The narrowed question is with the owner, and #116 is on hold.
 <!-- New unreleased changes go here -->

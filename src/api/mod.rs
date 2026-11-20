@@ -750,6 +750,13 @@ struct CreateVolumeRequest {
     /// for. Recorded and written to every engine volume it is made of.
     #[serde(default)]
     owner: Option<crate::inventory::Owner>,
+    /// Fill the mirrored volume from this golden (#113, #116), by name or
+    /// id: the golden is copied once into the served volume, through the
+    /// RAID1 onto every leg, and the volume is served when the copy is
+    /// done (`seed`). Needs ≥ 2 legs and the golden on a placed node, which
+    /// becomes the head; `size_bytes` at least the golden's.
+    #[serde(default)]
+    from_golden: Option<String>,
 }
 
 /// An owner as a request names it (#109): kind and name are required (a
@@ -806,6 +813,15 @@ async fn create_volume(
         return Err(ApiError::not_implemented(
             "encrypted and qos_class are not applied by the engine yet (stormblock#319): refused rather than \
              recorded, so no volume claims an encryption or a QoS class it does not have",
+        ));
+    }
+    let from_golden = req.from_golden.as_deref().map(str::trim).filter(|g| !g.is_empty()).map(str::to_string);
+    if req.from_golden.is_some() && from_golden.is_none() {
+        return Err(ApiError::bad_request("from_golden: a golden's name or id"));
+    }
+    if from_golden.is_some() && req.source.is_some() {
+        return Err(ApiError::bad_request(
+            "from_golden or source, not both: a clone shares its source's data, a volume from a golden is a copy",
         ));
     }
     if let Some(source) = req.source.clone() {
@@ -868,7 +884,7 @@ async fn create_volume(
         raid: req.raid,
     };
     let rp = resolve_plan(&s, &plan_req).await?;
-    let (picks, honored) = placement::plan_preferring(
+    let (mut picks, mut honored) = placement::plan_preferring(
         &rp.candidates,
         &s.config.federation.rungs,
         &rp.rung,
@@ -878,6 +894,10 @@ async fn create_volume(
         req.prefer_node.as_deref(),
     )
     .map_err(ApiError::conflict)?;
+    if let Some(g) = &from_golden {
+        golden_head_first(&s, g, req.size_bytes, &mut picks).await?;
+        honored = req.prefer_node.as_deref().is_some_and(|p| picks.first().map(String::as_str) == Some(p));
+    }
 
     // Create one ordinary volume per leg node via /v1 (name-idempotent).
     let mut legs: Vec<Leg> = Vec::new();
@@ -958,6 +978,7 @@ async fn create_volume(
         expanding: None,
         last_resync: None,
         next_rejoin_after: None,
+        seed: from_golden.as_deref().map(|g| crate::model::Seed::new(g, SystemTime::now())),
         owner,
     };
     {
@@ -1026,6 +1047,46 @@ async fn create_volume(
         }
     }
     Ok(Json(response))
+}
+
+/// A volume from a golden (#116): mirrored, and headed on a placed node
+/// that holds the golden, put first (the head is the first leg's node). The
+/// golden is read on each placed node until one has it.
+async fn golden_head_first(s: &Arc<AppState>, golden: &str, size_bytes: u64, picks: &mut [String]) -> Result<(), ApiError> {
+    if picks.len() < 2 {
+        return Err(ApiError::bad_request(
+            "from_golden fills a mirrored volume (≥ 2 legs: raid mirror, or replicas 2 or more); \
+             a one-leg disk from a golden is a clone of it on its node",
+        ));
+    }
+    let mut looked = Vec::new();
+    for i in 0..picks.len() {
+        let engine = {
+            let fed = s.fed.read().await;
+            fed.nodes.get(&picks[i]).map(|n| s.engine_for(n))
+        };
+        let Some(engine) = engine else { continue };
+        match engine.get_any_volume(golden).await {
+            Ok(v) => {
+                let gb = v.get("virtual_size_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                if size_bytes < gb {
+                    return Err(ApiError::bad_request(format!(
+                        "size_bytes {size_bytes}: golden {golden} is {gb} bytes; a volume filled from it is at least that"
+                    )));
+                }
+                if v.get("secret").and_then(|x| x.as_bool()) == Some(true) {
+                    return Err(ApiError::bad_request(format!("{golden} is a secret volume: its bytes never leave it")));
+                }
+                picks.swap(0, i);
+                return Ok(());
+            }
+            Err(e) => looked.push(format!("{}: {e:#}", picks[i])),
+        }
+    }
+    Err(ApiError::conflict(format!(
+        "golden {golden} is on none of the placed nodes ({}); fetch it onto one of them, or name one that has it in prefer_node",
+        looked.join("; ")
+    )))
 }
 
 async fn list_volumes(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -1264,6 +1325,13 @@ async fn delete_volume(
         }
         vol
     };
+    // A golden still being copied in (#116): the mirror, the head's own
+    // serve of the carve and the clone go first, or the carve stays in use.
+    if let Some(seed) = vol.seed.as_ref().filter(|x| !x.done()) {
+        crate::seed::undo(&s, &vol, seed)
+            .await
+            .map_err(|e| ApiError::upstream(format!("{name}: stopping its seed: {e:#} — volume record kept")))?;
+    }
     // Its backups outlive it (#46); the base snapshot on its array goes.
     backups::on_volume_delete(&s, &name).await?;
     // Stop serving first (#2): consumers lose the volume before any leg

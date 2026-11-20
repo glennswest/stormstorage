@@ -1231,6 +1231,7 @@ pub async fn reconcile(state: &Arc<AppState>) {
     crate::rebalance::run(state, now).await;
     crate::backup::run(state, now).await;
     crate::vmmigrate::run(state).await;
+    crate::seed::run(state).await;
     if state.recovery_active() {
         crate::head::retry_pending_rates(state).await;
     }
@@ -1895,6 +1896,9 @@ async fn publish_inner(
     let is_clone = vol.assembly == AssemblyState::Clone;
     let hosts = vol.export.hosts.clone();
     let per_host = vol.export.per_host || !hosts.is_empty();
+    // Filled from a golden (#116): the carve is made, and served to no
+    // consumer until the copy is done.
+    let seeding = crate::model::seeding(&vol);
     // A served volume this publish did not make: a 404 on it means its data
     // is gone (#40).
     let recorded = volume_id.is_some();
@@ -1947,7 +1951,7 @@ async fn publish_inner(
             volume_id = Some(id);
             master_node = crate::engine::Engine::master_node_of(&created);
         }
-        if per_host {
+        if per_host || seeding {
             return Ok(None);
         }
         let vid = volume_id.clone().expect("set");
@@ -1967,7 +1971,7 @@ async fn publish_inner(
     let mut served: BTreeMap<String, crate::model::HostServe> = BTreeMap::new();
     let mut secrets = BTreeMap::new();
     let mut host_failures = Vec::new();
-    if result.is_ok() && !hosts.is_empty() {
+    if result.is_ok() && !hosts.is_empty() && !seeding {
         let vid = volume_id.clone().expect("set");
         match served_local_id(&at, &vol, &vid, adopted).await {
             Err(e) => {
@@ -2049,6 +2053,15 @@ async fn publish_inner(
                     }
                 }
             }
+            Ok(None) if seeding => {
+                // The carve exists; nothing is served from it yet (#116).
+                ex.state = crate::model::ExportState::None;
+                ex.message = Some(format!(
+                    "being filled from golden {}: served once the copy is done",
+                    v.seed.as_ref().map_or("?", |x| x.golden.as_str())
+                ));
+                ex.coordinates = previous.coordinates.clone();
+            }
             Ok(None) => {
                 // Served per host: no shared coordinates to hand out.
                 ex.state = crate::model::ExportState::Published;
@@ -2082,6 +2095,10 @@ async fn publish_inner(
         Ok(Some(c)) => {
             let w = what(export.coordinates_changed);
             event(state, name, Severity::Info, format!("{name}: {w} on {} at {}", at.node, c.drive_uri())).await;
+        }
+        Ok(None) if seeding => {
+            event(state, name, Severity::Info, format!("{name}: served volume made on {}, held until its seed is done", at.node))
+                .await;
         }
         Ok(None) => {
             let w = what(export.coordinates_changed);
@@ -2184,6 +2201,15 @@ pub async fn serve_host(
             .volumes
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("volume {name:?} not found"))?;
+        // Nothing is served while a golden is copied in (#116); a host named
+        // now would be answered with no coordinates.
+        if let Some(seed) = v.seed.as_ref().filter(|x| !x.done()) {
+            anyhow::bail!(
+                "{name}: being filled from golden {} ({:?}); served once the copy is done — ask again then",
+                seed.golden,
+                seed.state
+            );
+        }
         match v.export.hosts.iter_mut().find(|h| h.host_nqn == host_nqn) {
             Some(h) => h.dhchap |= dhchap,
             None => v.export.hosts.push(crate::model::HostServe {
@@ -2547,6 +2573,7 @@ mod tests {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            seed: None,
             owner: None,
         }
     }

@@ -1523,6 +1523,7 @@ mod tests {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            seed: None,
             owner: None,
         }
     }
