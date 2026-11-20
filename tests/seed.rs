@@ -23,7 +23,6 @@ struct Vol {
     name: String,
     size: u64,
     lba: u64,
-    v1: Option<String>,
     source: Option<String>,
     mirror: Option<Value>,
     served: BTreeSet<String>,
@@ -59,7 +58,7 @@ async fn v1_create(State(m): State<M>, Json(b): Json<Value>) -> Json<Value> {
     m.log.push(format!("create {name} from {source:?}"));
     m.vols.insert(
         format!("{node}-{n:04}"),
-        Vol { name: name.clone(), size: b["size_bytes"].as_u64().unwrap(), lba: 4096, v1: Some(v1.clone()), source, ..Default::default() },
+        Vol { name: name.clone(), size: b["size_bytes"].as_u64().unwrap(), lba: 4096, source, ..Default::default() },
     );
     Json(json!({"id": v1, "name": name, "replicas": [{"node": node, "role": "master"}]}))
 }
@@ -213,7 +212,7 @@ async fn setup() -> Fx {
         h.vols.insert("golden-uuid".into(), Vol { name: "golden-x".into(), size: GOLDEN_BYTES, lba: 4096, ..Default::default() });
         h.vols.insert(
             "carve-uuid".into(),
-            Vol { name: "root-mirror".into(), size: 8 << 30, lba: 4096, v1: Some("carve-v1".into()), ..Default::default() },
+            Vol { name: "root-mirror".into(), size: 8 << 30, lba: 4096, ..Default::default() },
         );
     }
     let host = config.legs.host_nqn_for("node-a");
