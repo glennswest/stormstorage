@@ -833,11 +833,8 @@ async fn create_volume(
                  and extent_size_bytes are its source's",
             ));
         }
-        if req.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
-            return Err(ApiError::bad_request(format!(
-                "names ending in {:?} are reserved for served mirrors",
-                crate::orchestrate::MIRROR_SUFFIX
-            )));
+        if let Some(why) = crate::model::reserved_name(&req.name) {
+            return Err(ApiError::bad_request(why));
         }
         return snapshots::create_clone(&s, &req.name, req.size_bytes, source, hosts, owner).await.map(Json);
     }
@@ -848,13 +845,11 @@ async fn create_volume(
             )));
         }
     }
-    if req.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
-        // The head names the consumer volume `<name>-mirror`; a leg of that
-        // name would be answered as the consumer volume (name-idempotent).
-        return Err(ApiError::bad_request(format!(
-            "names ending in {:?} are reserved for served mirrors",
-            crate::orchestrate::MIRROR_SUFFIX
-        )));
+    // The head names the consumer volume `<name>-mirror`, and a backup
+    // its volume `<name>-backup`; a leg of either name would be answered
+    // as that volume (name-idempotent), or adopted by it.
+    if let Some(why) = crate::model::reserved_name(&req.name) {
+        return Err(ApiError::bad_request(why));
     }
     {
         let fed = s.fed.read().await;

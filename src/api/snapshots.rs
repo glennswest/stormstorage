@@ -14,7 +14,7 @@ use crate::events::Severity;
 use crate::model::{
     AssemblyState, CloneOf, DistVolume, Export, GroupSnapshot, HostServe, Snapshot, VolumeSource,
 };
-use crate::orchestrate::{data_at, MIRROR_SUFFIX};
+use crate::orchestrate::data_at;
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
@@ -36,10 +36,8 @@ fn name_free(fed: &crate::model::FedState, name: &str) -> Result<(), ApiError> {
     if name.is_empty() {
         return Err(ApiError::bad_request("name required"));
     }
-    if name.ends_with(MIRROR_SUFFIX) {
-        return Err(ApiError::bad_request(format!(
-            "names ending in {MIRROR_SUFFIX:?} are reserved for served mirrors"
-        )));
+    if let Some(why) = crate::model::reserved_name(name) {
+        return Err(ApiError::bad_request(why));
     }
     if fed.volumes.contains_key(name) {
         return Err(ApiError::conflict(format!("{name:?} is a volume")));

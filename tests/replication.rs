@@ -100,6 +100,8 @@ struct Mock {
     /// `/v1/volumes/{id}/expand` answers without growing (as stormblock's
     /// does when its backing resize fails).
     expand_noop: bool,
+    /// Engine volume id → the `owner` its create carried (stormblock#115).
+    owners: BTreeMap<String, Value>,
     log: Vec<String>,
 }
 
@@ -179,6 +181,9 @@ async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Jso
         disks.sizes.insert(size_key(&node, &id), b["size_bytes"].as_u64().unwrap_or(0));
         id
     });
+    if let Some(o) = b.get("owner").filter(|o| !o.is_null()) {
+        m.owners.entry(id.clone()).or_insert_with(|| o.clone());
+    }
     (StatusCode::OK, Json(json!({"id": id, "name": name, "replicas": [{"node": node, "role": "master"}]})))
 }
 
@@ -565,7 +570,8 @@ async fn any_get(State(s): State<S>, Path(key): Path<String>) -> (StatusCode, Js
         return (StatusCode::NOT_FOUND, Json(json!({})));
     };
     let size = s.disks.lock().unwrap().sizes.get(&size_key(&m.node, &id)).copied().unwrap_or(0);
-    (StatusCode::OK, Json(json!({"id": id, "virtual_size_bytes": size})))
+    let owner = m.owners.get(&id).cloned().unwrap_or(Value::Null);
+    (StatusCode::OK, Json(json!({"id": id, "virtual_size_bytes": size, "owner": owner})))
 }
 
 /// `POST /api/v1/arrays/{id}/grow` (stormblock#318): up to the smallest
@@ -1737,6 +1743,68 @@ async fn backups_ship_points_in_time_and_restore() {
     assert!(mocks[&spare].lock().unwrap().log.iter().any(|l| l.starts_with("delete ") && l.contains("-vol-")), "backup volume deleted");
     let (st, _) = call(format!("{api}/api/v1/volumes"), json!({"name": "bv", "size_bytes": 1u64 << 30})).await;
     assert_eq!(st, 200);
+}
+
+/// Finding 337e802c1378 (#121): `<volume>-backup` is the backup's own
+/// name. A user cannot take it, and an engine volume of that name that is
+/// not the backup's (no owner, or another) is neither adopted nor shipped
+/// into, nor deleted by a purge, also when a record from before the check
+/// names it.
+#[tokio::test]
+async fn backups_never_adopt_or_delete_a_volume_not_theirs() {
+    let (api, state, mocks) = setup(&["node-a", "node-b", "node-c"]).await;
+    for n in ["ov-backup", "ov-mirror"] {
+        let (st, e) = call(format!("{api}/api/v1/volumes"), json!({"name": n, "size_bytes": 1u64 << 30})).await;
+        assert_eq!(st, 400, "{n} is reserved: {e}");
+    }
+    let (head, slave, _) = create_mirror(&api, "ov").await;
+    let spare = ["node-a", "node-b", "node-c"].into_iter().find(|n| *n != head && *n != slave).unwrap().to_string();
+    for m in mocks.values() {
+        m.lock().unwrap().ship = Some(1);
+    }
+    // Someone's volume of that name on the only backup node, made on the
+    // engine directly (no owner), holding their data.
+    let foreign = {
+        let mut m = mocks[&spare].lock().unwrap();
+        m.next += 1;
+        let id = format!("{spare}-vol-{}", m.next);
+        m.volumes.insert(id.clone(), ("ov-backup".into(), None, 1));
+        id
+    };
+    let (st, b) = put_backup(format!("{api}/api/v1/volumes/ov/backup"), json!({"interval_secs": 60})).await;
+    assert_eq!(st, 200, "{b}");
+    backup_until_settled(&state, std::time::SystemTime::now()).await;
+    let b = get_json(format!("{api}/api/v1/volumes/ov/backup")).await;
+    assert_eq!(b["node"], spare.as_str(), "{b}");
+    assert_eq!(b["state"], "failed", "{b}");
+    assert!(b["message"].as_str().unwrap().contains("not this backup's"), "{b}");
+    assert!(b["target_volume_id"].is_null(), "not adopted: {b}");
+    {
+        let m = mocks[&spare].lock().unwrap();
+        assert!(!m.log.iter().any(|l| l.starts_with("create ov-backup")), "{:?}", m.log);
+        assert!(!m.log.iter().any(|l| l.starts_with("attach ")), "{:?}", m.log);
+    }
+    assert!(!mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("ship ")), "nothing shipped");
+
+    // A record from before the check that names it: still not touched,
+    // and a purge drops the record but leaves the volume, and says so.
+    {
+        let mut fed = state.fed.write().await;
+        let r = fed.backups.get_mut("ov").unwrap();
+        r.target_volume_id = Some(foreign.clone());
+        r.target_owned = false;
+    }
+    backup_until_settled(&state, std::time::SystemTime::now()).await;
+    let b = get_json(format!("{api}/api/v1/volumes/ov/backup")).await;
+    assert_eq!(b["target_owned"], false, "{b}");
+    assert!(b["target_attach"].is_null(), "{b}");
+    let (st, p) = delete_status(format!("{api}/api/v1/volumes/ov/backup?purge=true")).await;
+    assert_eq!(st, 200, "{p}");
+    assert!(p["left"].as_str().unwrap_or_default().contains("not this backup's"), "{p}");
+    assert!(state.fed.read().await.backups.is_empty());
+    let m = mocks[&spare].lock().unwrap();
+    assert!(m.volumes.contains_key(&foreign), "the user's volume survives the purge: {:?}", m.log);
+    assert!(!m.log.iter().any(|l| l.contains(&foreign) && l.starts_with("delete")), "{:?}", m.log);
 }
 
 /// #46: until the engine can ship (stormblock#400), a cycle ends

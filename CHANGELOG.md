@@ -7,6 +7,14 @@
   source when it is recorded, under one lock: two concurrent migrations onto
   the same name on T no longer share one (name-idempotent) target volume;
   the second is a 409 naming the first (finding 0f9c037af419).
+- **fix:** A backup never adopts or deletes a volume that is not its own
+  (finding 337e802c1378). `<name>-backup` is reserved like `-mirror` (create,
+  clone, snapshot, restore are a 400). The backup volume is made with the
+  engine owner `StormstorageBackup/<name>`; an existing volume of that name
+  is taken only with that owner, a record from before the check
+  (`target_owned` false) touches nothing until the engine shows it, and a
+  purge deletes the backup volume only when it is ours, else answers
+  `left`. tests/replication.rs `backups_never_adopt_or_delete_a_volume_not_theirs`.
 
 ### 2026-11-20 (#113, #116)
 - **feat:** `from_golden` on `POST /api/v1/volumes`: a mirrored volume

@@ -106,7 +106,10 @@ ends `waiting_engine`. The API is in the README.
   never holds a leg of the volume.
 - **Target:** `<name>-backup`, a thin /v1 volume on the backup node. It is
   attached for the serving node's host NQN (#27), and again after a
-  promote moves the head.
+  promote moves the head. It carries the engine owner
+  `StormstorageBackup/<name>`; a volume of that name without it is never
+  adopted, shipped into or deleted (#121). The `-backup` suffix is
+  reserved: no user volume takes it.
 - **Cycle** (reconciler, one step per poll, recorded so a restart resumes):
   1. snapshot the served volume on the serving node;
   2. `POST /v1/snapshots/{snap}/ship {target_uri, base, max_bytes_per_sec}`;

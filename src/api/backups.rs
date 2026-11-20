@@ -153,19 +153,30 @@ pub(super) async fn stop(
         commit(&s, &name, Severity::Info, format!("{name}: backups stopped; {} points kept", b.points.len())).await;
         return Ok(Json(json!({ "stopped": name, "points": b.points.len() })));
     }
-    purge(&s, &b).await?;
+    let left = purge(&s, &b).await?;
     {
         let mut fed = s.fed.write().await;
         fed.backups.remove(&name);
         fed.revision += 1;
     }
-    commit(&s, &name, Severity::Info, format!("{name}: backups purged ({} points)", b.points.len())).await;
-    Ok(Json(json!({ "purged": name })))
+    let mut msg = format!("{name}: backups purged ({} points)", b.points.len());
+    if let Some(l) = &left {
+        msg.push_str(&format!("; left alone: {l}"));
+    }
+    commit(&s, &name, if left.is_some() { Severity::Warning } else { Severity::Info }, msg).await;
+    let mut out = json!({ "purged": name });
+    if let Some(l) = left {
+        out["left"] = json!(l);
+    }
+    Ok(Json(out))
 }
 
 /// Delete what a backup holds: its points and volume on the backup node,
-/// and the base (and a job's snapshot) on the serving node.
-async fn purge(s: &Arc<AppState>, b: &Backup) -> Result<(), ApiError> {
+/// and the base (and a job's snapshot) on the serving node. The backup
+/// volume is deleted only when the engine shows it carries this backup's
+/// owner (finding 337e802c1378); one that does not is left, and said
+/// (`Some`).
+async fn purge(s: &Arc<AppState>, b: &Backup) -> Result<Option<String>, ApiError> {
     let engine_of = |fed: &crate::model::FedState, node: &str| -> Result<crate::engine::Engine, ApiError> {
         let n = fed.nodes.get(node).ok_or_else(|| ApiError::conflict(format!("node {node:?} not in registry")))?;
         if !n.status.healthy {
@@ -197,13 +208,21 @@ async fn purge(s: &Arc<AppState>, b: &Backup) -> Result<(), ApiError> {
                 .map_err(|e| ApiError::upstream(format!("point {}: {e:#}", p.name)))?;
         }
         if let Some(t) = &b.target_volume_id {
-            if let Some(m) = &b.target_master {
-                let _ = be.detach_volume(t, m).await;
+            let node = b.node.as_deref().unwrap_or("?");
+            match crate::backup::target_ownership(&be, node, &b.volume).await {
+                Ok(crate::backup::Ownership::Ours) => {
+                    if let Some(m) = &b.target_master {
+                        let _ = be.detach_volume(t, m).await;
+                    }
+                    be.delete_volume(t).await.map_err(|e| ApiError::upstream(format!("backup volume: {e:#}")))?;
+                }
+                Ok(crate::backup::Ownership::Absent) => {}
+                Ok(crate::backup::Ownership::Foreign(why)) => return Ok(Some(why)),
+                Err(e) => return Err(ApiError::upstream(format!("backup volume: {e:#}"))),
             }
-            be.delete_volume(t).await.map_err(|e| ApiError::upstream(format!("backup volume: {e:#}")))?;
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 #[derive(Deserialize)]
@@ -226,8 +245,11 @@ pub(super) async fn restore(
         if !b.points.iter().any(|p| p.name == point) {
             return Err(ApiError::not_found(format!("point {point:?} of {volume:?}")));
         }
-        if body.name.is_empty() || body.name.ends_with(crate::orchestrate::MIRROR_SUFFIX) {
-            return Err(ApiError::bad_request("a name, not ending in -mirror"));
+        if body.name.is_empty() {
+            return Err(ApiError::bad_request("a name"));
+        }
+        if let Some(why) = crate::model::reserved_name(&body.name) {
+            return Err(ApiError::bad_request(why));
         }
         if fed.volumes.contains_key(&body.name) || fed.snapshots.contains_key(&body.name) {
             return Err(ApiError::conflict(format!("{:?} exists", body.name)));

@@ -1111,6 +1111,11 @@ pub struct Backup {
     /// `<volume>-backup`, a thin /v1 volume on `node`.
     #[serde(default)]
     pub target_volume_id: Option<String>,
+    /// The engine showed the target carrying [`backup_owner`] (#121). A
+    /// record from before that check is false until the engine shows it;
+    /// nothing ships into a target, and purge deletes none, until it does.
+    #[serde(default)]
+    pub target_owned: bool,
     #[serde(default)]
     pub target_master: Option<String>,
     /// Its attach, served to `attached_for`'s host NQN.
@@ -1136,9 +1141,35 @@ pub struct Backup {
     pub source_deleted: bool,
 }
 
+/// The suffix of a backup volume's engine name (#46). Reserved: no
+/// volume, clone, snapshot or restore takes a name ending in it (finding
+/// 337e802c1378), so a backup never meets a user volume of its name.
+pub const BACKUP_SUFFIX: &str = "-backup";
+
 /// The backup volume's engine name for `volume` (#46).
 pub fn backup_target_name(volume: &str) -> String {
-    format!("{volume}-backup")
+    format!("{volume}{BACKUP_SUFFIX}")
+}
+
+/// The engine owner a backup volume carries (stormblock#115): what proves
+/// an engine volume named [`backup_target_name`] is this backup's before
+/// stormstorage ships into it or deletes it (finding 337e802c1378).
+pub fn backup_owner(volume: &str) -> crate::inventory::Owner {
+    crate::inventory::Owner {
+        kind: "StormstorageBackup".into(),
+        namespace: String::new(),
+        name: volume.into(),
+        uid: None,
+    }
+}
+
+/// Why a name a user asks for is not theirs to take: it ends in a suffix
+/// stormstorage names its own engine volumes with (`-mirror`, `-backup`).
+pub fn reserved_name(name: &str) -> Option<String> {
+    [(crate::orchestrate::MIRROR_SUFFIX, "served mirrors"), (BACKUP_SUFFIX, "backup volumes")]
+        .into_iter()
+        .find(|(suffix, _)| name.ends_with(suffix))
+        .map(|(suffix, what)| format!("names ending in {suffix:?} are reserved for {what}"))
 }
 
 /// A named place on the target node for a migrated volume (#106): a RAID

@@ -549,7 +549,13 @@ stormview components feed on **:9093**.
     interval_secs (3600, ≥ 60), keep (7)}` turns backups on. The backup
     node is chosen from the policy's healthy nodes and never holds a leg
     of the volume. `<name>-backup`, a thin volume there, is attached for
-    the serving node's host NQN, again after a promote.
+    the serving node's host NQN, again after a promote. It is made with
+    the engine owner `{kind: StormstorageBackup, name: <name>}`, and an
+    engine volume of that name is shipped into, or deleted by a purge,
+    only while it carries that owner: one that does not (someone else's,
+    or none) is left alone, the backup is `failed` saying so, and a purge
+    answers `left` naming it (#121). Names ending in `-backup` are
+    refused on create, clone, snapshot and restore, as `-mirror` ones are.
   - Each interval, on the instance that acts on recovery:
     1. the served volume is snapshotted on the node that serves it;
     2. the engine ships the extents changed since the last shipped

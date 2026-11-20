@@ -148,6 +148,61 @@ pub async fn drop_snapshot(engine: &crate::engine::Engine, name: &str, id: Optio
     }
 }
 
+/// What the engine volume named `<volume>-backup` on the backup node is.
+/// One of someone else's (another owner, or none) is neither adopted nor
+/// deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ownership {
+    Absent,
+    Ours,
+    /// Why it is not this backup's.
+    Foreign(String),
+}
+
+impl Ownership {
+    /// Absent or ours; someone else's is an error.
+    pub fn or_refuse(self) -> anyhow::Result<Self> {
+        match self {
+            Self::Foreign(why) => Err(anyhow::anyhow!(why)),
+            o => Ok(o),
+        }
+    }
+}
+
+/// Is `owner` (an engine volume's `owner`, as it answered) this backup's?
+/// Pure.
+pub fn owned_by_backup(owner: Option<&serde_json::Value>, volume: &str) -> bool {
+    let want = crate::model::backup_owner(volume);
+    owner
+        .and_then(|o| serde_json::from_value::<crate::inventory::Owner>(o.clone()).ok())
+        .is_some_and(|o| o.kind == want.kind && o.namespace == want.namespace && o.name == want.name)
+}
+
+pub async fn target_ownership(
+    engine: &crate::engine::Engine,
+    node: &str,
+    volume: &str,
+) -> anyhow::Result<Ownership> {
+    let tname = crate::model::backup_target_name(volume);
+    let v = match engine.get_any_volume(&tname).await {
+        Ok(v) => v,
+        Err(e) if crate::engine::is_not_found(&e) => return Ok(Ownership::Absent),
+        Err(e) => return Err(anyhow::anyhow!("{node}: {tname}: {e:#}")),
+    };
+    if owned_by_backup(v.get("owner"), volume) {
+        return Ok(Ownership::Ours);
+    }
+    let whose = v
+        .get("owner")
+        .filter(|o| !o.is_null())
+        .map(|o| format!("owner {o}"))
+        .unwrap_or_else(|| "no owner".into());
+    Ok(Ownership::Foreign(format!(
+        "{node} holds an engine volume {tname:?} ({whose}) that is not this backup's: it is neither \
+         shipped into nor deleted; rename or delete it on {node}, or purge this backup"
+    )))
+}
+
 async fn step(state: &Arc<AppState>, name: &str, now: SystemTime) -> anyhow::Result<()> {
     let (b, at, vol_bytes) = {
         let fed = state.fed.read().await;
@@ -179,20 +234,53 @@ async fn step(state: &Arc<AppState>, name: &str, now: SystemTime) -> anyhow::Res
     };
 
     // 2. Its volume there: thin, so a first copy of allocated extents only.
+    // Made carrying this backup's owner; a volume of that name already
+    // there is taken only when it carries that owner (a create whose
+    // record a restart lost), never a volume of someone else's (finding
+    // 337e802c1378). Create is name-idempotent, so the owner is checked
+    // again on what it answered.
     let Some(target) = b.target_volume_id.clone() else {
+        let tname = crate::model::backup_target_name(name);
+        target_ownership(&backup_engine, &node, name).await?.or_refuse()?;
         let v = backup_engine
-            .create_volume(&crate::model::backup_target_name(name), b.size_bytes, None, None)
+            .create_volume(&tname, b.size_bytes, None, Some(&crate::model::backup_owner(name)))
             .await
             .map_err(|e| anyhow::anyhow!("{node}: backup volume: {e:#}"))?;
         let id = v.get("id").and_then(|x| x.as_str()).ok_or_else(|| anyhow::anyhow!("{node}: no id in {v}"))?.to_string();
+        if target_ownership(&backup_engine, &node, name).await?.or_refuse()? != Ownership::Ours {
+            anyhow::bail!("{node}: {tname} answered the create but is not there; retried next interval");
+        }
         let master = crate::engine::Engine::master_node_of(&v);
         update(state, name, |r| {
             r.target_volume_id = Some(id);
             r.target_master = master;
+            r.target_owned = true;
         })
         .await;
         return Ok(());
     };
+
+    // 2b. A target recorded before ownership was checked (#121): nothing
+    // touches it until the engine shows it is this backup's.
+    if !b.target_owned {
+        match target_ownership(&backup_engine, &node, name).await?.or_refuse()? {
+            Ownership::Ours => {
+                update(state, name, |r| r.target_owned = true).await;
+            }
+            _ => {
+                // Absent (someone else's was refused above): make it
+                // again at step 2.
+                update(state, name, |r| {
+                    r.target_volume_id = None;
+                    r.target_master = None;
+                    r.target_attach = None;
+                    r.attached_for = None;
+                })
+                .await;
+            }
+        }
+        return Ok(());
+    }
 
     // 3. Served to the node that ships to it (again after a promote).
     if b.attached_for.as_deref() != Some(at.node.as_str()) || b.target_attach.is_none() {
@@ -397,6 +485,25 @@ mod tests {
 
     fn pt(n: &str, t: i64) -> BackupPoint {
         BackupPoint { name: n.into(), taken_at_ms: t, engine_id: None }
+    }
+
+    #[test]
+    fn only_the_backups_own_owner_is_ours() {
+        let ours = serde_json::to_value(crate::model::backup_owner("orders")).unwrap();
+        assert!(owned_by_backup(Some(&ours), "orders"));
+        assert!(!owned_by_backup(Some(&ours), "other"));
+        assert!(!owned_by_backup(None, "orders"));
+        assert!(!owned_by_backup(Some(&serde_json::Value::Null), "orders"));
+        let pvc = serde_json::json!({"kind": "PersistentVolumeClaim", "namespace": "ns", "name": "orders"});
+        assert!(!owned_by_backup(Some(&pvc), "orders"));
+    }
+
+    #[test]
+    fn backup_names_are_reserved() {
+        assert!(crate::model::reserved_name("orders-backup").is_some());
+        assert!(crate::model::reserved_name("orders-mirror").is_some());
+        assert!(crate::model::reserved_name("orders").is_none());
+        assert!(crate::model::reserved_name("backup-orders").is_none());
     }
 
     #[test]
