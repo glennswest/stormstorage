@@ -1179,10 +1179,20 @@ try `readd` first; the VM steps per the owner's answer.
 
 
 ### 2026-11-20 — #121 (P0): three critical review findings
-- [ ] `0f9c037af419` vmmigrations: reserve (target_node, target_name) at insert,
-      under the same lock as the source check; held until the record is gone.
-- [ ] `337e802c1378` backup: backup targets in a name space users cannot
-      create in; ownership checked before adopting or deleting a target.
-- [ ] `793da313e6de` orchestrate: replacement workers bound to the
-      leadership term; a deposed worker stops before engine mutations and
-      never rolls back (leaves the persisted intent for the new leader).
+- [x] `0f9c037af419` vmmigrations: `vmmigrate::reserved` checks source and
+      (target_node, target_name) under the insert's write lock; held while
+      the record is not terminal. Test: two starts onto one name (mock
+      create name-idempotent, list answered late) → 202 + 409, one target.
+- [x] `337e802c1378` backup: `-backup` reserved (`model::reserved_name`);
+      target made with owner `StormstorageBackup/<vol>`; adopted only with
+      that owner; legacy records (`target_owned` false) touch nothing until
+      the engine shows it; purge deletes only ours, else answers `left`.
+      Decided here (safe default, no owner question): an unowned legacy
+      target is NOT claimed — it may be a user's volume.
+- [x] `793da313e6de` orchestrate: `AppState::lead_term` (leader key's
+      create revision; 0 without a store), checked every wait tick and
+      before each engine change in `finish_inner`; deposed → nothing
+      changed, claim released, record left. Mock etcd → tests/common/etcd.rs.
+      Not engine-fenced: the window is one check-to-request (< ttl/3 before
+      a new leader can exist, as step-down comes at 2/3 ttl).
+- [ ] sc-build green on HEAD; image requested; issue closed.
