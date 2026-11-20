@@ -1193,6 +1193,9 @@ try `readd` first; the VM steps per the owner's answer.
       create revision; 0 without a store), checked every wait tick and
       before each engine change in `finish_inner`; deposed → nothing
       changed, claim released, record left. Mock etcd → tests/common/etcd.rs.
-      Not engine-fenced: the window is one check-to-request (< ttl/3 before
-      a new leader can exist, as step-down comes at 2/3 ttl).
+      Not engine-fenced: an instance learns it is deposed at its next store
+      step (every ttl/3; a renewal failing for 2/3 ttl steps down before
+      the lease ends, but a hung instance learns only after), so a
+      check-to-request window remains. Closing it needs engine fencing
+      by term (leg epochs exist; arrays have none) — a follow-up if wanted.
 - [ ] sc-build green on HEAD; image requested; issue closed.
