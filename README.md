@@ -587,6 +587,9 @@ stormview components feed on **:9093**.
     drops a point.
   - `DELETE …/backup` stops backups and keeps the points; adding
     `?purge=true` also deletes the points and the backup volume.
+  - A stop, purge, policy change or point delete waits (up to 30 s) for a
+    backup step already running on that volume, and is 409 if the step is
+    still going after that; retry.
   - **Backups outlive their volume:** a deleted volume's points stay
     (`source_deleted`), so a delete can be undone by a restore. A new
     volume of that name is refused (409) until they are purged.

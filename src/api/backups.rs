@@ -17,6 +17,15 @@ async fn commit(s: &Arc<AppState>, subject: &str, sev: Severity, msg: String) {
     s.events.write().await.push(Some(subject.to_string()), sev, "backup", msg);
 }
 
+/// The volume's backup claim (finding 9b846f4a8055): waits for a backup
+/// step in flight, so a stop, purge, policy change or point delete never
+/// changes the record under it. 409 when one is still running.
+async fn backup_claim(s: &Arc<AppState>, name: &str) -> Result<crate::orchestrate::Claimed, ApiError> {
+    crate::orchestrate::claim_wait(s, &crate::backup::claim_key(name), crate::backup::STEP_WAIT)
+        .await
+        .ok_or_else(|| ApiError::conflict(format!("{name}: a backup step is running; retry when it is done")))
+}
+
 #[derive(Deserialize)]
 pub(super) struct PolicyBody {
     #[serde(default)]
@@ -58,6 +67,7 @@ pub(super) async fn put_policy(
             return Err(ApiError::not_found(format!("pool {p:?}")));
         }
     }
+    let _claim = backup_claim(&s, &name).await?;
     let view = {
         let mut fed = s.fed.write().await;
         if let Some(n) = &policy.node {
@@ -137,6 +147,8 @@ pub(super) async fn stop(
     Path(name): Path<String>,
     Query(q): Query<StopQuery>,
 ) -> Result<Json<Value>, ApiError> {
+    // Held through the purge and the record's removal.
+    let _claim = backup_claim(&s, &name).await?;
     let b = {
         let mut fed = s.fed.write().await;
         let Some(b) = fed.backups.get_mut(&name) else {
@@ -331,6 +343,7 @@ pub(super) async fn delete_point(
     State(s): State<Arc<AppState>>,
     Path((volume, point)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
+    let _claim = backup_claim(&s, &volume).await?;
     let (p, engine) = {
         let fed = s.fed.read().await;
         let Some(b) = fed.backups.get(&volume) else { return Ok(Json(json!({}))) };
@@ -359,6 +372,10 @@ pub(super) async fn delete_point(
 /// and drop the base and a job's snapshot on the serving node (they sit on
 /// the volume's array, which goes next). Fails when one cannot be dropped.
 pub(super) async fn on_volume_delete(s: &Arc<AppState>, name: &str) -> Result<(), ApiError> {
+    if !s.fed.read().await.backups.contains_key(name) {
+        return Ok(());
+    }
+    let _claim = backup_claim(s, name).await?;
     let (b, serving) = {
         let fed = s.fed.read().await;
         let Some(b) = fed.backups.get(name).cloned() else { return Ok(()) };
@@ -395,4 +412,34 @@ pub(super) async fn on_volume_delete(s: &Arc<AppState>, name: &str) -> Result<()
         format!("{name}: deleted; its {} backup points are kept (restore or purge them)", b.points.len()),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Finding 9b846f4a8055: a stop waits for the backup step in flight
+    /// (it holds the volume's backup claim) and clears the policy only
+    /// once that step is done.
+    #[tokio::test]
+    async fn stop_waits_for_a_backup_step_in_flight() {
+        let mut config = crate::config::Config::default();
+        config.local.enabled = false;
+        config.kubernetes.enabled = false;
+        let mut fed = crate::model::FedState::default();
+        let policy = BackupPolicy { pool: None, tier: None, node: None, interval_secs: 60, keep: 2 };
+        fed.backups.insert("v".into(), Backup { volume: "v".into(), policy: Some(policy), ..Default::default() });
+        let s = Arc::new(AppState::new(config, fed, None));
+
+        let step = crate::orchestrate::claim_held(&s, &crate::backup::claim_key("v")).expect("the step's claim");
+        let task = tokio::spawn(stop(State(s.clone()), Path("v".into()), Query(StopQuery { purge: false })));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!task.is_finished(), "stop waits for the step");
+        assert!(s.fed.read().await.backups["v"].policy.is_some(), "not stopped under the step");
+        drop(step);
+        let out = task.await.unwrap().map_err(|e| e.message).expect("stopped");
+        assert_eq!(out.0["stopped"], "v");
+        assert!(s.fed.read().await.backups["v"].policy.is_none());
+        assert!(crate::orchestrate::claim_held(&s, &crate::backup::claim_key("v")).is_some(), "stop released it");
+    }
 }

@@ -405,6 +405,21 @@ pub(crate) fn claim_held(state: &Arc<AppState>, name: &str) -> Option<Claimed> {
     claim(state, name).then(|| Claimed { state: state.clone(), name: name.to_string() })
 }
 
+/// Take `name`'s claim, waiting up to `wait` while another holds it; None
+/// when it is still held then. Released when dropped.
+pub(crate) async fn claim_wait(state: &Arc<AppState>, name: &str, wait: Duration) -> Option<Claimed> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if let Some(c) = claim_held(state, name) {
+            return Some(c);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// What is going on with volumes beside their claims (#125): the volumes
 /// whose DELETE is in progress, and how many snapshot or clone creates are
 /// using each as their source.

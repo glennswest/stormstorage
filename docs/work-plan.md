@@ -1248,3 +1248,10 @@ success, else kept `aborting` (message `start: …; undo: … (retried)`) for
 `vmmigrate::run`. `abort_steps`: a non-404 read error of S's volume is now
 an error (retried), not "no mirror". Tests: withdraw 500 on T; mirror start
 that takes but answers 502.
+
+### 2026-11-21 — #126 (P1): stopping a queued backup could panic the poller (finding 9b846f4a8055) — IN PROGRESS
+`backup::step` rechecks `policy`/`source_deleted` on load (was
+`expect("filtered")`). `backup:{volume}` claim: `run` holds it as a
+`Claimed` guard through the failure record; `api::backups` stop (incl.
+purge), put_policy, delete_point, on_volume_delete take it via
+`orchestrate::claim_wait` (`backup::STEP_WAIT` 30 s, then 409).

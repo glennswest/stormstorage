@@ -23,9 +23,15 @@ pub fn now_ms(t: SystemTime) -> i64 {
     t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-fn claim_key(volume: &str) -> String {
+/// The claim a backup step holds for the volume's backup; stop, purge,
+/// a point's delete and a volume delete take it too (finding
+/// 9b846f4a8055), so none of them changes the record under a step.
+pub(crate) fn claim_key(volume: &str) -> String {
     format!("backup:{volume}")
 }
+
+/// How long stop, purge or a point's delete waits for a step in flight.
+pub(crate) const STEP_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 async fn event(state: &Arc<AppState>, subject: &str, sev: Severity, msg: String) {
     state.events.write().await.push(Some(subject.to_string()), sev, "backup", msg);
@@ -87,11 +93,11 @@ pub async fn run(state: &Arc<AppState>, now: SystemTime) {
             .collect()
     };
     for name in names {
-        if !crate::orchestrate::claim(state, &claim_key(&name)) {
+        // Held through the failure's record, released on every path.
+        let Some(_claim) = crate::orchestrate::claim_held(state, &claim_key(&name)) else {
             continue;
-        }
+        };
         let r = step(state, &name, now).await;
-        crate::orchestrate::release(state, &claim_key(&name));
         if let Err(e) = r {
             let interval = {
                 let fed = state.fed.read().await;
@@ -207,10 +213,15 @@ async fn step(state: &Arc<AppState>, name: &str, now: SystemTime) -> anyhow::Res
     let (b, at, vol_bytes) = {
         let fed = state.fed.read().await;
         let Some(b) = fed.backups.get(name).cloned() else { return Ok(()) };
+        // Stopped, or its volume deleted, since `run` listed it (finding
+        // 9b846f4a8055): nothing to do.
+        if b.policy.is_none() || b.source_deleted {
+            return Ok(());
+        }
         let vol = fed.volumes.get(name).ok_or_else(|| anyhow::anyhow!("{name}: volume gone"))?;
         (b, crate::orchestrate::data_at(state, &fed, vol)?, vol.size_bytes)
     };
-    let policy = b.policy.clone().expect("filtered");
+    let Some(policy) = b.policy.clone() else { return Ok(()) };
 
     // 1. The backup node.
     let node = match &b.node {
@@ -482,6 +493,47 @@ async fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_with(b: Backup) -> Arc<AppState> {
+        let mut config = crate::config::Config::default();
+        config.local.enabled = false;
+        config.kubernetes.enabled = false;
+        let mut fed = FedState::default();
+        fed.backups.insert(b.volume.clone(), b);
+        Arc::new(AppState::new(config, fed, None))
+    }
+
+    fn policy() -> crate::model::BackupPolicy {
+        crate::model::BackupPolicy { pool: None, tier: None, node: None, interval_secs: 60, keep: 2 }
+    }
+
+    /// Finding 9b846f4a8055: `run` lists a backup with a policy, then a stop
+    /// (or the volume's delete) clears it before its step loads the record.
+    /// The step returns and leaves the record alone; it used to panic on
+    /// `expect("filtered")` and take the registry poller with it.
+    #[tokio::test]
+    async fn a_step_on_a_backup_stopped_since_it_was_listed_does_nothing() {
+        let stopped = Backup { volume: "v".into(), size_bytes: 1, ..Default::default() };
+        let deleted = Backup { volume: "w".into(), policy: Some(policy()), source_deleted: true, ..Default::default() };
+        for b in [stopped, deleted] {
+            let name = b.volume.clone();
+            let state = state_with(b);
+            let before = serde_json::to_value(&state.fed.read().await.backups[&name]).unwrap();
+            step(&state, &name, SystemTime::now()).await.expect("a no-op, not an error or a panic");
+            let after = serde_json::to_value(&state.fed.read().await.backups[&name]).unwrap();
+            assert_eq!(before, after, "{name}: untouched");
+        }
+    }
+
+    /// The step's claim is released when it fails, and is the one stop and
+    /// purge take (finding 9b846f4a8055).
+    #[tokio::test]
+    async fn run_releases_the_claim_on_a_failed_step() {
+        let state = state_with(Backup { volume: "v".into(), policy: Some(policy()), ..Default::default() });
+        run(&state, SystemTime::now()).await;
+        assert_eq!(state.fed.read().await.backups["v"].state, BackupState::Failed, "the volume is gone: a failed step");
+        assert!(crate::orchestrate::claim_held(&state, &claim_key("v")).is_some(), "released");
+    }
 
     fn pt(n: &str, t: i64) -> BackupPoint {
         BackupPoint { name: n.into(), taken_at_ms: t, engine_id: None }

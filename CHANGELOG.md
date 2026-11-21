@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#126)
+- **fix:** A backup stopped between the backup loop listing it and its
+  step loading the record panicked on `expect("filtered")`. Backups run
+  inline in the registry poll, so the panic stopped all node polling and
+  reconciliation until a restart. The step now rechecks the policy and
+  `source_deleted` and returns. Stop/purge, a policy change, a point
+  delete and a volume delete's backup stop now take the step's claim
+  (`backup:{volume}`), waiting up to 30 s for a step in flight (409 after).
+  The step's claim is an RAII guard (`orchestrate::claim_held`), released
+  on every path; new `orchestrate::claim_wait`. Finding 9b846f4a8055.
+- **test:** `backup::tests::a_step_on_a_backup_stopped_since_it_was_listed_does_nothing`,
+  `run_releases_the_claim_on_a_failed_step`,
+  `api::backups::tests::stop_waits_for_a_backup_step_in_flight`.
+
 ### 2026-11-21 (#130)
 - **fix:** A migrate start that failed after making T's volume undid it
   best-effort and dropped the record even when the undo failed (T
