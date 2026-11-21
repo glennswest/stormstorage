@@ -8,6 +8,9 @@
 //! own served volume on its parent's array, so it grows only as far as the
 //! parent already has. The target is recorded first (`expanding`) and every
 //! step is grow-only, so a retry of the same call resumes where one stopped.
+//! A retry with a larger target grows the array again (finding
+//! a52b5ff1acfe), and the served volume is grown only once the array's
+//! capacity has grown for the target.
 
 use crate::api::AppState;
 use crate::engine::Engine;
@@ -152,6 +155,14 @@ async fn expand_claimed(state: &Arc<AppState>, name: &str, to: u64) -> Result<()
         let v = fed.volumes.get_mut(name).expect("read above");
         match &mut v.expanding {
             Some(x) => {
+                // A larger target than the one in flight (finding
+                // a52b5ff1acfe): the array grew, if it did, for the legs as
+                // they were; it grows again once they reach the new size,
+                // from its capacity then.
+                if to > x.to_bytes {
+                    x.array_grown = false;
+                    x.array_bytes_before = None;
+                }
                 x.to_bytes = to;
                 x.message = None;
             }
@@ -220,6 +231,29 @@ async fn expand_claimed(state: &Arc<AppState>, name: &str, to: u64) -> Result<()
             return Err(Refusal::Conflict(format!(
                 "{name}: the head array grew but its slab cannot reach the new room ({short}); its volumes need a new array"
             )));
+        }
+    }
+
+    // 2b. The array has the room for this target before the served volume
+    // is given it (finding a52b5ff1acfe): its capacity is above the one it
+    // had before this target's grow.
+    if let Some((node, e, array)) = &plan.head {
+        let before = state
+            .fed
+            .read()
+            .await
+            .volumes
+            .get(name)
+            .and_then(|v| v.expanding.as_ref())
+            .and_then(|x| x.array_bytes_before);
+        if let Some(before) = before {
+            let now = array_bytes(e, array).await.map_err(|e| Refusal::Upstream(format!("{name}: head {node}: {e:#}")))?;
+            if now <= before {
+                record(state, name, |x| x.array_grown = false).await;
+                return Err(Refusal::Conflict(format!(
+                    "{name}: head {node}: array {array} is {now} bytes, not grown past {before} for {to}; retried"
+                )));
+            }
         }
     }
 

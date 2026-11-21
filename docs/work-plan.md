@@ -1278,3 +1278,8 @@ DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 ### 2026-11-21 — #129 (P1): kube TLS exemption matched remote names (finding e53f3730aae1) — DONE (sc-build sc-build-fcff0cdf9b: clippy + build + test passed on 74652d7)
 `config::is_loopback_server`: `reqwest::Url` host_str, exact `localhost` or
 `IpAddr::is_loopback`; `KubeConfig::skip_tls_verify` uses it when unset.
+
+### 2026-11-21 — #131 (P1): larger expand retry skipped the array grow (finding a52b5ff1acfe) — IN PROGRESS
+`expand_claimed`: `to > x.to_bytes` resets `array_grown` and
+`array_bytes_before`; step 2b checks the array capacity is above
+`array_bytes_before` before the served volume grows.

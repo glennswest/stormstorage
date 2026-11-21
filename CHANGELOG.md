@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#131)
+- **fix:** An expand whose head array had grown but whose served-volume
+  step failed kept `array_grown` when retried with a larger size. The legs
+  grew to the new size, the array grow was skipped for good, and the
+  served volume could end up larger than its array. A larger target now
+  resets `array_grown` and `array_bytes_before`, so the array grows again.
+  Before the served volume is grown, the array's capacity must be above
+  its capacity before this target's grow (else 409, retried). Finding
+  a52b5ff1acfe.
+- **test:** `replication.rs` `a_larger_retry_after_the_array_grew_grows_it_again`.
+
 ### 2026-11-21 (#129)
 - **fix (security):** With `[kubernetes] insecure_skip_tls_verify` unset,
   the apiserver's certificate went unverified for any `server` whose

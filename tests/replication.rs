@@ -102,6 +102,9 @@ struct Mock {
     /// `/v1/volumes/{id}/expand` answers without growing (as stormblock's
     /// does when its backing resize fails).
     expand_noop: bool,
+    /// Engine volume ids whose `/v1` expand answers 500 (finding
+    /// a52b5ff1acfe: the served volume's step fails after the array grew).
+    expand_fail: std::collections::BTreeSet<String>,
     /// Engine volume id → the `owner` its create carried (stormblock#115).
     owners: BTreeMap<String, Value>,
     /// Milliseconds each /v1 create, snapshot and expand takes (#125): to
@@ -557,6 +560,9 @@ async fn v1_expand(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Val
     };
     let to = b["size_bytes"].as_u64().unwrap();
     m.log.push(format!("expand {id} {to}"));
+    if m.expand_fail.contains(&id) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": "expand failed"})));
+    }
     let key = size_key(&m.node, &id);
     let mut disks = s.disks.lock().unwrap();
     let size = disks.sizes.entry(key).or_default();
@@ -2083,6 +2089,41 @@ async fn backups_wait_for_the_engine_and_refuse_clones() {
     let (st, _) = delete_status(format!("{api}/api/v1/volumes/wv/backup")).await;
     assert_eq!(st, 200);
     assert!(state.fed.read().await.backups["wv"].policy.is_none());
+}
+
+/// Finding a52b5ff1acfe: the array grew for 2 GiB but the served volume's
+/// expand failed; a retry asks for 3 GiB. The array grows again, for 3
+/// GiB, before the served volume does; it used to be skipped (the array
+/// left at 2 GiB under a served volume of 3).
+#[tokio::test]
+async fn a_larger_retry_after_the_array_grew_grows_it_again() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, _, array) = create_mirror(&api, "gx").await;
+    let gib = 1u64 << 30;
+    let mirror = state.fed.read().await.volumes["gx"].export.volume_id.clone().unwrap();
+    mocks[&head].lock().unwrap().expand_fail.insert(mirror.clone());
+    let (st, v) = call(format!("{api}/api/v1/volumes/gx/expand"), json!({"size_bytes": 2 * gib})).await;
+    assert_eq!(st, 502, "{v}");
+    {
+        let fed = state.fed.read().await;
+        let x = fed.volumes["gx"].expanding.clone().unwrap();
+        assert!(x.array_grown, "the array grew for 2 GiB: {x:?}");
+        assert_eq!(x.to_bytes, 2 * gib);
+    }
+    assert_eq!(mocks[&head].lock().unwrap().array_bytes[&array], 2 * gib - (1 << 20));
+
+    mocks[&head].lock().unwrap().expand_fail.clear();
+    let (st, v) = call(format!("{api}/api/v1/volumes/gx/expand"), json!({"size_bytes": 3 * gib})).await;
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["size_bytes"], 3 * gib, "{v}");
+    let m = mocks[&head].lock().unwrap();
+    assert_eq!(m.array_bytes[&array], 3 * gib - (1 << 20), "the array grew for 3 GiB: {:?}", m.log);
+    let grow2 = m.log.iter().rposition(|l| *l == format!("grow {array}")).unwrap();
+    let served = m.log.iter().rposition(|l| *l == format!("expand {mirror} {}", 3 * gib)).unwrap();
+    assert!(grow2 < served, "the array grew before the served volume: {:?}", m.log);
+    assert_eq!(m.log.iter().filter(|l| **l == format!("grow {array}")).count(), 2);
+    drop(m);
+    assert!(state.fed.read().await.volumes["gx"].expanding.is_none());
 }
 
 /// #73: an expand grows every leg, then the head's array and its slab,
