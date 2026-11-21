@@ -1226,7 +1226,7 @@ delete only when all are still on `g.node`; else per member by name,
 records dropped as each is confirmed, group record last. Test
 `group_delete_follows_each_member_to_its_node` (promote h2 to node-b, delete).
 
-### 2026-11-20 — #125 (P1): three concurrency/durability findings in api/mod.rs
+### 2026-11-20 — #125 (P1): three concurrency/durability findings in api/mod.rs — DONE (sc-build sc-build-121252cdd5 passed on 6e5743d)
 - 4c9d5a70b6bc: creates claim their name (`orchestrate::claim_held`, RAII)
   before any engine call — volume, clone, snapshot, group (+ member names),
   restore.
