@@ -1211,7 +1211,7 @@ try `readd` first; the VM steps per the owner's answer.
       and no version route, nothing sent. README migrate section updated.
 - [x] sc-build green on f64a58b (build + clippy -D warnings + tests, sc-build-d39f3af1ed); image requested; issue closed.
 
-### 2026-11-20 — #123 (P1): drive close dropped the URI query (finding 10f005bf5a0e)
+### 2026-11-20 — #123 (P1): drive close dropped the URI query (finding 10f005bf5a0e) — DONE (sc-build sc-build-034bc4e3b1 passed on f99b82f)
 `Engine::delete_drive` escaped only `%` and `/`; a leg's drive URI carries
 `?nsid=…&hostnqn=…`, which became the HTTP query, so the engine 404'd and
 the close looked successful. Fix: `engine::path_segment` encodes the whole
