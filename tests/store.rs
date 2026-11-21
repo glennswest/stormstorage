@@ -404,6 +404,23 @@ async fn cluster_members_are_nodes_and_only_their_engines_get_the_bearer() {
     assert_eq!(a.events.read().await.since(0).iter().filter(|e| e.message.contains("cluster members not readable")).count(), noted);
     assert_eq!(noted, 1);
 
+    // A 2xx that is not a list of members (finding 28ac4c340410): no
+    // items, or items that are not an array. Not an empty cluster: m1 stays.
+    api.lock().unwrap().members_status = None;
+    for body in [json!({ "kind": "Status", "status": "Success" }), json!({ "kind": "ClusterMemberList", "items": {} })] {
+        api.lock().unwrap().members_body = Some(body.clone());
+        stormstorage::registry::poll_once(&a).await;
+        assert!(a.fed.read().await.nodes.contains_key("m1"), "{body}: m1 dropped");
+        assert!(!a.members.read().unwrap().engines.is_empty(), "{body}: the member's engine forgotten");
+    }
+    let ev = a.events.read().await.since(0);
+    assert!(
+        ev.iter().any(|e| e.message.contains("cluster members not readable") && e.message.contains("without an items array")),
+        "{:?}",
+        ev.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+    api.lock().unwrap().members_body = None;
+
     // A member that left is forgotten, and loses the bearer.
     api.lock().unwrap().members_status = None;
     api.lock().unwrap().members.clear();

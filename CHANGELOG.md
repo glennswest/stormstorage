@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#132)
+- **fix:** A 2xx ClusterMember list whose JSON had no `items`, or an
+  `items` that was not an array, was read as an empty cluster, and the
+  next poll dropped every member node. `kube::members` now returns an
+  error for it, so the known nodes stay and the warning is noted once, as
+  for any unreadable list. Finding 28ac4c340410.
+- **test:** `store.rs` (the member-adoption test): a `{"kind": "Status"}`
+  answer and an `items: {}` answer both leave the member node and its
+  engine in place.
+
 ### 2026-11-21 (#131)
 - **fix:** An expand whose head array had grown but whose served-volume
   step failed kept `array_grown` when retried with a larger size. The legs

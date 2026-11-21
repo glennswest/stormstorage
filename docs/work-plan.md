@@ -1283,3 +1283,7 @@ DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 `expand_claimed`: `to > x.to_bytes` resets `array_grown` and
 `array_bytes_before`; step 2b checks the array capacity is above
 `array_bytes_before` before the served volume grows.
+
+### 2026-11-21 — #132 (P1): a member list without items dropped every member (finding 28ac4c340410) — IN PROGRESS
+`kube::members`: `items` must be an array, else an error (adopt_members
+keeps known nodes). Mock apiserver `members_body`; store.rs adoption test.

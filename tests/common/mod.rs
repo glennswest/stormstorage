@@ -19,6 +19,9 @@ pub struct Api {
     pub members: Vec<Value>,
     /// An answer in place of the members list.
     pub members_status: Option<StatusCode>,
+    /// A 200 with this body in place of the members list (finding
+    /// 28ac4c340410: a list without its items).
+    pub members_body: Option<Value>,
     /// An answer in place of any Endpoints call.
     pub endpoints_status: Option<StatusCode>,
     pub endpoints: BTreeMap<String, Value>,
@@ -60,9 +63,10 @@ fn note(api: &ApiMock, h: &HeaderMap) {
 async fn list_members(State(api): State<ApiMock>, h: HeaderMap) -> Response {
     note(&api, &h);
     let a = api.lock().unwrap();
-    match a.members_status {
-        Some(s) => s.into_response(),
-        None => Json(json!({ "kind": "ClusterMemberList", "items": a.members })).into_response(),
+    match (a.members_status, &a.members_body) {
+        (Some(s), _) => s.into_response(),
+        (None, Some(b)) => Json(b.clone()).into_response(),
+        (None, None) => Json(json!({ "kind": "ClusterMemberList", "items": a.members })).into_response(),
     }
 }
 

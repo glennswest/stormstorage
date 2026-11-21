@@ -230,7 +230,7 @@ pub fn members_of(items: &[Value]) -> Vec<Member> {
 
 /// The cluster's members. A cluster without stormcluster's CRD (404) has
 /// none; anything else that is not an answer is an error, and the caller
-/// keeps what it knew.
+/// keeps what it knew. That includes a 2xx without an `items` array.
 pub async fn members(cfg: &KubeConfig) -> anyhow::Result<Vec<Member>> {
     const PATH: &str = "/apis/cluster.storm.io/v1alpha1/clustermembers";
     let http = client(cfg)?;
@@ -247,7 +247,15 @@ pub async fn members(cfg: &KubeConfig) -> anyhow::Result<Vec<Member>> {
         anyhow::bail!("GET {PATH}: {status} (token: {})", cfg.token_source().1);
     }
     let body: Value = resp.json().await?;
-    Ok(members_of(body["items"].as_array().map(Vec::as_slice).unwrap_or_default()))
+    // A list without its items is not an empty cluster (finding
+    // 28ac4c340410): taken as one, every member node would be dropped.
+    let Some(items) = body.get("items").and_then(Value::as_array) else {
+        anyhow::bail!(
+            "GET {PATH}: {status} without an items array (kind {}): not a ClusterMember list",
+            body.get("kind").and_then(Value::as_str).unwrap_or("?")
+        );
+    };
+    Ok(members_of(items))
 }
 
 /// Annotation on the published Endpoints: the instance that leads.

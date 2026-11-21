@@ -692,7 +692,8 @@ above), and the rest of the cluster finds it at one address.
   `:9090`, scheme `[engine_tls] address_scheme`), so a new leader reaches the
   legs the old one placed. The member on this machine stays the adopted local
   engine, under its member name. An unreadable list changes nothing and says so
-  once. Placement does not yet keep legs off `storage: false` members (#102).
+  once. A 2xx answer without an `items` array counts as unreadable, not as an
+  empty cluster. Placement does not yet keep legs off `storage: false` members (#102).
 - **Peer engines get the `[kubernetes]` bearer** (owner on stormcos#241: no
   shared engine token; the engine reviews it, stormblock#382), and only engines
   of members read from the apiserver: never a URL that merely announced itself
