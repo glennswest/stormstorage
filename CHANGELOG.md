@@ -22,6 +22,10 @@
   change could lose an acknowledged change. The leader now acknowledges a
   write under `/api/` only once `Store::commit` has it in the store;
   otherwise 503 `store_commit_failed`. Finding 490b915d6519.
+- **fix:** A create gives up its name's claim once the record is stored,
+  before it assembles the mirror (the assembly takes the volume's claim);
+  held through it, every multi-leg create came back
+  `pending_engine_support` (tests/export.rs, 7 failures on 5e97e3b).
 - **test:** tests/replication.rs `concurrent_creates_of_one_name_never_share_legs`,
   `delete_waits_for_or_refuses_what_is_in_flight` (a `slow_ms` engine to
   overlap requests); tests/store.rs

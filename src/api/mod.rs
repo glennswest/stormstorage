@@ -851,7 +851,7 @@ async fn create_volume(
     // The name is this request's until it is recorded or rolled back
     // (#125, finding 4c9d5a70b6bc): a second create of it is refused, never
     // run beside this one on the same engines.
-    let _name = crate::orchestrate::claim_held(&s, &req.name).ok_or_else(|| {
+    let name_claim = crate::orchestrate::claim_held(&s, &req.name).ok_or_else(|| {
         ApiError::conflict(format!("{:?}: busy — another request is creating, deleting or changing it", req.name))
     })?;
     if let Some(source) = req.source.clone() {
@@ -1029,6 +1029,9 @@ async fn create_volume(
         ),
     );
     s.persist().await;
+    // Recorded: the name's claim becomes the volume's, which the assembly
+    // takes next (#125).
+    drop(name_claim);
 
     // Wire the legs into a mirror. Failure leaves the volume stored with
     // assembly pending (partial export progress persisted) plus an error
