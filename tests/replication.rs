@@ -2116,13 +2116,14 @@ async fn a_larger_retry_after_the_array_grew_grows_it_again() {
     let (st, v) = call(format!("{api}/api/v1/volumes/gx/expand"), json!({"size_bytes": 3 * gib})).await;
     assert_eq!(st, 200, "{v}");
     assert_eq!(v["size_bytes"], 3 * gib, "{v}");
-    let m = mocks[&head].lock().unwrap();
-    assert_eq!(m.array_bytes[&array], 3 * gib - (1 << 20), "the array grew for 3 GiB: {:?}", m.log);
-    let grow2 = m.log.iter().rposition(|l| *l == format!("grow {array}")).unwrap();
-    let served = m.log.iter().rposition(|l| *l == format!("expand {mirror} {}", 3 * gib)).unwrap();
-    assert!(grow2 < served, "the array grew before the served volume: {:?}", m.log);
-    assert_eq!(m.log.iter().filter(|l| **l == format!("grow {array}")).count(), 2);
-    drop(m);
+    {
+        let m = mocks[&head].lock().unwrap();
+        assert_eq!(m.array_bytes[&array], 3 * gib - (1 << 20), "the array grew for 3 GiB: {:?}", m.log);
+        let grow2 = m.log.iter().rposition(|l| *l == format!("grow {array}")).unwrap();
+        let served = m.log.iter().rposition(|l| *l == format!("expand {mirror} {}", 3 * gib)).unwrap();
+        assert!(grow2 < served, "the array grew before the served volume: {:?}", m.log);
+        assert_eq!(m.log.iter().filter(|l| **l == format!("grow {array}")).count(), 2);
+    }
     assert!(state.fed.read().await.volumes["gx"].expanding.is_none());
 }
 
