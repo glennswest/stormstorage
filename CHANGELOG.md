@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#133)
+- **fix:** Adopted stormcluster members had only a `storage` label, so
+  `cluster` defaulted to each member's own name. A pool at `rung =
+  "cluster"` then treated two members of one cluster as independent and
+  could put both legs there. A member now gets `cluster` from the
+  `cluster.storm.io/cluster` label stormcluster puts on every
+  ClusterMember. A member without the label takes the list's cluster (one
+  apiserver's list is one cluster), and the local node takes its member's
+  cluster. `Node::labels` no longer lets the SNO `cluster` = name default
+  override a cluster the engine reports; config labels still win, and
+  `node` is still the name unless the config names one. Finding
+  ea8110684a65.
+- **test:** `tests/cluster_domain.rs`
+  `members_of_one_cluster_are_one_domain_at_the_cluster_rung` (three
+  members of one cluster, one of another and a static SNO node; 2 and 3
+  legs land in distinct clusters, and 4 is refused); `kube::tests` reads
+  the label; `model::tests` covers the label precedence.
+
 ### 2026-11-21 (#132)
 - **fix:** A 2xx ClusterMember list whose JSON had no `items`, or an
   `items` that was not an array, was read as an empty cluster, and the

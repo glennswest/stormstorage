@@ -104,12 +104,17 @@ pub struct Node {
 
 impl Node {
     /// Effective labels: engine topology, overridden by config labels,
-    /// with the SNO defaults (node/cluster = name).
+    /// with the SNO defaults where neither says: `node` = name (always,
+    /// unless the config names one), `cluster` = name. A `cluster` the
+    /// engine reports beats the default (finding ea8110684a65), so the
+    /// default never splits one cluster's nodes into many.
     pub fn labels(&self) -> BTreeMap<String, String> {
         let mut l = self.status.engine_topology.clone();
-        for (k, v) in self.config.effective_labels() {
-            l.insert(k, v);
+        for (k, v) in &self.config.labels {
+            l.insert(k.clone(), v.clone());
         }
+        l.insert("node".into(), self.config.labels.get("node").cloned().unwrap_or_else(|| self.config.name.clone()));
+        l.entry("cluster".into()).or_insert_with(|| self.config.name.clone());
         l
     }
 }
@@ -991,6 +996,13 @@ mod tests {
         assert_eq!(l["rack"], "r1");
         assert_eq!(l["node"], "n1");
         assert_eq!(l["cluster"], "n1");
+        // An engine's cluster beats the SNO default; the config's beats it.
+        n.status.engine_topology.insert("cluster".into(), "storm".into());
+        n.status.engine_topology.insert("node".into(), "engine-node".into());
+        assert_eq!(n.labels()["cluster"], "storm", "finding ea8110684a65");
+        assert_eq!(n.labels()["node"], "n1", "node is the name unless the config says");
+        n.config.labels.insert("cluster".into(), "c2".into());
+        assert_eq!(n.labels()["cluster"], "c2");
     }
 }
 

@@ -296,14 +296,25 @@ pub async fn adopt_members(state: &Arc<AppState>) {
     let scheme = &state.config.engine_tls.address_scheme;
     let hostname = hostname();
     let mut local_name = None;
+    let mut local_cluster = None;
     let mut wanted: Vec<NodeConfig> = Vec::new();
+    // One apiserver's members are one cluster (finding ea8110684a65): a
+    // member without stormcluster's label shares the others' name. With
+    // none labeled, each keeps the SNO default (its own name).
+    let list_cluster = list.iter().find_map(|m| m.cluster.clone());
     for m in &list {
+        let cluster = m.cluster.clone().or_else(|| list_cluster.clone());
         let engine_url = crate::api::engine_url_from(&m.address, scheme);
         let here = crate::config::is_this_machine(&engine_url)
             || hostname.as_deref().is_some_and(|h| crate::kube::same_node(h, &m.name));
         if here && state.config.local.enabled {
             local_name = Some(m.name.clone());
+            local_cluster = cluster;
             continue;
+        }
+        let mut labels = BTreeMap::from([("storage".to_string(), m.storage.to_string())]);
+        if let Some(c) = cluster {
+            labels.insert("cluster".to_string(), c);
         }
         wanted.push(NodeConfig {
             name: m.name.clone(),
@@ -311,7 +322,7 @@ pub async fn adopt_members(state: &Arc<AppState>) {
             api_token: None,
             token_file: None,
             ca_file: None,
-            labels: BTreeMap::from([("storage".to_string(), m.storage.to_string())]),
+            labels,
             tier: state.config.local.tier.clone(),
         });
     }
@@ -319,6 +330,7 @@ pub async fn adopt_members(state: &Arc<AppState>) {
         let mut members = state.members.write().unwrap_or_else(|e| e.into_inner());
         members.engines = wanted.iter().map(|n| n.engine_url.clone()).collect();
         members.local_name = local_name;
+        members.local_cluster = local_cluster;
     }
     let (mut adopted, mut dropped) = (Vec::new(), Vec::new());
     {
@@ -389,7 +401,10 @@ pub async fn adopt_local(state: &Arc<AppState>) {
         return; // No engine here (yet).
     }
     let local_url = local.engine_url.trim_end_matches('/').to_string();
-    let member_name = state.members.read().unwrap_or_else(|e| e.into_inner()).local_name.clone();
+    let (member_name, member_cluster) = {
+        let m = state.members.read().unwrap_or_else(|e| e.into_inner());
+        (m.local_name.clone(), m.local_cluster.clone())
+    };
     let name = local
         .name
         .clone()
@@ -411,7 +426,9 @@ pub async fn adopt_local(state: &Arc<AppState>) {
         api_token: None,
         token_file: None,
         ca_file: None,
-        labels: Default::default(),
+        // A member: in its cluster's failure domain, as the other members
+        // are (finding ea8110684a65).
+        labels: member_cluster.map(|c| BTreeMap::from([("cluster".to_string(), c)])).unwrap_or_default(),
         tier: local.tier.clone(),
     }];
     if local.cluster_peers {

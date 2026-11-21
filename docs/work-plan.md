@@ -1287,3 +1287,9 @@ DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 ### 2026-11-21 — #132 (P1): a member list without items dropped every member (finding 28ac4c340410) — DONE (sc-build sc-build-a209ffd65d: clippy + build + test passed on 3c9c0ba)
 `kube::members`: `items` must be an array, else an error (adopt_members
 keeps known nodes). Mock apiserver `members_body`; store.rs adoption test.
+
+### 2026-11-21 — #133 (P1): members of one cluster were separate cluster domains (finding ea8110684a65) — IN PROGRESS
+`kube::Member.cluster` from `metadata.labels["cluster.storm.io/cluster"]`
+(stormcluster `crd::CLUSTER_LABEL`); `adopt_members` sets label `cluster`
+(own, else the list's), `Members.local_cluster` → `adopt_local`'s local node.
+`Node::labels`: config > engine topology > default for `cluster`.

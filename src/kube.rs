@@ -210,7 +210,15 @@ pub struct Member {
     pub address: String,
     /// `spec.storage`: it serves its drives to other nodes.
     pub storage: bool,
+    /// Its stormcluster cluster's name (`metadata.labels`
+    /// [`CLUSTER_LABEL`]): the members of one cluster share a failure
+    /// domain at the `cluster` rung (finding ea8110684a65).
+    pub cluster: Option<String>,
 }
+
+/// The label stormcluster puts on every `ClusterMember`: its cluster's
+/// name (stormcluster `crd::CLUSTER_LABEL`).
+pub const CLUSTER_LABEL: &str = "cluster.storm.io/cluster";
 
 /// The members in a `ClusterMember` list. One with no address yet (it has
 /// not joined) is not a node yet.
@@ -223,6 +231,7 @@ pub fn members_of(items: &[Value]) -> Vec<Member> {
                 name: m["metadata"]["name"].as_str().filter(|n| !n.is_empty())?.to_string(),
                 address: address.to_string(),
                 storage: m["spec"]["storage"].as_bool().or(m["status"]["storage"].as_bool()).unwrap_or(false),
+                cluster: m["metadata"]["labels"][CLUSTER_LABEL].as_str().filter(|c| !c.is_empty()).map(str::to_string),
             })
         })
         .collect()
@@ -502,6 +511,9 @@ mod tests {
         assert_eq!(m.len(), 2);
         assert_eq!((m[0].name.as_str(), m[0].address.as_str(), m[0].storage), ("m1", "10.0.0.1", false));
         assert!(m[1].storage);
+        assert_eq!(m[0].cluster, None);
+        let labeled = [json!({"metadata": {"name": "m1", "labels": {CLUSTER_LABEL: "storm"}}, "status": {"address": "10.0.0.1"}})];
+        assert_eq!(members_of(&labeled)[0].cluster.as_deref(), Some("storm"));
     }
 
     #[test]

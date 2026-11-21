@@ -74,6 +74,9 @@ pub struct Members {
     pub engines: std::collections::BTreeSet<String>,
     /// This machine's name in the cluster, when it is a member.
     pub local_name: Option<String>,
+    /// That cluster's name, for the local node's `cluster` label (finding
+    /// ea8110684a65).
+    pub local_cluster: Option<String>,
 }
 
 impl AppState {

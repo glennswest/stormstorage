@@ -688,7 +688,10 @@ above), and the rest of the cluster finds it at one address.
 - **The nodes come from stormcluster.** Each instance reads
   `GET /apis/cluster.storm.io/v1alpha1/clustermembers` on every poll. A member
   with `status.address` is a node named as the cluster names it (source
-  `member`, label `storage` from `spec.storage`, engine at the address on
+  `member`, label `storage` from `spec.storage`, label `cluster` from
+  stormcluster's `cluster.storm.io/cluster` label, so the members of one
+  cluster are one failure domain at the `cluster` rung; a member without it
+  takes the list's cluster, and the local node takes its member's; engine at the address on
   `:9090`, scheme `[engine_tls] address_scheme`), so a new leader reaches the
   legs the old one placed. The member on this machine stays the adopted local
   engine, under its member name. An unreadable list changes nothing and says so
