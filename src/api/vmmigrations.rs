@@ -128,7 +128,9 @@ async fn resolve_placement(
 /// — start mirroring S's volume (engine id or name) to a new volume on
 /// `to`, carved on `placement`'s RAID set when named (#106). Attached or
 /// not: the mirror works on S's engine volume, not on its consumer. All or
-/// nothing: a step that fails undoes T's volume and keeps no record.
+/// nothing: a step that fails is aborted (S's mirror stopped, T's volume
+/// withdrawn and deleted) and no record is kept; when that undo fails the
+/// record stays, aborting, until the reconciler has finished it.
 pub(super) async fn start(
     State(s): State<Arc<AppState>>,
     Path((node, vol)): Path<(String, String)>,
@@ -217,21 +219,40 @@ pub(super) async fn start(
     s.persist().await;
     let r = vmmigrate::advance(&s, &id).await;
     if let Err(e) = r {
+        // Undo through the reconciled abort (finding 03b4140a6649): S's
+        // mirror stopped when it is ours (also one whose start answered an
+        // error after it took), T's volume withdrawn and deleted. The record
+        // goes only once that is confirmed; else it stays, aborting, with
+        // T's ids, and the reconciler finishes it.
         let m = s.fed.read().await.vm_migrations.get(&id).cloned();
-        if let Some(m) = m {
-            if let Err(u) = vmmigrate::undo_target(&s, &m).await {
-                tracing::warn!("{id}: undo {} on {}: {u:#}", m.target_name, m.target_node);
+        let made = m.as_ref().is_some_and(|m| m.target_volume_id.is_some() || m.target_local_id.is_some());
+        let undone = if made { vmmigrate::abort(&s, &id).await.map(|_| ()) } else { Ok(()) };
+        let out = match undone {
+            Ok(()) => {
+                {
+                    let mut fed = s.fed.write().await;
+                    fed.vm_migrations.remove(&id);
+                    fed.revision += 1;
+                }
+                answer(e)
             }
-        }
-        {
-            let mut fed = s.fed.write().await;
-            fed.vm_migrations.remove(&id);
-            fed.revision += 1;
-        }
+            Err(u) => {
+                let m = m.unwrap_or_default();
+                let msg = format!("start: {e:#}; undo: {u:#} (retried)");
+                vmmigrate::update(&s, &id, |r| r.message = Some(msg)).await;
+                tracing::warn!("{id}: undo {} on {}: {u:#}; kept aborting", m.target_name, m.target_node);
+                let mut a = answer(e);
+                a.message = format!(
+                    "{}; undoing {} on {} failed ({u:#}): kept as migration {id}, aborting, retried by the reconciler",
+                    a.message, m.target_name, m.target_node
+                );
+                a
+            }
+        };
         crate::orchestrate::release(&s, &key);
         crate::replicate::push_to_peers(s.clone());
         s.persist().await;
-        return Err(answer(e));
+        return Err(out);
     }
     crate::orchestrate::release(&s, &key);
     let m = s.fed.read().await.vm_migrations.get(&id).cloned().unwrap_or_default();

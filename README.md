@@ -601,7 +601,9 @@ stormview components feed on **:9093**.
      like S's unless `name` says otherwise, serves it to S's host NQN
      (`[legs] host_nqn` of S) over NVMe/TCP, and starts S's mirror to it
      (the URI's `hostnqn=` is who S connects as). All or nothing: a
-     refusal undoes T's volume. 409 when S's volume is already mirrored
+     refusal stops S's mirror if it took and withdraws and deletes T's
+     volume; if that undo fails, the migration is kept `aborting` (with
+     T's ids) and the reconciler finishes it before the name is free. 409 when S's volume is already mirrored
      or migrating, or T holds a volume of that name.
      - **On a named place on T (#106):** `placement: {"array": "<uuid or
        set name>"}` carves T's volume on that RAID set (`placement.array_id`

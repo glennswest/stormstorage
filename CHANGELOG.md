@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#130)
+- **fix:** A migrate start that failed after making T's volume undid it
+  best-effort and dropped the record even when the undo failed (T
+  unreachable, a withdraw error): an orphan volume or export on T, the name
+  refused for good, and an S mirror whose start answer was lost never
+  stopped. The failed start now runs the reconciled abort (S's mirror
+  stopped when it targets T's attach, T withdrawn and deleted) and drops
+  the record only once that succeeds; else the record stays `aborting`
+  with T's ids and the reconciler finishes it. Abort no longer takes a
+  failed read of S's volume for "no mirror"; it retries. Finding
+  03b4140a6649.
+- **test:** tests/vmmigrate.rs
+  `a_failed_undo_keeps_the_record_until_the_reconciler_finishes_it`,
+  `a_lost_mirror_start_answer_is_stopped_on_the_undo`.
+
 ### 2026-11-20 (#125)
 - **fix:** Two creates of one name could both pass the name check, both
   reach the engines (name-idempotent: the same leg ids), overwrite each

@@ -603,7 +603,14 @@ async fn abort_steps(state: &Arc<AppState>, m: &VmMigration) -> anyhow::Result<(
             (None, Some(a)) => Some(a.drive_uri()),
             _ => None,
         };
-        let reading = s.get_any_volume(&m.source_volume_id).await.ok().and_then(|v| MirrorReading::of(&v));
+        // A read that fails is retried, not taken for no mirror: a mirror
+        // whose start answered an error may have taken (finding
+        // 03b4140a6649). S's volume gone (404): no mirror.
+        let reading = match s.get_any_volume(&m.source_volume_id).await {
+            Ok(v) => MirrorReading::of(&v),
+            Err(e) if crate::engine::is_not_found(&e) => None,
+            Err(e) => return Err(e.context(format!("{}: read the mirror of {}", m.source_node, m.source_name))),
+        };
         if let (Some(r), Some(ours)) = (reading, ours) {
             if r.target == ours {
                 s.stop_mirror(&m.source_volume_id)

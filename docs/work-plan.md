@@ -1239,3 +1239,12 @@ records dropped as each is confirmed, group record last. Test
   `store_commit_failed` when it fails.
 Tests: replication.rs (concurrent creates; delete vs snapshot/expand),
 store.rs (etcd txn 500 → 503, then failover: not there).
+
+### 2026-11-21 — #130 (P1): failed migrate start dropped its record on a failed undo (finding 03b4140a6649) — IN PROGRESS
+`api::vmmigrations::start` on an `advance` error: nothing on T → drop the
+record; else `vmmigrate::abort` (stops our mirror via the attach URI even
+with `mirror_target` unrecorded, then `undo_target`); record dropped only on
+success, else kept `aborting` (message `start: …; undo: … (retried)`) for
+`vmmigrate::run`. `abort_steps`: a non-404 read error of S's volume is now
+an error (retried), not "no mirror". Tests: withdraw 500 on T; mirror start
+that takes but answers 502.

@@ -33,6 +33,11 @@ struct Mock {
     vols: BTreeMap<String, Vol>,
     /// Refuse a mirror start with this 409 message.
     refuse_mirror: Option<String>,
+    /// Start the mirror, then answer 502 as if the response were lost
+    /// (finding 03b4140a6649).
+    lose_mirror_response: bool,
+    /// Answer a per-host withdraw 500 (finding 03b4140a6649).
+    fail_withdraw: bool,
     /// `GET /api/v1/arrays` and `/api/v1/slabs` (#106).
     arrays: Vec<Value>,
     slabs: Vec<Value>,
@@ -139,6 +144,10 @@ async fn withdraw(
 ) -> StatusCode {
     let mut m = m.lock().unwrap();
     let host = q.get("host_nqn").cloned().expect("a per-host withdraw");
+    if m.fail_withdraw {
+        m.log.push(format!("withdraw-failed {id} {host}"));
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
     m.log.push(format!("withdraw {id} {host}"));
     if let Some(v) = m.vols.get_mut(&id) {
         v.served.remove(&host);
@@ -161,6 +170,9 @@ async fn mirror_start(State(m): State<M>, Path(key): Path<String>, Json(b): Json
     let st = json!({"target": target, "state": "copying", "bytes_total": v.size, "bytes_remaining": v.size,
                     "message": null, "started_at": 1});
     v.mirror = Some(st.clone());
+    if m.lose_mirror_response {
+        return (StatusCode::BAD_GATEWAY, Json(json!({"message": "connection reset"})));
+    }
     (StatusCode::ACCEPTED, Json(st))
 }
 
@@ -419,6 +431,73 @@ async fn a_failed_mirror_is_reported_and_retried() {
     assert_eq!(s.log.iter().filter(|l| l.starts_with("mirror ")).count(), 2, "{:?}", s.log);
     drop(s);
     assert_eq!(fx.t.lock().unwrap().vols.len(), 1, "the same target volume, reused");
+}
+
+/// Finding 03b4140a6649: the undo of a failed start fails (T's withdraw
+/// errors). The record stays, aborting, with T's ids; the name stays held;
+/// the reconciler finishes the undo and only then is the name free.
+#[tokio::test]
+async fn a_failed_undo_keeps_the_record_until_the_reconciler_finishes_it() {
+    let fx = setup().await;
+    fx.s.lock().unwrap().refuse_mirror = Some("not now".into());
+    fx.t.lock().unwrap().fail_withdraw = true;
+    let url = format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api);
+    let (st, e) = call(reqwest::Method::POST, url.clone(), Some(json!({"to": "node-t"}))).await;
+    assert_eq!(st, 409, "{e}");
+    let msg = e["error"].as_str().unwrap();
+    assert!(msg.contains("not now") && msg.contains("aborting"), "{e}");
+    let m = fx.state.fed.read().await.vm_migrations.values().next().cloned().expect("record kept");
+    assert!(m.aborting, "{m:?}");
+    assert!(m.target_volume_id.is_some() && m.target_local_id.is_some() && m.target_attach.is_some(), "{m:?}");
+    assert!(m.message.as_deref().unwrap().contains("undo"), "{m:?}");
+    assert_eq!(fx.t.lock().unwrap().vols.len(), 1, "T's volume not yet deleted");
+
+    // The name is still held by the record: a new start is refused.
+    fx.s.lock().unwrap().refuse_mirror = None;
+    let (st, e) = call(reqwest::Method::POST, url.clone(), Some(json!({"to": "node-t"}))).await;
+    assert_eq!(st, 409, "{e}");
+
+    // Still failing: the reconciler leaves it aborting.
+    stormstorage::vmmigrate::run(&fx.state).await;
+    assert!(fx.state.fed.read().await.vm_migrations[&m.id].aborting);
+
+    // T answers again: the reconciler withdraws and deletes, the record ends aborted.
+    fx.t.lock().unwrap().fail_withdraw = false;
+    stormstorage::vmmigrate::run(&fx.state).await;
+    let after = fx.state.fed.read().await.vm_migrations[&m.id].clone();
+    assert_eq!(after.state, stormstorage::model::VmMigrationState::Aborted, "{after:?}");
+    assert!(!after.aborting);
+    {
+        let t = fx.t.lock().unwrap();
+        assert!(t.vols.is_empty(), "T's volume deleted: {:?}", t.log);
+        assert!(t.log.iter().any(|l| l.starts_with("withdraw ")), "{:?}", t.log);
+    }
+    start(&fx).await;
+}
+
+/// Finding 03b4140a6649: S took the mirror but its answer was lost. The
+/// undo finds S mirroring to T's attach, stops it, then deletes T's volume.
+#[tokio::test]
+async fn a_lost_mirror_start_answer_is_stopped_on_the_undo() {
+    let fx = setup().await;
+    fx.s.lock().unwrap().lose_mirror_response = true;
+    let (st, e) = call(
+        reqwest::Method::POST,
+        format!("{}/api/v1/nodes/node-s/volumes/ns.vm-disk/migrate", fx.api),
+        Some(json!({"to": "node-t"})),
+    )
+    .await;
+    assert_eq!(st, 502, "{e}");
+    {
+        let s = fx.s.lock().unwrap();
+        assert!(s.vols["s-disk-uuid"].mirror.is_none(), "S's mirror stopped: {:?}", s.log);
+        assert!(s.log.iter().any(|l| l.starts_with("unmirror ")), "{:?}", s.log);
+        assert!(!s.log.iter().any(|l| l.starts_with("delete ")), "S's volume untouched: {:?}", s.log);
+    }
+    assert!(fx.t.lock().unwrap().vols.is_empty(), "T's volume undone");
+    assert!(fx.state.fed.read().await.vm_migrations.is_empty(), "undo confirmed: no record kept");
+    fx.s.lock().unwrap().lose_mirror_response = false;
+    start(&fx).await;
 }
 
 /// T's RAID sets and slabs, as stormblock reports them.
