@@ -287,12 +287,13 @@ async fn a_withdrawal_during_a_publish_is_not_undone_by_its_attach() {
     republish.await.unwrap();
     m.lock().unwrap().attach_delay_ms = 0;
 
-    let mm = m.lock().unwrap();
-    assert!(!mm.served.contains(&(local.clone(), h1.to_string())), "h1 still served: {:?}", mm.log);
-    let attach = mm.log.iter().rposition(|l| l.starts_with(&format!("attach {local} {h1}"))).expect("the publish's attach");
-    let withdraw = mm.log.iter().rposition(|l| *l == format!("withdraw {local} {h1}")).expect("withdrawn");
-    assert!(withdraw > attach, "withdrawn after the publish's attach: {:?}", mm.log);
-    drop(mm);
+    {
+        let mm = m.lock().unwrap();
+        assert!(!mm.served.contains(&(local.clone(), h1.to_string())), "h1 still served: {:?}", mm.log);
+        let attach = mm.log.iter().rposition(|l| l.starts_with(&format!("attach {local} {h1}"))).expect("the publish's attach");
+        let withdraw = mm.log.iter().rposition(|l| *l == format!("withdraw {local} {h1}")).expect("withdrawn");
+        assert!(withdraw > attach, "withdrawn after the publish's attach: {:?}", mm.log);
+    }
     assert!(state.fed.read().await.volumes["s"].export.hosts.is_empty());
 }
 
