@@ -1225,3 +1225,17 @@ Fix: each member's own home; all those nodes healthy first; engine group
 delete only when all are still on `g.node`; else per member by name,
 records dropped as each is confirmed, group record last. Test
 `group_delete_follows_each_member_to_its_node` (promote h2 to node-b, delete).
+
+### 2026-11-20 — #125 (P1): three concurrency/durability findings in api/mod.rs
+- 4c9d5a70b6bc: creates claim their name (`orchestrate::claim_held`, RAII)
+  before any engine call — volume, clone, snapshot, group (+ member names),
+  restore.
+- 8fbe4a91e4c1: `orchestrate::begin_delete` marks deleting (claim() refuses,
+  `hold()` refuses, replacement wait stops), waits ≤30 s for the claim;
+  snapshot/clone creates `hold()` their source + parent; assembly/promote
+  write back only an existing record.
+- 490b915d6519: `Store::commit` (sync, and an error if no longer leader with
+  unwritten changes); `forward_writes` on the leader turns a 2xx into 503
+  `store_commit_failed` when it fails.
+Tests: replication.rs (concurrent creates; delete vs snapshot/expand),
+store.rs (etcd txn 500 → 503, then failover: not there).

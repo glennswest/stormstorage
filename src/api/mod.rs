@@ -37,6 +37,9 @@ pub struct AppState {
     pub inventory: RwLock<BTreeMap<String, NodeInventory>>,
     /// Volumes with a leg replacement in flight in this process (#1).
     pub replacing: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Volumes being deleted, and sources of snapshots and clones being
+    /// made (#125).
+    pub uses: std::sync::Mutex<crate::orchestrate::VolumeUses>,
     /// Engines refusing our token, backed off (#38).
     pub refusals: crate::refusal::Refusals,
     /// Every stormblock PV/PVC the apiserver holds, last read (#28).
@@ -92,6 +95,7 @@ impl AppState {
             state_path,
             inventory: RwLock::new(BTreeMap::new()),
             replacing: std::sync::Mutex::new(Default::default()),
+            uses: Default::default(),
             refusals: Default::default(),
             kube: Default::default(),
             heads: Default::default(),
@@ -844,6 +848,12 @@ async fn create_volume(
             "from_golden or source, not both: a clone shares its source's data, a volume from a golden is a copy",
         ));
     }
+    // The name is this request's until it is recorded or rolled back
+    // (#125, finding 4c9d5a70b6bc): a second create of it is refused, never
+    // run beside this one on the same engines.
+    let _name = crate::orchestrate::claim_held(&s, &req.name).ok_or_else(|| {
+        ApiError::conflict(format!("{:?}: busy — another request is creating, deleting or changing it", req.name))
+    })?;
     if let Some(source) = req.source.clone() {
         if req.raid.is_some() || req.replicas.is_some() || req.pool.is_some() || req.extent_size_bytes.is_some()
             || req.rung.is_some() || req.tier.is_some() || req.prefer_node.is_some()
@@ -1311,10 +1321,24 @@ async fn list_stale_heads(State(s): State<Arc<AppState>>) -> Json<serde_json::Va
     Json(json!({ "stale_heads": fed.stale_heads }))
 }
 
+/// How long a DELETE waits for an operation in flight on the volume.
+const DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 async fn delete_volume(
     State(s): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    if !s.fed.read().await.volumes.contains_key(&name) {
+        return Err(ApiError::not_found(format!("volume {name:?}")));
+    }
+    // Serialized with every operation on the volume (#125, finding
+    // 8fbe4a91e4c1): marked deleting, then its claim once an assembly,
+    // promote or expand in flight is done (a leg move waiting on its
+    // rebuild stops for it). Held to the end; the checks below are made
+    // under it.
+    let _deleting = crate::orchestrate::begin_delete(&s, &name, DELETE_WAIT)
+        .await
+        .map_err(ApiError::conflict)?;
     let vol = {
         let fed = s.fed.read().await;
         let vol = fed

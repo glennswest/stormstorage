@@ -104,7 +104,18 @@ struct Mock {
     expand_noop: bool,
     /// Engine volume id → the `owner` its create carried (stormblock#115).
     owners: BTreeMap<String, Value>,
+    /// Milliseconds each /v1 create, snapshot and expand takes (#125): to
+    /// overlap requests.
+    slow_ms: u64,
     log: Vec<String>,
+}
+
+/// The engine taking its time (#125); the lock is not held meanwhile.
+async fn pause(s: &S) {
+    let ms = s.m.lock().unwrap().slow_ms;
+    if ms > 0 {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
 }
 
 #[derive(Clone)]
@@ -146,6 +157,7 @@ fn add_engine_volume(s: &S, m: &mut Mock, name: &str, pin: Option<String>) -> St
 }
 
 async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    pause(&s).await;
     let mut m = s.m.lock().unwrap();
     let name = b["name"].as_str().unwrap().to_string();
     let node = m.node.clone();
@@ -190,6 +202,7 @@ async fn v1_create(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Jso
 }
 
 async fn v1_snapshot(State(s): State<S>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    pause(&s).await;
     let mut m = s.m.lock().unwrap();
     let (name, src) = (b["name"].as_str().unwrap().to_string(), b["volume_id"].as_str().unwrap().to_string());
     let Some((_, pin)) = find_engine_volume(&m, &src) else {
@@ -536,6 +549,7 @@ async fn any_delete(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
 
 /// `/v1/volumes/{id}/expand` (#73): grow only.
 async fn v1_expand(State(s): State<S>, Path(id): Path<String>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    pause(&s).await;
     let mut m = s.m.lock().unwrap();
     let Some(name) = m.volumes.get(&id).map(|v| v.0.clone()) else {
         return (StatusCode::NOT_FOUND, Json(json!({"message": id})));
@@ -1714,6 +1728,93 @@ async fn group_delete_follows_each_member_to_its_node() {
     assert!(!has("node-b", "gs-h2-mirror"), "deleted on the node it moved to: {:?}", mocks["node-b"].lock().unwrap().log);
     let fed = state.fed.read().await;
     assert!(fed.snapshots.is_empty() && fed.group_snapshots.is_empty());
+}
+
+/// #125 (finding 4c9d5a70b6bc): two creates of one name at once. The
+/// second is refused while the first holds the name; the winner's legs are
+/// all there (no rollback of the other touched them), and its record is
+/// the only one.
+#[tokio::test]
+async fn concurrent_creates_of_one_name_never_share_legs() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    for m in mocks.values() {
+        m.lock().unwrap().slow_ms = 300;
+    }
+    let mk = |prefer: &'static str| {
+        let api = api.clone();
+        tokio::spawn(async move {
+            call(
+                format!("{api}/api/v1/volumes"),
+                json!({"name": "dup", "size_bytes": 1u64 << 30, "replicas": 2, "prefer_node": prefer}),
+            )
+            .await
+        })
+    };
+    let (a, b) = (mk("node-a"), mk("node-b"));
+    let (a, b) = (a.await.unwrap(), b.await.unwrap());
+    let mut sts = [a.0, b.0];
+    sts.sort();
+    assert_eq!(sts, [200, 409], "{a:?} {b:?}");
+    let lost = if a.0 == 409 { &a.1 } else { &b.1 };
+    assert!(lost["error"].as_str().unwrap().contains("busy"), "{lost}");
+    for m in mocks.values() {
+        m.lock().unwrap().slow_ms = 0;
+    }
+    let fed = state.fed.read().await;
+    let v = &fed.volumes["dup"];
+    assert_eq!(v.legs.len(), 2);
+    for l in &v.legs {
+        let id = l.volume_id.clone().unwrap();
+        assert!(mocks[&l.node].lock().unwrap().volumes.contains_key(&id), "leg {id} on {} is there", l.node);
+    }
+    drop(fed);
+    let (st, e) = call(
+        format!("{api}/api/v1/volumes"),
+        json!({"name": "dup", "size_bytes": 1u64 << 30, "replicas": 2}),
+    )
+    .await;
+    assert_eq!(st, 409, "{e}");
+    assert!(e["error"].as_str().unwrap().contains("exists"), "{e}");
+}
+
+/// #125 (finding 8fbe4a91e4c1): a DELETE is serialized with what is in
+/// flight on the volume. While a snapshot of it is being taken the DELETE
+/// is refused (the snapshot would be left on deleted data); while an
+/// expand runs the DELETE waits for it, then deletes, and nothing brings
+/// the record back.
+#[tokio::test]
+async fn delete_waits_for_or_refuses_what_is_in_flight() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, other, _) = create_mirror(&api, "dv").await;
+    mocks[&head].lock().unwrap().slow_ms = 400;
+    let snap = {
+        let api = api.clone();
+        tokio::spawn(async move { call(format!("{api}/api/v1/snapshots"), json!({"name": "dv-s", "volume_id": "dv"})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (st, _) = delete_status(format!("{api}/api/v1/volumes/dv")).await;
+    assert_eq!(st, 409, "refused while a snapshot of it is made");
+    let (st, sn) = snap.await.unwrap();
+    assert_eq!(st, 200, "{sn}");
+    assert!(state.fed.read().await.volumes.contains_key("dv"));
+    let (st, _) = delete_status(format!("{api}/api/v1/snapshots/dv-s")).await;
+    assert_eq!(st, 200);
+
+    // An expand in flight: the DELETE waits for it.
+    mocks[&head].lock().unwrap().slow_ms = 0;
+    mocks[&other].lock().unwrap().slow_ms = 500;
+    let exp = {
+        let api = api.clone();
+        tokio::spawn(async move { call(format!("{api}/api/v1/volumes/dv/expand"), json!({"size_bytes": 2u64 << 30})).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (st, _) = delete_status(format!("{api}/api/v1/volumes/dv")).await;
+    assert_eq!(st, 200);
+    let (st, v) = exp.await.unwrap();
+    assert_eq!(st, 200, "the expand finished before the delete began: {v}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!state.fed.read().await.volumes.contains_key("dv"), "not brought back");
+    assert!(mocks.values().all(|m| !m.lock().unwrap().volumes.values().any(|v| v.0 == "dv")), "legs gone");
 }
 
 /// #49: `encrypted` and `qos_class` are refused until stormblock#319 — the

@@ -765,7 +765,10 @@ async fn promote_claimed(
                 served_v1: old_served_v1,
             });
         }
-        fed.volumes.insert(name.to_string(), vol);
+        // Only while its record is there (#125): never brought back.
+        if let Some(v) = fed.volumes.get_mut(name) {
+            *v = vol;
+        }
         fed.revision += 1;
     }
     crate::replicate::push_to_peers(state.clone());
@@ -1027,7 +1030,10 @@ async fn reattach_legs(
 async fn store(state: &Arc<AppState>, vol: DistVolume) {
     {
         let mut fed = state.fed.write().await;
-        fed.volumes.insert(vol.name.clone(), vol);
+        // Only while its record is there (#125): never brought back.
+        if let Some(v) = fed.volumes.get_mut(&vol.name) {
+            *v = vol;
+        }
         fed.revision += 1;
     }
     crate::replicate::push_to_peers(state.clone());

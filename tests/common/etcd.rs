@@ -27,6 +27,8 @@ pub struct Etcd {
     pub leases: BTreeMap<i64, (i64, Instant)>,
     pub next_lease: i64,
     pub txns: usize,
+    /// Answer every txn with a 500 (#125): etcd down, or timing out.
+    pub fail_txns: bool,
 }
 
 pub type Mock = Arc<Mutex<Etcd>>;
@@ -143,9 +145,12 @@ impl Etcd {
 }
 
 pub async fn mock_etcd(m: Mock) -> String {
-    async fn handle(path: &'static str, m: Mock, body: Value) -> String {
+    async fn handle(path: &'static str, m: Mock, body: Value) -> (axum::http::StatusCode, String) {
         let mut e = m.lock().unwrap();
         e.expire();
+        if path == "txn" && e.fail_txns {
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, r#"{"error":"etcdserver: request timed out"}"#.into());
+        }
         let out = match path {
             "range" => e.range(&body),
             "txn" => e.txn(&body),
@@ -167,7 +172,7 @@ pub async fn mock_etcd(m: Mock) -> String {
                     }
                     None => json!({ "result": { "header": header, "ID": id.to_string() } }),
                 };
-                return format!("{r}\n");
+                return (axum::http::StatusCode::OK, format!("{r}\n"));
             }
             "revoke" => {
                 let id: i64 = body["ID"].as_str().unwrap().parse().unwrap();
@@ -176,7 +181,7 @@ pub async fn mock_etcd(m: Mock) -> String {
             }
             _ => unreachable!(),
         };
-        out.to_string()
+        (axum::http::StatusCode::OK, out.to_string())
     }
     let route = |p: &'static str| {
         post(move |State(m): State<Mock>, Json(b): Json<Value>| async move { handle(p, m, b).await })

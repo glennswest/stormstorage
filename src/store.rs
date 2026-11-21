@@ -632,6 +632,27 @@ impl Store {
         Ok(())
     }
 
+    /// Everything in memory is in the store (#125, finding 490b915d6519):
+    /// what changed is written now, and Ok only once the guarded write has
+    /// committed. An instance that no longer leads with changes the store
+    /// does not hold is an error, not a quiet success.
+    pub async fn commit(&self, state: &AppState) -> anyhow::Result<()> {
+        self.sync(state).await?;
+        if self.is_leader() {
+            // Written under the guard (or nothing was left to write).
+            return Ok(());
+        }
+        let written = self.written.lock().await;
+        let records = {
+            let fed = state.fed.read().await;
+            records_of(&fed)
+        };
+        if !diff(&written, &records).is_empty() {
+            anyhow::bail!("{} does not lead any more: the change is not in the fleet store", self.instance);
+        }
+        Ok(())
+    }
+
     /// Replace memory with the store's records. Returns whether the store
     /// held any state.
     async fn load(&self, state: &AppState) -> anyhow::Result<bool> {
@@ -935,11 +956,35 @@ pub async fn forward_writes(State(s): State<Arc<AppState>>, req: Request, next: 
     let Some(store) = s.store.clone() else {
         return next.run(req).await;
     };
-    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS)
-        || !req.uri().path().starts_with("/api/")
-        || store.is_leader()
-    {
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) || !req.uri().path().starts_with("/api/") {
         return next.run(req).await;
+    }
+    if store.is_leader() {
+        // A write is acknowledged only once the store holds it (#125,
+        // finding 490b915d6519): a failed store write (etcd unreachable, a
+        // refused leadership guard) answers 503, never the handler's 2xx.
+        // What was done stays in memory and is written again each poll
+        // while this instance leads; a retry of the request is idempotent.
+        let resp = next.run(req).await;
+        if !resp.status().is_success() {
+            return resp;
+        }
+        return match store.commit(&s).await {
+            Ok(()) => resp,
+            Err(e) => {
+                tracing::error!("write acknowledged by no store: {e:#}");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(json!({
+                        "error": format!(
+                            "done on the engines but not committed to the fleet store: {e:#} — retry the request"
+                        ),
+                        "code": "store_commit_failed",
+                    })),
+                )
+                    .into_response()
+            }
+        };
     }
     let unavailable = |code: &str, m: String| {
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": m, "code": code }))).into_response()

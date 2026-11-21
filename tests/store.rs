@@ -152,6 +152,58 @@ async fn one_leader_followers_forward_and_failover() {
     assert!(m.lock().unwrap().get("/stormstorage/nodes/n7").is_some());
 }
 
+/// #125 (finding 490b915d6519): a write the fleet store did not take is
+/// not acknowledged. etcd fails the leader's write: the request answers 503
+/// `store_commit_failed`, not 200; when leadership moves, the new leader's
+/// state (the store's) does not have it, which is what the client was told.
+#[tokio::test]
+async fn a_write_the_store_did_not_take_is_not_acknowledged() {
+    let m: Mock = Default::default();
+    let etcd = mock_etcd(m.clone()).await;
+    let (a, a_url) = instance("a", &etcd, FedState::default()).await;
+    let (b, b_url) = instance("b", &etcd, FedState::default()).await;
+    store(&a).step(&a).await;
+    store(&b).step(&b).await;
+    assert_eq!(store(&a).status().role, Role::Leader);
+    assert_eq!(store(&b).status().role, Role::Follower);
+
+    m.lock().unwrap().fail_txns = true;
+    let http = reqwest::Client::new();
+    let r = http
+        .post(format!("{a_url}/api/v1/storage/register"))
+        .json(&json!({ "node_addr": "10.0.0.9:9090", "hostname": "n9" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 503);
+    let body: Value = r.json().await.unwrap();
+    assert_eq!(body["code"], "store_commit_failed", "{body}");
+    assert!(m.lock().unwrap().get("/stormstorage/nodes/n9").is_none());
+
+    // A's lease goes before it writes again: B leads from the store.
+    {
+        let mut e = m.lock().unwrap();
+        e.fail_txns = false;
+        let ids: Vec<i64> = e.leases.keys().copied().collect();
+        for id in ids {
+            e.revoke(id);
+        }
+    }
+    store(&b).step(&b).await;
+    assert_eq!(store(&b).status().role, Role::Leader);
+    assert!(!node_names(&b).await.contains(&"n9".to_string()), "never acknowledged, not there");
+
+    // The retry lands, on the leader that is.
+    let r = http
+        .post(format!("{b_url}/api/v1/storage/register"))
+        .json(&json!({ "node_addr": "10.0.0.9:9090", "hostname": "n9" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{}", r.status());
+    assert!(m.lock().unwrap().get("/stormstorage/nodes/n9").is_some());
+}
+
 #[tokio::test]
 async fn a_leader_whose_lease_expired_steps_down() {
     let m: Mock = Default::default();

@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### 2026-11-20 (#125)
+- **fix:** Two creates of one name could both pass the name check, both
+  reach the engines (name-idempotent: the same leg ids), overwrite each
+  other's record, and one's rollback delete the other's legs. A create —
+  volume, clone, snapshot, group snapshot, restore — now claims its name
+  before any engine call and holds it through commit or rollback; a second
+  is 409 `busy`. Finding 4c9d5a70b6bc.
+- **fix:** A volume DELETE ran beside an assembly, promote or expand of it,
+  and the assembly then wrote its stale record back (a deleted volume
+  resurrected with deleted legs). DELETE now marks the volume deleting (no
+  new operation claims it, no snapshot or clone of it starts, a leg move
+  waiting on its rebuild stops), takes its claim (waiting up to 30 s for
+  one in flight), and makes its checks under it; it is 409 while a
+  snapshot or clone of it is being made. Assembly and promote write a
+  record back only while it is still there. Finding 8fbe4a91e4c1.
+- **fix:** With the etcd store, a write answered 2xx even when the store
+  write failed (etcd timeout, refused leadership guard), so a leadership
+  change could lose an acknowledged change. The leader now acknowledges a
+  write under `/api/` only once `Store::commit` has it in the store;
+  otherwise 503 `store_commit_failed`. Finding 490b915d6519.
+- **test:** tests/replication.rs `concurrent_creates_of_one_name_never_share_legs`,
+  `delete_waits_for_or_refuses_what_is_in_flight` (a `slow_ms` engine to
+  overlap requests); tests/store.rs
+  `a_write_the_store_did_not_take_is_not_acknowledged` (etcd fails the
+  write, then leadership moves).
+
 ### 2026-11-20 (#124)
 - **fix:** Deleting a group snapshot sent every member to the first
   member's node. After a member's array was promoted elsewhere, its

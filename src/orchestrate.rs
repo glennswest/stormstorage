@@ -85,9 +85,13 @@ async fn assemble_claimed(state: &Arc<AppState>, name: &str) -> anyhow::Result<(
     };
     {
         let mut fed = state.fed.write().await;
-        fed.volumes.insert(name.to_string(), vol);
-        if ok {
-            fed.revision += 1;
+        // Its record is written back only while it is still there (#125,
+        // finding 8fbe4a91e4c1): a deleted volume is not brought back.
+        if let Some(v) = fed.volumes.get_mut(name) {
+            *v = vol;
+            if ok {
+                fed.revision += 1;
+            }
         }
     }
     if ok {
@@ -363,12 +367,137 @@ pub fn move_target_candidates(
 /// Claim the one-replacement-per-volume slot. The API, the reconciler and
 /// a resumed wait all go through it, so a replacement is never started
 /// twice.
+///
+/// Refused while the volume is being deleted (#125, finding 8fbe4a91e4c1):
+/// nothing new starts on a volume its DELETE is waiting to take.
 pub(crate) fn claim(state: &AppState, name: &str) -> bool {
+    if is_deleting(state, name) {
+        return false;
+    }
+    claim_raw(state, name)
+}
+
+fn claim_raw(state: &AppState, name: &str) -> bool {
     state
         .replacing
         .lock()
         .expect("replacing lock")
         .insert(name.to_string())
+}
+
+/// A claim on a name, released when dropped (#125): held by a request for
+/// all of its engine calls, through its commit or its rollback.
+pub(crate) struct Claimed {
+    state: Arc<AppState>,
+    name: String,
+}
+
+impl Drop for Claimed {
+    fn drop(&mut self) {
+        release(&self.state, &self.name);
+    }
+}
+
+/// Take `name`'s claim now, or None while another operation holds it.
+/// A create claims the name it creates (finding 4c9d5a70b6bc): two
+/// requests for one name never both reach the engines.
+pub(crate) fn claim_held(state: &Arc<AppState>, name: &str) -> Option<Claimed> {
+    claim(state, name).then(|| Claimed { state: state.clone(), name: name.to_string() })
+}
+
+/// What is going on with volumes beside their claims (#125): the volumes
+/// whose DELETE is in progress, and how many snapshot or clone creates are
+/// using each as their source.
+#[derive(Default)]
+pub struct VolumeUses {
+    deleting: std::collections::BTreeSet<String>,
+    holds: std::collections::BTreeMap<String, usize>,
+}
+
+pub fn is_deleting(state: &AppState, name: &str) -> bool {
+    state.uses.lock().expect("uses lock").deleting.contains(name)
+}
+
+/// A volume's DELETE in progress, ended when dropped.
+pub(crate) struct Deleting {
+    state: Arc<AppState>,
+    name: String,
+    claim: Option<Claimed>,
+}
+
+impl Drop for Deleting {
+    fn drop(&mut self) {
+        self.claim.take();
+        self.state.uses.lock().expect("uses lock").deleting.remove(&self.name);
+    }
+}
+
+/// Start deleting `name` (finding 8fbe4a91e4c1): marked deleting at once
+/// (no snapshot or clone of it starts, no new operation claims it, a leg
+/// move waiting on a rebuild stops), then its claim, waited for up to
+/// `wait` while an assembly, promote or expand finishes. Refused while a
+/// snapshot or clone of it is being made, or another DELETE runs.
+pub(crate) async fn begin_delete(state: &Arc<AppState>, name: &str, wait: Duration) -> Result<Deleting, String> {
+    {
+        let mut u = state.uses.lock().expect("uses lock");
+        if u.holds.get(name).is_some_and(|n| *n > 0) {
+            return Err(format!("{name}: a snapshot or clone of it is being made; retry when it is done"));
+        }
+        if !u.deleting.insert(name.to_string()) {
+            return Err(format!("{name}: already being deleted"));
+        }
+    }
+    let mut d = Deleting { state: state.clone(), name: name.to_string(), claim: None };
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if claim_raw(state, name) {
+            d.claim = Some(Claimed { state: state.clone(), name: name.to_string() });
+            return Ok(d);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{name}: busy — an assembly, promote, expand or leg move is in flight; retry when it finishes"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Volumes in use as the source of a snapshot or clone being made,
+/// released when dropped.
+pub(crate) struct Held {
+    state: Arc<AppState>,
+    names: Vec<String>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut u = self.state.uses.lock().expect("uses lock");
+        for n in &self.names {
+            if let Some(c) = u.holds.get_mut(n) {
+                *c -= 1;
+                if *c == 0 {
+                    u.holds.remove(n);
+                }
+            }
+        }
+    }
+}
+
+/// Hold `names` as sources (#125): refused if one is being deleted; a
+/// DELETE of one is refused while held.
+pub(crate) fn hold(state: &Arc<AppState>, names: &[&str]) -> Result<Held, String> {
+    let mut u = state.uses.lock().expect("uses lock");
+    if let Some(n) = names.iter().find(|n| u.deleting.contains(**n)) {
+        return Err(format!("{n}: being deleted"));
+    }
+    let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    names.sort();
+    names.dedup();
+    for n in &names {
+        *u.holds.entry(n.clone()).or_default() += 1;
+    }
+    Ok(Held { state: state.clone(), names })
 }
 
 pub(crate) fn release(state: &AppState, name: &str) {
@@ -844,6 +973,11 @@ fn secs_since(t: SystemTime) -> f64 {
 /// undoes a leg: the new leader may have kept it and retired the old one.
 async fn finish_replacement(state: Arc<AppState>, name: String, term: Option<i64>) {
     if let Err(Deposed) = finish_inner(&state, &name, term).await {
+        if is_deleting(&state, &name) {
+            tracing::info!("{name}: replacement stopped — the volume is being deleted");
+            release(&state, &name);
+            return;
+        }
         tracing::warn!("{name}: replacement left to the leader: this instance no longer leads under the term it started in");
         event(
             &state,
@@ -2516,6 +2650,11 @@ async fn wait_member_active(
     let mut seen: Option<(String, Option<u64>)> = None;
     loop {
         leads(state, term)?;
+        // A DELETE of the volume is waiting for this claim (#125): stop
+        // and leave the legs to it.
+        if is_deleting(state, name) {
+            return Err(Deposed);
+        }
         if let Ok(arr) = engine.get_array(array_id).await {
             let m = arr
                 .get("members")

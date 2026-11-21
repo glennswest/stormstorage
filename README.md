@@ -506,7 +506,16 @@ stormview components feed on **:9093**.
   reload the records when `meta` moves, answer reads, and forward every
   write (`POST`/`PUT`/`DELETE` under `/api/`, register included) to the
   leader's `advertise_url` with its headers and body; the reply carries
-  `x-stormstorage-leader`. No leader → 503 `no_leader`. The first leader
+  `x-stormstorage-leader`. No leader → 503 `no_leader`. A write is
+  acknowledged only once the leader's guarded store write has committed
+  (#125): an etcd failure or a refused leadership guard answers 503
+  `store_commit_failed` (done on the engines, not in the store; retry the
+  request) instead of the handler's 2xx.
+  Creates (volume, clone, snapshot, group, restore) hold their name for
+  the whole request — a second create of it meanwhile is 409 `busy`. A
+  volume DELETE waits up to 30 s for an assembly, promote or expand in
+  flight on it (a leg move waiting on its rebuild stops for it), and is
+  409 while a snapshot or clone of it is being made. The first leader
   of an empty store imports its state.json; after that the store wins.
   `[replication] peers` stay the fallback for a fleet without a fleet
   etcd; the two are exclusive.

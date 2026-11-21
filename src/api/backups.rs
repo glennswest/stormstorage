@@ -239,6 +239,10 @@ pub(super) async fn restore(
     Path((volume, point)): Path<(String, String)>,
     Json(body): Json<RestoreBody>,
 ) -> Result<Json<Value>, ApiError> {
+    // The new volume's name is this request's until it is recorded (#125).
+    let _name = crate::orchestrate::claim_held(&s, &body.name).ok_or_else(|| {
+        ApiError::conflict(format!("{:?}: busy — another request is creating, deleting or changing it", body.name))
+    })?;
     let (b, engine) = {
         let fed = s.fed.read().await;
         let b = fed.backups.get(&volume).cloned().ok_or_else(|| ApiError::not_found(format!("no backups of {volume:?}")))?;

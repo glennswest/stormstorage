@@ -51,6 +51,17 @@ fn name_free(fed: &crate::model::FedState, name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Claim a name being created (#125), or 409 while another request has it.
+fn claim_name(s: &Arc<AppState>, name: &str) -> Result<crate::orchestrate::Claimed, ApiError> {
+    crate::orchestrate::claim_held(s, name)
+        .ok_or_else(|| ApiError::conflict(format!("{name:?}: busy — another request is creating, deleting or changing it")))
+}
+
+/// Hold volumes as a source while a snapshot or clone of them is made (#125).
+fn hold(s: &Arc<AppState>, names: &[&str]) -> Result<crate::orchestrate::Held, ApiError> {
+    crate::orchestrate::hold(s, names).map_err(ApiError::conflict)
+}
+
 async fn healthy(s: &AppState, node: &str) -> Result<(), ApiError> {
     let ok = s.fed.read().await.nodes.get(node).map(|n| n.status.healthy).unwrap_or(false);
     if ok {
@@ -78,7 +89,10 @@ pub(super) async fn create_snapshot(
     State(s): State<Arc<AppState>>,
     Json(req): Json<CreateSnapshot>,
 ) -> Result<Json<Snapshot>, ApiError> {
-    let at = {
+    // Its name, and its volume as a source, until it is recorded (#125).
+    let _name = claim_name(&s, &req.name)?;
+    let _held = hold(&s, &[&req.volume_id])?;
+    let (at, _parent) = {
         let fed = s.fed.read().await;
         if let Some(existing) = fed.snapshots.get(&req.name) {
             if existing.source_volume_id == req.volume_id {
@@ -94,7 +108,9 @@ pub(super) async fn create_snapshot(
             .volumes
             .get(&req.volume_id)
             .ok_or_else(|| ApiError::not_found(format!("volume {:?}", req.volume_id)))?;
-        data_at(&s, &fed, vol).map_err(|e| ApiError::conflict(format!("{e:#}")))?
+        let at = data_at(&s, &fed, vol).map_err(|e| ApiError::conflict(format!("{e:#}")))?;
+        let parent = hold(&s, &[&at.parent])?;
+        (at, parent)
     };
     healthy(&s, &at.node).await?;
     let size = s.fed.read().await.volumes.get(&req.volume_id).map(|v| v.size_bytes).unwrap_or(0);
@@ -266,7 +282,14 @@ pub(super) async fn create_group(
         return Err(ApiError::bad_request("volume_ids repeats a volume"));
     }
     let member = |v: &str| format!("{}-{v}", req.name);
-    let ats = {
+    // The group's name and each member's, and the volumes as sources (#125).
+    let _names = std::iter::once(req.name.clone())
+        .chain(req.volume_ids.iter().map(|v| member(v)))
+        .map(|n| claim_name(&s, &n))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ids_ref: Vec<&str> = req.volume_ids.iter().map(String::as_str).collect();
+    let _held = hold(&s, &ids_ref)?;
+    let (ats, _parents) = {
         let fed = s.fed.read().await;
         if let Some(g) = fed.group_snapshots.get(&req.name) {
             let mut same: Vec<String> = req.volume_ids.iter().map(|v| member(v)).collect();
@@ -284,7 +307,9 @@ pub(super) async fn create_group(
             let vol = fed.volumes.get(v).ok_or_else(|| ApiError::not_found(format!("volume {v:?}")))?;
             ats.push(data_at(&s, &fed, vol).map_err(|e| ApiError::conflict(format!("{e:#}")))?);
         }
-        ats
+        let parents: Vec<&str> = ats.iter().map(|a| a.parent.as_str()).collect();
+        let held = hold(&s, &parents)?;
+        (ats, held)
     };
     let node = ats[0].node.clone();
     if ats.iter().any(|a| a.node != node) {
@@ -461,7 +486,16 @@ pub(super) async fn create_clone(
     hosts: Vec<HostServe>,
     owner: Option<crate::inventory::Owner>,
 ) -> Result<Value, ApiError> {
-    let (at, parent, source_engine) = {
+    // The clone's name is claimed by the create; its source is held until
+    // the clone is recorded (#125).
+    let source_id = match &source {
+        VolumeSource::Volume(id) => id.clone(),
+        VolumeSource::Snapshot(id) => {
+            s.fed.read().await.snapshots.get(id).map(|sn| sn.source_volume_id.clone()).unwrap_or_default()
+        }
+    };
+    let _held = hold(s, &[&source_id])?;
+    let (at, parent, source_engine, _parent_held) = {
         let fed = s.fed.read().await;
         name_free(&fed, name)?;
         let (vol, engine_name, min) = match &source {
@@ -486,7 +520,8 @@ pub(super) async fn create_clone(
         let at = data_at(s, &fed, vol).map_err(|e| ApiError::conflict(format!("{e:#}")))?;
         let parent = fed.volumes.get(&at.parent).cloned().expect("data_at found it");
         let source_engine = engine_name.unwrap_or_else(|| at.engine_name.clone());
-        (at, parent, source_engine)
+        let held = hold(s, &[&at.parent])?;
+        (at, parent, source_engine, held)
     };
     healthy(s, &at.node).await?;
     let master = at.master_node.clone().ok_or_else(|| {
