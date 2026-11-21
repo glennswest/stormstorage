@@ -1284,6 +1284,6 @@ DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 `array_bytes_before`; step 2b checks the array capacity is above
 `array_bytes_before` before the served volume grows.
 
-### 2026-11-21 — #132 (P1): a member list without items dropped every member (finding 28ac4c340410) — IN PROGRESS
+### 2026-11-21 — #132 (P1): a member list without items dropped every member (finding 28ac4c340410) — DONE (sc-build sc-build-a209ffd65d: clippy + build + test passed on 3c9c0ba)
 `kube::members`: `items` must be an array, else an error (adopt_members
 keeps known nodes). Mock apiserver `members_body`; store.rs adoption test.
