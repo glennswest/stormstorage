@@ -799,7 +799,7 @@ worked example.
 | `[kubernetes] server` | `"https://127.0.0.1:6443"` | The apiserver. |
 | `[kubernetes] token_file` | unset | Bearer token file. `$KUBE_TOKEN` wins over it; otherwise the first readable, non-empty file of this, `/data/stormcert/node-admin.token` (the node-admin token stormcert writes) and `/var/run/secrets/kubernetes.io/serviceaccount/token`. None found: anonymous. Read on every poll. |
 | `[kubernetes] ca_file` | unset | CA to verify the apiserver with (e.g. `/data/stormcert/ca.crt`). |
-| `[kubernetes] insecure_skip_tls_verify` | unset | Unset: TLS is not verified for a loopback `server` (as stormconsole), and verified otherwise. |
+| `[kubernetes] insecure_skip_tls_verify` | unset | Unset: TLS is not verified for a loopback `server` (as stormconsole), and verified otherwise. Loopback means the URL's host is exactly `localhost` or a loopback IP (127.0.0.0/8, `::1`); a name that only starts like one (`localhost.example.net`, `127.example.net`) is verified. |
 | `[[nodes]]` | none | Static nodes, see below. Names must be unique. |
 | `[[pools]]` | none | Pools, see below. |
 

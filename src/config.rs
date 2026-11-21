@@ -458,18 +458,29 @@ impl KubeConfig {
         token_search(None, &files)
     }
 
+    /// Whether the apiserver's certificate goes unverified: as
+    /// `insecure_skip_tls_verify` says, else only for a loopback server.
     pub fn skip_tls_verify(&self) -> bool {
-        self.insecure_skip_tls_verify.unwrap_or_else(|| {
-            let host = self
-                .server
-                .split("://")
-                .nth(1)
-                .unwrap_or(&self.server)
-                .split('/')
-                .next()
-                .unwrap_or("");
-            host.starts_with("127.") || host.starts_with("localhost") || host.starts_with("[::1]")
-        })
+        self.insecure_skip_tls_verify.unwrap_or_else(|| is_loopback_server(&self.server))
+    }
+}
+
+/// Whether `server` names this machine's loopback: its host, parsed as a
+/// URL, is exactly `localhost` or an IP address that is loopback
+/// (127.0.0.0/8, ::1). Never a name that merely starts like one —
+/// `localhost.example.net`, `127.example.net` (finding e53f3730aae1): the
+/// apiserver bearer goes over that connection. A server without a scheme
+/// is read as https. Unparseable: not loopback. Pure.
+pub fn is_loopback_server(server: &str) -> bool {
+    let s = server.trim();
+    let with_scheme = if s.contains("://") { s.to_string() } else { format!("https://{s}") };
+    let Some(host) = reqwest::Url::parse(&with_scheme).ok().and_then(|u| u.host_str().map(str::to_string)) else {
+        return false;
+    };
+    // An IPv6 host comes bracketed; the parser has normalized an IPv4 one.
+    match host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
     }
 }
 
@@ -833,6 +844,50 @@ fn unknown_top_level_keys(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Finding e53f3730aae1: only a loopback apiserver goes unverified by
+    /// default; a name that starts like one is verified.
+    #[test]
+    fn only_a_loopback_apiserver_skips_tls_by_default() {
+        for loopback in [
+            "https://127.0.0.1:6443",
+            "https://127.9.8.7:6443/",
+            "https://localhost:6443",
+            "https://LOCALHOST",
+            "https://[::1]:6443",
+            "127.0.0.1:6443",
+            "localhost:6443",
+        ] {
+            assert!(is_loopback_server(loopback), "{loopback}");
+        }
+        for remote in [
+            "https://localhost.example.net:6443",
+            "https://127.example.net:6443",
+            "https://127.0.0.1.example.net",
+            "https://localhost-api:6443",
+            "https://[::1].example.net",
+            "https://user@127.0.0.1@evil.example:6443",
+            "https://10.0.0.1:6443",
+            "https://[::2]:6443",
+            "https://api.example.net/127.0.0.1",
+            "localhost.example.net:6443",
+            "",
+            "not a url",
+        ] {
+            assert!(!is_loopback_server(remote), "{remote}");
+        }
+        let mut k = KubeConfig { server: "https://localhost.example.net:6443".into(), ..Default::default() };
+        assert!(!k.skip_tls_verify(), "verified unless asked");
+        k.insecure_skip_tls_verify = Some(true);
+        assert!(k.skip_tls_verify(), "asked for");
+        k.server = "https://127.0.0.1:6443".into();
+        assert!(k.skip_tls_verify());
+        k.insecure_skip_tls_verify = Some(false);
+        assert!(!k.skip_tls_verify(), "asked to verify loopback too");
+        k.insecure_skip_tls_verify = None;
+        assert!(k.skip_tls_verify(), "the family default: loopback unverified");
+    }
+
     use super::*;
 
     #[test]

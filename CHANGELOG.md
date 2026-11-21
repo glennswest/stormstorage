@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#129)
+- **fix (security):** With `[kubernetes] insecure_skip_tls_verify` unset,
+  the apiserver's certificate went unverified for any `server` whose
+  host *started with* `127.`, `localhost` or `[::1]`. That included
+  remote names such as `localhost.example.net` and `127.example.net`, and
+  the kube bearer was sent over that connection. `server` is now parsed as
+  a URL, and the default exemption applies only to a host that is exactly
+  `localhost` or a loopback IP address. Every other host is verified unless
+  `insecure_skip_tls_verify = true`. Finding e53f3730aae1.
+- **test:** `config::tests::only_a_loopback_apiserver_skips_tls_by_default`.
+
 ### 2026-11-21 (#128)
 - **fix (security):** The embedded UI put API strings (node names and
   engine URLs from self-registration, volume names, messages, events,
