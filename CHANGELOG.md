@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#127)
+- **fix:** Volume teardown held the federation read lock across the
+  head's array and drive deletes and every leg detach (minutes each on a
+  stalled engine), so every poll and API write queued behind it. The
+  engine clients and health are copied out first; an unreachable head is
+  not called, and its array is reported left there. Finding a48f31858c09.
+- **fix:** A publish serves the hosts it read from the record, so a host
+  withdrawn while that publish ran could be attached again after its
+  withdrawal answered `done`. Publish and host withdrawal of a volume are
+  now serialized (`orchestrate::serve_lock`). A withdrawal takes the host
+  off the record first and then waits for the lock, so it lands after any
+  publish that still had the host; pending withdrawals take it too.
+  Finding a66756340292.
+- **fix:** Re-leg on node loss (and an unnamed move) picked from every
+  healthy node, ignoring the volume's pool and create-time tier. It now
+  picks from the nodes the volume's pool selects, on its tier (the new
+  `tier` field on the volume), plus the destination pool's nodes during a
+  pool migration. A named `to` outside that is refused, and so is one in
+  the failure domain of a leg that stays. Rebalance keeps to the tier
+  too; a completed pool migration clears `tier`. Finding fcae7e10645d.
+- **fix:** A lost leg whose node answered again with its leg volume gone
+  (404) was retried as a rejoin on every pass and never re-legged. The
+  leg's volume id is now dropped on a 404, so the next pass re-legs it;
+  other errors still retry the rejoin after the cooldown. Finding
+  2cf5182e3a22.
+- **test:** `replication.rs`
+  `teardown_holds_no_lock_over_engine_calls_and_skips_an_unreachable_head`;
+  `hosts.rs` `a_withdrawal_during_a_publish_is_not_undone_by_its_attach`;
+  `orchestrate::tests` `replacements_keep_to_the_volumes_pool_and_tier`,
+  `a_named_target_outside_the_pool_or_a_staying_domain_is_refused`;
+  `leg_rejoin.rs` `a_leg_whose_volume_is_gone_is_re_legged_after_the_cooldown`.
+
 ### 2026-11-21 (#126)
 - **fix:** A backup stopped between the backup loop listing it and its
   step loading the record panicked on `expect("filtered")`. Backups run

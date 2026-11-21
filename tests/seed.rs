@@ -258,6 +258,7 @@ async fn setup_with(before: impl FnOnce(&mut Mock)) -> Fx {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            tier: None,
             seed: Some(Seed::new("golden-x", SystemTime::now())),
             owner: None,
         },

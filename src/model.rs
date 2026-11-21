@@ -473,6 +473,11 @@ pub struct DistVolume {
     pub name: String,
     pub size_bytes: u64,
     pub pool: Option<String>,
+    /// The node tier it was created on (`tier` on create), kept so a
+    /// replacement leg stays on it (finding fcae7e10645d). Cleared when a
+    /// pool migration completes: the new pool says where it lives then.
+    #[serde(default)]
+    pub tier: Option<String>,
     pub replicas: u32,
     pub rung: String,
     pub legs: Vec<Leg>,

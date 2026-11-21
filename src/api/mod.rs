@@ -1003,6 +1003,7 @@ async fn create_volume(
         expanding: None,
         last_resync: None,
         next_rejoin_after: None,
+        tier: req.tier.clone(),
         seed: from_golden.as_deref().map(|g| crate::model::Seed::new(g, SystemTime::now())),
         owner,
     };

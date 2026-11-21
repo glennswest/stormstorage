@@ -121,6 +121,7 @@ async fn setup() -> (Arc<AppState>, M) {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            tier: None,
             seed: None,
             owner: None,
         },

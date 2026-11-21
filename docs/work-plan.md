@@ -1255,3 +1255,16 @@ that takes but answers 502.
 `Claimed` guard through the failure record; `api::backups` stop (incl.
 purge), put_policy, delete_point, on_volume_delete take it via
 `orchestrate::claim_wait` (`backup::STEP_WAIT` 30 s, then 409).
+
+### 2026-11-21 — #127 (P1): four findings in orchestrate.rs — IN PROGRESS
+- a48f31858c09: `teardown` copies engines + health under the read lock,
+  calls nothing while holding it; unhealthy head skipped (reported).
+  Follow-up: an array left on an unreachable head at delete is not reaped.
+- a66756340292: `VolumeUses.serving` per-volume tokio mutex
+  (`serve_lock`): publish_inner holds it; withdraw_host removes the host
+  first, then takes it before the engine call; withdraw_pending_on too.
+- fcae7e10645d: `policy_allows` (pool selector ∧ `DistVolume.tier`, ∨
+  migration's to_pool) and `replacement_candidates`; explicit `to` checked
+  for policy + staying domains (domains skipped while migrating).
+- 2cf5182e3a22: `build_rejoin` on a 404 for the leg volume clears its
+  `volume_id`, so `plan_recovery` schedules `start` instead of `rejoin`.

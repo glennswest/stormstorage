@@ -29,6 +29,9 @@ struct Mock {
     /// Hosts that have been given a secret (kept, as stormblock does).
     secrets: BTreeSet<String>,
     log: Vec<String>,
+    /// Hold each per-host attach this long before it takes (finding
+    /// a66756340292: a withdrawal lands while a publish is mid-attach).
+    attach_delay_ms: u64,
 }
 
 type M = Arc<Mutex<Mock>>;
@@ -64,6 +67,14 @@ async fn engine_volumes(State(m): State<M>) -> Json<Value> {
 }
 
 async fn any_attach(State(m): State<M>, Path(id): Path<String>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let delay = {
+        let mut m = m.lock().unwrap();
+        if m.attach_delay_ms > 0 {
+            m.log.push(format!("attach-begin {id} {}", b["host_nqn"].as_str().unwrap_or("")));
+        }
+        m.attach_delay_ms
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     let mut m = m.lock().unwrap();
     if !m.volumes.values().any(|(_, l)| *l == id) {
         return (StatusCode::NOT_FOUND, Json(json!({"message": format!("volume {id} not found")})));
@@ -244,6 +255,45 @@ async fn a_volume_is_served_to_named_hosts_and_withdrawn() {
     assert!(!log.iter().any(|l| l.starts_with("v1attach") || l.starts_with("attach")), "{log:?}");
     assert_eq!(state.fed.read().await.volumes["s"].export.state, stormstorage::model::ExportState::Published);
     assert_no_secret(&api, &state).await;
+}
+
+/// Finding a66756340292: a republish read the host list, and is attaching
+/// h1 when h1 is withdrawn. The withdrawal waits for that publish and
+/// withdraws after its attach, so the engine ends up serving h1 to no one;
+/// before, the late attach put h1 back with the API answering "done".
+#[tokio::test]
+async fn a_withdrawal_during_a_publish_is_not_undone_by_its_attach() {
+    let (api, state, m) = setup().await;
+    let h1 = "nqn.2014-08.org.nvmexpress:uuid:h1";
+    let (st, v) = post_json(format!("{api}/api/v1/volumes"), json!({"name": "s", "size_bytes": 1u64 << 30, "replicas": 1})).await;
+    assert_eq!(st, 200, "{v}");
+    let (st, h) = post_json(format!("{api}/api/v1/volumes/s/export/hosts"), json!({"host_nqn": h1})).await;
+    assert_eq!(st, 200, "{h}");
+    let local = m.lock().unwrap().volumes.values().next().unwrap().1.clone();
+
+    m.lock().unwrap().attach_delay_ms = 600;
+    let republish = tokio::spawn(call(reqwest::Method::POST, format!("{api}/api/v1/volumes/s/export"), None));
+    // Until the publish is inside its attach of h1.
+    for _ in 0..100 {
+        if m.lock().unwrap().log.iter().any(|l| l.starts_with("attach-begin")) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(m.lock().unwrap().log.iter().any(|l| l.starts_with("attach-begin")), "the publish is attaching");
+    let (st, w) = call(reqwest::Method::DELETE, format!("{api}/api/v1/volumes/s/export/hosts/{h1}"), None).await;
+    assert_eq!(st, 200, "{w}");
+    assert_eq!(w["withdrawn"], "done");
+    republish.await.unwrap();
+    m.lock().unwrap().attach_delay_ms = 0;
+
+    let mm = m.lock().unwrap();
+    assert!(!mm.served.contains(&(local.clone(), h1.to_string())), "h1 still served: {:?}", mm.log);
+    let attach = mm.log.iter().rposition(|l| l.starts_with(&format!("attach {local} {h1}"))).expect("the publish's attach");
+    let withdraw = mm.log.iter().rposition(|l| *l == format!("withdraw {local} {h1}")).expect("withdrawn");
+    assert!(withdraw > attach, "withdrawn after the publish's attach: {:?}", mm.log);
+    drop(mm);
+    assert!(state.fed.read().await.volumes["s"].export.hosts.is_empty());
 }
 
 #[tokio::test]

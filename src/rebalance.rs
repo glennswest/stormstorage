@@ -116,6 +116,12 @@ pub fn plan(
                     crate::orchestrate::move_target_candidates(fed, rungs, v, &src.config.name)
                         .into_iter()
                         .filter(|c| members.iter().any(|m| m.config.name == c.name))
+                        // On the tier it was created on (finding fcae7e10645d).
+                        .filter(|c| {
+                            v.tier.as_deref().map_or(true, |t| {
+                                fed.nodes.get(&c.name).and_then(|n| n.config.tier.as_deref()) == Some(t)
+                            })
+                        })
                         .filter(|c| c.total_bytes > 0)
                         .filter(|c| {
                             let extra = promised.get(&c.name).copied().unwrap_or(0);
@@ -258,6 +264,7 @@ mod tests {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            tier: None,
             seed: None,
             owner: None,
         }

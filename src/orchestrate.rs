@@ -296,39 +296,101 @@ pub fn match_array(arrays: &[serde_json::Value], uris: &[String]) -> ArrayMatch 
 /// Tear down the head-side assembly (array + attached drives) and detach
 /// leg exports. Best-effort; returns the error strings it hit. Leg volume
 /// deletion stays with the caller.
+///
+/// The federation lock is held only to copy out the engine clients and
+/// health (finding a48f31858c09): never across an engine call, each of
+/// which can take minutes on an engine that stalls, while every poll and
+/// API write waits on the lock. An unreachable head or leg node is not
+/// called at all; what it holds is reported here (its array goes with its
+/// legs, which the caller deletes or records as orphans).
 pub async fn teardown(state: &Arc<AppState>, vol: &DistVolume) -> Vec<String> {
     let mut errors = Vec::new();
-    let fed = state.fed.read().await;
-    let head_engine = vol
-        .head
-        .as_ref()
-        .and_then(|h| fed.nodes.get(h))
-        .map(|n| state.engine_for(n));
-    if let (Some(engine), Some(array_id)) = (&head_engine, &vol.array_id) {
-        if let Err(e) = engine.delete_array(array_id).await {
-            errors.push(format!("array {array_id}: {e:#}"));
-        }
-        for leg in vol.legs.iter().chain(vol.replacing.as_ref().map(|r| &r.leg)) {
-            if let Some(uri) = leg.export.as_ref().map(|x| x.drive_uri()) {
-                if let Err(e) = engine.delete_drive(&uri, true).await {
-                    errors.push(format!("head drive {uri}: {e:#}"));
+    let legs: Vec<&Leg> = vol.legs.iter().chain(vol.replacing.as_ref().map(|r| &r.leg)).collect();
+    let (head, leg_engines) = {
+        let fed = state.fed.read().await;
+        let head = vol.head.as_ref().map(|h| {
+            let engine = fed.nodes.get(h).filter(|n| n.status.healthy).map(|n| state.engine_for(n));
+            (h.clone(), engine)
+        });
+        let leg_engines: Vec<Option<crate::engine::Engine>> = legs
+            .iter()
+            .map(|l| fed.nodes.get(&l.node).filter(|n| n.status.healthy).map(|n| state.engine_for(n)))
+            .collect();
+        (head, leg_engines)
+    };
+    if let (Some((h, engine)), Some(array_id)) = (&head, &vol.array_id) {
+        match engine {
+            None => errors.push(format!("head {h} unreachable: array {array_id} and its drives left there")),
+            Some(engine) => {
+                if let Err(e) = engine.delete_array(array_id).await {
+                    errors.push(format!("array {array_id}: {e:#}"));
+                }
+                for leg in &legs {
+                    if let Some(uri) = leg.export.as_ref().map(|x| x.drive_uri()) {
+                        if let Err(e) = engine.delete_drive(&uri, true).await {
+                            errors.push(format!("head drive {uri}: {e:#}"));
+                        }
+                    }
                 }
             }
         }
     }
-    for leg in vol.legs.iter().chain(vol.replacing.as_ref().map(|r| &r.leg)) {
-        let (Some(vid), Some(_)) = (&leg.volume_id, &leg.export) else {
+    for (leg, engine) in legs.iter().zip(leg_engines) {
+        let (Some(vid), Some(_), Some(engine)) = (&leg.volume_id, &leg.export, engine) else {
             continue;
         };
-        if let Some(n) = fed.nodes.get(&leg.node).filter(|n| n.status.healthy) {
-            let engine = state.engine_for(n);
-            let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
-            if let Err(e) = engine.detach_volume(vid, &master).await {
-                errors.push(format!("{} detach: {e:#}", leg.node));
-            }
+        let master = leg.master_node.clone().unwrap_or_else(|| "localhost".into());
+        if let Err(e) = engine.detach_volume(vid, &master).await {
+            errors.push(format!("{} detach: {e:#}", leg.node));
         }
     }
     errors
+}
+
+/// Whether the volume's placement policy lets a leg go to `node` (finding
+/// fcae7e10645d): a node its pool's selector matches, on the tier it was
+/// created on; during a pool migration, a node of the destination pool
+/// too. A pool no longer in the config constrains nothing. Pure.
+pub fn policy_allows(fed: &crate::model::FedState, config: &crate::config::Config, vol: &DistVolume, node: &str) -> bool {
+    let Some(n) = fed.nodes.get(node) else { return false };
+    let own = vol.pool.as_deref().and_then(|p| config.pool(p)).map_or(true, |p| p.selector.matches(&n.config))
+        && vol.tier.as_deref().map_or(true, |t| n.config.tier.as_deref() == Some(t));
+    let into = vol
+        .migration
+        .as_ref()
+        .and_then(|m| config.pool(&m.to_pool))
+        .is_some_and(|p| p.selector.matches(&n.config));
+    own || into
+}
+
+/// Where recovery or an unnamed move may put the leg on `from`: the move
+/// targets ([`move_target_candidates`]) the volume's own pool and tier
+/// allow (finding fcae7e10645d), never any healthy node. Pure.
+pub fn replacement_candidates(
+    fed: &crate::model::FedState,
+    config: &crate::config::Config,
+    vol: &DistVolume,
+    from: &str,
+) -> Vec<crate::placement::Candidate> {
+    move_target_candidates(fed, &config.federation.rungs, vol, from)
+        .into_iter()
+        .filter(|c| policy_allows(fed, config, vol, &c.name))
+        .collect()
+}
+
+/// The policy [`policy_allows`] checks, for a message.
+fn policy_text(vol: &DistVolume) -> String {
+    let mut parts = Vec::new();
+    if let Some(p) = &vol.pool {
+        parts.push(format!("pool {p}"));
+    }
+    if let Some(t) = &vol.tier {
+        parts.push(format!("tier {t}"));
+    }
+    if let Some(m) = &vol.migration {
+        parts.push(format!("or pool {} it is migrating to", m.to_pool));
+    }
+    parts.join(", ")
 }
 
 /// Where a moved leg may go: healthy, not already carrying a leg, and in a
@@ -427,6 +489,38 @@ pub(crate) async fn claim_wait(state: &Arc<AppState>, name: &str, wait: Duration
 pub struct VolumeUses {
     deleting: std::collections::BTreeSet<String>,
     holds: std::collections::BTreeMap<String, usize>,
+    /// Per volume: publish and host withdrawal, one at a time (finding
+    /// a66756340292). Dropped when nobody holds or waits on it.
+    serving: std::collections::BTreeMap<String, Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// A volume's serve lock, held (see [`serve_lock`]).
+pub(crate) struct Serving {
+    state: Arc<AppState>,
+    name: String,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut u = self.state.uses.lock().expect("uses lock");
+        if u.serving.get(&self.name).is_some_and(|m| Arc::strong_count(m) == 1) {
+            u.serving.remove(&self.name);
+        }
+    }
+}
+
+/// Serialize what changes who a volume is served to (finding
+/// a66756340292): a publish serves the hosts it read from the record, so a
+/// withdrawal that ran beside it could be undone by its attach. Publish
+/// holds this for its engine calls; a withdrawal takes the host off the
+/// record first, then waits here, so it lands after any publish that
+/// still had the host, and detaches what that one attached.
+pub(crate) async fn serve_lock(state: &Arc<AppState>, name: &str) -> Serving {
+    let m = state.uses.lock().expect("uses lock").serving.entry(name.to_string()).or_default().clone();
+    let guard = m.lock_owned().await;
+    Serving { state: state.clone(), name: name.to_string(), guard: Some(guard) }
 }
 
 pub fn is_deleting(state: &AppState, name: &str) -> bool {
@@ -606,10 +700,23 @@ async fn build_replacement(
                 if vol.legs.iter().any(|l| l.node == t) {
                     anyhow::bail!("target node {t:?} already carries a leg");
                 }
+                // Named by a caller: held to the volume's placement and,
+                // outside a pool migration (which checks domains at its
+                // destination's rung), its failure domains (finding
+                // fcae7e10645d).
+                if !policy_allows(&fed, &state.config, &vol, &t) {
+                    anyhow::bail!("target node {t:?} is outside {name}'s placement ({})", policy_text(&vol));
+                }
+                if vol.migration.is_none() && !move_target_candidates(&fed, rungs, &vol, from).iter().any(|c| c.name == t) {
+                    anyhow::bail!(
+                        "target node {t:?} shares a failure domain at rung {:?} with a leg that stays",
+                        vol.rung
+                    );
+                }
                 t
             }
             None => {
-                let cands = move_target_candidates(&fed, rungs, &vol, from);
+                let cands = replacement_candidates(&fed, &state.config, &vol, from);
                 crate::placement::plan(&cands, rungs, &vol.rung, 1, vol.leg_bytes(), state.config.placement.io_weight)
                     .map_err(|e| anyhow::anyhow!("no target: {e}"))?
                     .remove(0)
@@ -833,10 +940,31 @@ async fn build_rejoin(state: &Arc<AppState>, name: &str, node: &str) -> anyhow::
     }
 
     let vid = leg.volume_id.clone().ok_or_else(|| anyhow::anyhow!("{name}: leg on {node} has no volume id"))?;
-    leg_engine
-        .get_any_volume(&vid)
-        .await
-        .map_err(|e| anyhow::anyhow!("{node}: leg volume {vid} is not there ({e:#}) — a re-leg is needed"))?;
+    if let Err(e) = leg_engine.get_any_volume(&vid).await {
+        // Gone for certain (404): no rejoin can bring it back, and while
+        // the lost leg names a volume the reconciler keeps choosing a
+        // rejoin over a re-leg (finding 2cf5182e3a22). The id goes, so the
+        // next pass re-legs it the usual way; a failed read is retried.
+        if crate::engine::is_not_found(&e) {
+            {
+                let mut fed = state.fed.write().await;
+                if let Some(l) = fed
+                    .volumes
+                    .get_mut(name)
+                    .and_then(|v| v.legs.iter_mut().find(|l| l.node == node && l.state == LegState::Lost))
+                    .filter(|l| l.volume_id.as_deref() == Some(vid.as_str()))
+                {
+                    l.volume_id = None;
+                    l.message = Some(format!("leg volume {vid} is gone from {node}: re-legged"));
+                }
+                fed.revision += 1;
+            }
+            crate::replicate::push_to_peers(state.clone());
+            state.persist().await;
+            anyhow::bail!("{node}: leg volume {vid} is gone ({e:#}) — re-legged on the next pass");
+        }
+        anyhow::bail!("{node}: leg volume {vid}: {e:#} — rejoin retried after the cooldown");
+    }
     if let Some(m) = &stale {
         head_engine
             .array_remove_member(&array_id, &m.uuid)
@@ -2017,6 +2145,9 @@ async fn publish_inner(
     state: &Arc<AppState>,
     name: &str,
 ) -> anyhow::Result<(crate::model::Export, BTreeMap<String, String>)> {
+    // One publish or withdrawal of this volume at a time (finding
+    // a66756340292): `hosts` below is read under it.
+    let _serving = serve_lock(state, name).await;
     let ready = {
         let fed = state.fed.read().await;
         let vol = fed
@@ -2468,6 +2599,18 @@ pub async fn withdraw_host(state: &Arc<AppState>, name: &str, host_nqn: &str) ->
     let Some(node) = node else {
         return Ok(Withdrawn::NothingServed);
     };
+    // After any publish in flight that read the host before it left the
+    // record (finding a66756340292): its attach is withdrawn here, not
+    // left serving a host the API says is revoked. Where it served from is
+    // read again: that publish may have moved the export.
+    let _serving = serve_lock(state, name).await;
+    let (node, local_id) = {
+        let fed = state.fed.read().await;
+        match fed.volumes.get(name) {
+            Some(v) if v.export.node.is_some() => (v.export.node.clone().unwrap_or(node), v.export.local_id.clone()),
+            _ => (node, local_id),
+        }
+    };
     let pending = crate::model::PendingWithdraw { node: node.clone(), local_id, name: served, host_nqn: host_nqn.clone() };
     let outcome = withdraw_on_engine(state, &pending).await;
     let result = match &outcome {
@@ -2527,6 +2670,7 @@ async fn withdraw_pending_on(state: &Arc<AppState>, node: &str) {
             .collect()
     };
     for (name, w) in due {
+        let _serving = serve_lock(state, &name).await;
         if withdraw_on_engine(state, &w).await.is_ok() {
             {
                 let mut fed = state.fed.write().await;
@@ -2769,9 +2913,78 @@ mod tests {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            tier: None,
             seed: None,
             owner: None,
         }
+    }
+
+    /// A pool "p" of nodes a, b and c (rung "rack").
+    fn pool_config() -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config.federation.rungs = ["rack", "node"].iter().map(|s| s.to_string()).collect();
+        config.pools.push(
+            toml::from_str("name = \"p\"\nreplicas = 2\nrung = \"rack\"\n[selector]\nnodes = [\"a\", \"b\", \"c\"]").unwrap(),
+        );
+        config
+    }
+
+    /// Finding fcae7e10645d: a replacement stays in the volume's pool and
+    /// on its tier, however much emptier a node outside them is; during a
+    /// pool migration the destination's nodes are allowed too.
+    #[test]
+    fn replacements_keep_to_the_volumes_pool_and_tier() {
+        let config = pool_config();
+        let mut fed = FedState::default();
+        for (n, r, free) in [("a", "r1", 10), ("b", "r2", 10), ("c", "r3", 20), ("d", "r4", 90)] {
+            fed.nodes.insert(n.into(), node(n, r, free));
+        }
+        let mut v = vol(&["a", "b"], "rack");
+        let names = |c: Vec<crate::placement::Candidate>| c.into_iter().map(|c| c.name).collect::<Vec<_>>();
+        assert_eq!(names(replacement_candidates(&fed, &config, &v, "b")), vec!["c", "d"], "no pool: any node");
+        v.pool = Some("p".into());
+        assert_eq!(names(replacement_candidates(&fed, &config, &v, "b")), vec!["c"], "d is outside pool p");
+
+        // The tier it was created on.
+        fed.nodes.get_mut("c").unwrap().config.tier = Some("slow".into());
+        v.tier = Some("fast".into());
+        assert!(replacement_candidates(&fed, &config, &v, "b").is_empty(), "c is not on tier fast");
+        fed.nodes.get_mut("c").unwrap().config.tier = Some("fast".into());
+        assert_eq!(names(replacement_candidates(&fed, &config, &v, "b")), vec!["c"]);
+
+        // Migrating into a pool of d: d is allowed as well.
+        let mut config = config;
+        config.pools.push(toml::from_str("name = \"q\"\nreplicas = 2\nrung = \"rack\"\n[selector]\nnodes = [\"d\"]").unwrap());
+        v.migration = Some(crate::model::Migration {
+            to_pool: "q".into(),
+            from_pool: Some("p".into()),
+            started_at: SystemTime::now(),
+            state: crate::model::MigrationState::Moving,
+            message: None,
+        });
+        assert_eq!(names(replacement_candidates(&fed, &config, &v, "b")), vec!["c", "d"]);
+    }
+
+    /// Finding fcae7e10645d: a named target is held to the pool and, outside
+    /// a migration, to the failure domains of the legs that stay.
+    #[tokio::test]
+    async fn a_named_target_outside_the_pool_or_a_staying_domain_is_refused() {
+        let mut config = pool_config();
+        config.local.enabled = false;
+        config.kubernetes.enabled = false;
+        let mut fed = FedState::default();
+        for (n, r) in [("a", "r1"), ("b", "r2"), ("c", "r1"), ("d", "r4")] {
+            fed.nodes.insert(n.into(), node(n, r, 50));
+        }
+        let mut v = vol(&["a", "b"], "rack");
+        v.pool = Some("p".into());
+        fed.volumes.insert("v".into(), v);
+        let state = Arc::new(AppState::new(config, fed, None));
+        let e = move_leg(&state, "v", "b", Some("d".into())).await.unwrap_err().to_string();
+        assert!(e.contains("outside v's placement (pool p)"), "{e}");
+        let e = move_leg(&state, "v", "b", Some("c".into())).await.unwrap_err().to_string();
+        assert!(e.contains("shares a failure domain"), "{e}");
+        assert!(!busy(&state, "v"), "the claim is released");
     }
 
     #[test]

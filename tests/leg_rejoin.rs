@@ -129,6 +129,17 @@ async fn attach(State(m): State<M>, Path(id): Path<String>) -> (StatusCode, Json
     )
 }
 
+/// A /v1 create: a new leg volume (a re-leg onto this node).
+async fn v1_create(State(m): State<M>, Json(b): Json<Value>) -> (StatusCode, Json<Value>) {
+    let mut m = m.lock().unwrap();
+    if m.down {
+        return unavailable();
+    }
+    let id = format!("{}-new", b["name"].as_str().unwrap_or("v"));
+    m.volumes.push(id.clone());
+    (StatusCode::OK, Json(json!({"id": id, "replicas": [{"node": "node-c", "role": "master"}]})))
+}
+
 async fn mock_engine(mock: Mock) -> (String, M) {
     let m: M = Arc::new(Mutex::new(mock));
     let app = Router::new()
@@ -140,6 +151,7 @@ async fn mock_engine(mock: Mock) -> (String, M) {
         .route("/api/v1/drives", post(add_drive))
         .route("/api/v1/drives/{id}", delete(delete_drive))
         .route("/api/v1/volumes/{id}", get(get_volume))
+        .route("/v1/volumes", post(v1_create))
         .route("/v1/volumes/{id}/attach", post(attach))
         .with_state(m.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -165,13 +177,26 @@ fn leg(node: &str, member: &str) -> Leg {
 /// Head node-a holds array "arr" of the legs on node-a (m-a) and node-b
 /// (m-b), both active; node-b holds its leg volume.
 async fn setup() -> (Arc<AppState>, M, M) {
-    let mut config = Config::default();
+    let (state, head, b, _) = setup_with(None, Config::default()).await;
+    (state, head, b)
+}
+
+/// [`setup`], with a third node `node-c` when given (finding
+/// 2cf5182e3a22: somewhere a re-leg can go).
+async fn setup_with(c: Option<Mock>, mut config: Config) -> (Arc<AppState>, M, M, Option<M>) {
     config.local.enabled = false;
     config.kubernetes.enabled = false;
     let members = vec![("m-a".to_string(), "active".to_string()), ("m-b".to_string(), "active".to_string())];
     let (addr_a, head) = mock_engine(Mock { array: Some(("arr".into(), members)), ..Default::default() }).await;
     let (addr_b, b) = mock_engine(Mock { volumes: vec!["node-b-vol".into()], ..Default::default() }).await;
-    for (n, addr) in [("node-a", addr_a), ("node-b", addr_b)] {
+    let mut nodes = vec![("node-a", addr_a), ("node-b", addr_b)];
+    let mut c_mock = None;
+    if let Some(c) = c {
+        let (addr_c, cm) = mock_engine(c).await;
+        nodes.push(("node-c", addr_c));
+        c_mock = Some(cm);
+    }
+    for (n, addr) in nodes {
         config.nodes.push(
             toml::from_str::<NodeConfig>(&format!("name = \"{n}\"\nengine_url = \"http://{addr}\""))
                 .unwrap(),
@@ -207,6 +232,7 @@ async fn setup() -> (Arc<AppState>, M, M) {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            tier: None,
             seed: None,
             owner: None,
         },
@@ -214,7 +240,7 @@ async fn setup() -> (Arc<AppState>, M, M) {
     let state = Arc::new(AppState::new(config, fed, None));
     stormstorage::registry::poll_once(&state).await;
     assert_eq!(state.fed.read().await.volumes["v"].assembly, AssemblyState::Assembled);
-    (state, head, b)
+    (state, head, b, c_mock)
 }
 
 /// Power node-b off: past fail_threshold its leg is lost, the volume
@@ -344,5 +370,46 @@ async fn leg_volume_gone_from_its_node_is_not_rejoined() {
         assert!(h.added.is_empty() && h.removed.is_empty(), "nothing changed on the head");
     }
     let ev = messages(&state).await;
-    assert!(ev.iter().any(|m| m.contains("did not rejoin") && m.contains("re-leg is needed")), "{ev:?}");
+    assert!(ev.iter().any(|m| m.contains("did not rejoin") && m.contains("re-legged")), "{ev:?}");
+    assert!(state.fed.read().await.volumes["v"].legs[1].volume_id.is_none(), "no rejoin of a volume that is gone");
+}
+
+/// Finding 2cf5182e3a22: node-b answers again without its leg volume, and
+/// a third node is there. The leg is re-legged onto node-c once the re-leg
+/// cooldown (set while node-c was down too) has passed; it used to be
+/// tried as a rejoin on every pass and never re-legged.
+#[tokio::test]
+async fn a_leg_whose_volume_is_gone_is_re_legged_after_the_cooldown() {
+    let mut config = Config::default();
+    config.recovery.cooldown_secs = 1;
+    let (state, head, b, c) = setup_with(Some(Mock { down: true, ..Default::default() }), config).await;
+    let c = c.unwrap();
+    // node-b goes, with node-c down: nowhere to re-leg, a cooldown is set.
+    power_off_b(&state, &b).await;
+    assert!(state.fed.read().await.volumes["v"].next_releg_after.is_some(), "a failed re-leg cools down");
+    head.lock().unwrap().array.as_mut().unwrap().1[1].1 = "missing".into();
+    b.lock().unwrap().volumes.clear();
+    power_on_b(&state, &b).await;
+    assert!(state.fed.read().await.volumes["v"].legs[1].volume_id.is_none(), "the gone volume is let go");
+
+    c.lock().unwrap().down = false;
+    let mut done = false;
+    for _ in 0..60 {
+        stormstorage::registry::poll_once(&state).await;
+        let fed = state.fed.read().await;
+        let v = &fed.volumes["v"];
+        if v.assembly == AssemblyState::Assembled && v.legs.iter().any(|l| l.node == "node-c") {
+            done = true;
+            break;
+        }
+        drop(fed);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let fed = state.fed.read().await;
+    let v = &fed.volumes["v"];
+    assert!(done, "never re-legged onto node-c: {v:?}\n{:?}", messages(&state).await);
+    let nodes: Vec<&str> = v.legs.iter().map(|l| l.node.as_str()).collect();
+    assert_eq!(nodes, vec!["node-a", "node-c"], "node-b's leg retired");
+    assert!(c.lock().unwrap().volumes.contains(&"v-new".to_string()), "a new leg volume on node-c");
+    assert_eq!(b.lock().unwrap().attaches, 0, "never rejoined");
 }

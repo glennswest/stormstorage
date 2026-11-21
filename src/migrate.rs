@@ -243,6 +243,8 @@ pub async fn run(state: &Arc<AppState>, now: SystemTime) {
                     let mut fed = state.fed.write().await;
                     if let Some(v) = fed.volumes.get_mut(&name) {
                         v.pool = Some(to.clone());
+                        // The pool says where it lives now (finding fcae7e10645d).
+                        v.tier = None;
                         if let Some(p) = state.config.pools.iter().find(|p| p.name == to) {
                             v.rung = p.rung.clone();
                         }
@@ -344,6 +346,7 @@ mod tests {
             expanding: None,
             last_resync: None,
             next_rejoin_after: None,
+            tier: None,
             seed: None,
             owner: None,
         }

@@ -438,6 +438,7 @@ async fn get_array(State(s): State<S>, Path(id): Path<String>) -> (StatusCode, J
 }
 
 async fn delete_array(State(s): State<S>, Path(id): Path<String>) -> StatusCode {
+    pause(&s).await;
     let mut m = s.m.lock().unwrap();
     m.arrays.remove(&id);
     m.log.push(format!("delete array {id}"));
@@ -1815,6 +1816,36 @@ async fn delete_waits_for_or_refuses_what_is_in_flight() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!state.fed.read().await.volumes.contains_key("dv"), "not brought back");
     assert!(mocks.values().all(|m| !m.lock().unwrap().volumes.values().any(|v| v.0 == "dv")), "legs gone");
+}
+
+/// Finding a48f31858c09: teardown's engine calls run without the
+/// federation lock, so a head stalling on its array delete does not stall
+/// every poll and API write; a head that does not answer is not called.
+#[tokio::test]
+async fn teardown_holds_no_lock_over_engine_calls_and_skips_an_unreachable_head() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    let (head, _, _) = create_mirror(&api, "tv").await;
+    let vol = state.fed.read().await.volumes["tv"].clone();
+    mocks[&head].lock().unwrap().slow_ms = 1500;
+    let t = {
+        let (st, v) = (state.clone(), vol.clone());
+        tokio::spawn(async move { stormstorage::orchestrate::teardown(&st, &v).await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!t.is_finished(), "the head is still deleting its array");
+    let w = tokio::time::timeout(Duration::from_millis(500), state.fed.write()).await;
+    assert!(w.is_ok(), "a writer waited on teardown's engine call");
+    drop(w);
+    let errors = t.await.unwrap();
+    mocks[&head].lock().unwrap().slow_ms = 0;
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("delete array")));
+
+    mocks[&head].lock().unwrap().log.clear();
+    state.fed.write().await.nodes.get_mut(&head).unwrap().status.healthy = false;
+    let errors = stormstorage::orchestrate::teardown(&state, &vol).await;
+    assert!(errors.iter().any(|e| e.contains("unreachable") && e.contains("left there")), "{errors:?}");
+    assert!(!mocks[&head].lock().unwrap().log.iter().any(|l| l.starts_with("delete array")), "not called");
 }
 
 /// #49: `encrypted` and `qos_class` are refused until stormblock#319 — the

@@ -306,6 +306,16 @@ stormview components feed on **:9093**.
   volume at a time. If the new member fails, or makes no progress for
   `recovery.rebuild_timeout_secs`, the new leg is undone and the old one
   kept.
+
+  **Where a new leg may go:** a node the volume's pool selects, on the
+  `tier` it was created on (kept on the volume as `tier`). During a pool
+  migration the destination pool's nodes are allowed too. A pool that is
+  no longer configured places no limit. Placement picks from those nodes
+  when no `to` is given; that covers re-leg on node loss, which used to
+  take any healthy node. A `to` outside them is refused (409), and so is
+  one that shares a failure domain at the volume's rung with a leg that
+  stays (outside a migration, which checks domains at its destination's
+  rung).
 - **A mirrored volume filled from a golden (#113, #116).** A create with
   `from_golden: <golden>` makes a mirrored volume (≥ 2 legs) whose served
   volume starts as a copy of that golden: a mirrored VM root. The owner's
@@ -346,7 +356,9 @@ stormview components feed on **:9093**.
   re-leg target (with two nodes there is none), and once its node answers
   the head's array is read. If its member is active again the leg is
   `created`, nothing copied. Otherwise the same leg volume (still on its
-  node; if it is gone, an error event and a re-leg's turn) is attached to
+  node; if its engine answers 404 for it, the leg's volume id is dropped
+  and the next pass re-legs it the usual way, after any re-leg cooldown)
+  is attached to
   the head again, its stale member removed, the drive reopened and added
   back, and rebuilt as a replacement marked `rejoin` (restart-resume and
   `rebuild_timeout_secs` as for a re-leg; a failed one keeps the leg volume
@@ -923,9 +935,9 @@ with a token set, their Delete/Publish actions get 401.
 | GET | `/api/v1/stale-heads` | Former heads to clean up when they answer: `{stale_heads: [{node, array_id, drive_uris, of_volume, epoch, since}]}`. |
 | POST | `/api/v1/volumes/{name}/export` | Publish, or republish, what consumers attach. Optional body `{hosts: [{host_nqn, dhchap?}]}` adds consumer hosts first (#53); `{recreate: true}` replaces a served volume that is `gone` with a new, empty one (#40; 409 when nothing is gone or on a single leg). Returns the `export` record (`hosts[]`, `per_host`, `local_id`, `withdrawing[]`; never a secret); 409 when it cannot be served (not assembled, node unreachable, engine error, a host refused). |
 | POST | `/api/v1/volumes/{name}/export/hosts` | `{host_nqn, dhchap?}` → that host's record plus `dhchap_secret` when it has one (#51). Served from the host's own subsystem; idempotent. 400 for a value that is not a host NQN (`nqn.…`, ≤ 223 bytes), 404 for no such volume, 409 when it cannot be served. |
-| DELETE | `/api/v1/volumes/{name}/export/hosts/{host_nqn}` | Stop serving it to that host: `{host_nqn, withdrawn: done\|pending\|nothing_served}`. |
+| DELETE | `/api/v1/volumes/{name}/export/hosts/{host_nqn}` | Stop serving it to that host: `{host_nqn, withdrawn: done\|pending\|nothing_served}`. The host leaves the record at once. The engine withdrawal waits for any publish of the volume in flight, so that publish's attach cannot serve the host again. |
 | POST | `/api/v1/volumes/{name}/assemble` | Retry a failed assembly now, then publish. Returns the volume; 409 when it is not pending, has a single leg or is busy, 502 when the engine refuses (the reason is in the error and the events). |
-| DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. |
+| DELETE | `/api/v1/volumes/{name}` | Revoke the export, tear down the assembly, then delete the legs. An unreachable head is not called; its array is reported left there (a warning event). No engine call holds the federation lock. |
 | POST | `/api/v1/volumes/{name}/migrate` | Body `{pool}`. Tier migration (#32): every leg moves into that pool, one at a time; the head's own leg waits on a handover (#100). Returns the `migration`. 404 for an unknown volume or pool, 409 when it cannot start (see *Tier migration*). |
 | DELETE | `/api/v1/volumes/{name}/migrate` | Cancel the tier migration: `{cancelled}`. Legs already moved stay. |
 | POST | `/api/v1/volumes/{name}/move` | Body `{from, to?}`. Moves the leg on `from`; with no `to`, placement picks one. Returns `{moving, to, status:"rebuilding"}`. |
