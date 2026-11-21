@@ -1268,3 +1268,9 @@ purge), put_policy, delete_point, on_volume_delete take it via
   for policy + staying domains (domains skipped while migrating).
 - 2cf5182e3a22: `build_rejoin` on a 404 for the leg volume clears its
   `volume_id`, so `plan_recovery` schedules `start` instead of `rejoin`.
+
+### 2026-11-21 — #128 (P1): UI rendered API values as HTML (finding d3e282fb6f09) — IN PROGRESS
+`src/ui/index.html`: `html` tag template (escapes every interpolation;
+`Safe` for its own output), `render()`, buttons `data-act` + one click
+listener, form via addEventListener. Test: `tests/ui/escape.js` (node, stub
+DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.

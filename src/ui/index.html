@@ -64,7 +64,7 @@ form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
 </table></div>
 
 <h2>Volumes</h2>
-<form class="create" onsubmit="return createVol(event)">
+<form class="create" id="create">
   <input id="v-name" placeholder="name" required>
   <input id="v-size" type="number" placeholder="GiB" required min="1" style="width:80px">
   <select id="v-pool"><option value="">no pool</option></select>
@@ -81,9 +81,22 @@ form.create{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
 const m = location.pathname.match(/^(\/ui\/(?:proxy|ext)\/[^\/]+\/)/);
 const API = m ? m[1] : '/';
 const $ = id => document.getElementById(id);
+// Output encoding (finding d3e282fb6f09): every value from the API is
+// text. `html` is a template tag that escapes each interpolation for both
+// element text and quoted attributes; only what `html` itself made
+// (a Safe) passes through as markup. Nothing is rendered with an inline
+// handler: buttons carry data-* and one listener acts on them.
+const ESC={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'};
+const esc=v=>String(v==null?'':v).replace(/[&<>"'`]/g,c=>ESC[c]);
+class Safe{constructor(h){this.h=h}toString(){return this.h}}
+const enc=v=>v instanceof Safe?v.h:Array.isArray(v)?v.map(enc).join(''):esc(v);
+const html=(strs,...vals)=>new Safe(strs.reduce((a,s,i)=>a+s+(i<vals.length?enc(vals[i]):''),''));
+const join=(xs,sep)=>new Safe(xs.map(enc).join(enc(sep)));
+const BR=html`<br>`;
+const render=(el,safe)=>{el.innerHTML=enc(safe)};
 function human(b){ if(!b) return '0'; const u=['B','KiB','MiB','GiB','TiB','PiB']; let i=0;
   while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b>=100||i===0?0:1)+' '+u[i]; }
-function chip(t,c){return `<span class="chip ${c}">${t}</span>`}
+function chip(t,c){return html`<span class="chip ${c}">${t}</span>`}
 // [api] api_token (#6): a write answered 401 asks for the token once and
 // keeps it for this tab.
 function tok(){try{return sessionStorage.getItem('ss-token')||''}catch(e){return ''}}
@@ -99,94 +112,109 @@ async function api(p,o){ const r=await call(p,o);
 function post(p,b){return api(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})})}
 function fail(e){$('err').style.display='block';$('err').textContent=e.message||String(e);
   setTimeout(()=>{$('err').style.display='none'},7000)}
-window.createVol=(ev)=>{ ev.preventDefault();
+function createVol(ev){ ev.preventDefault();
   const b={name:$('v-name').value, size_bytes:Number($('v-size').value)*1024**3};
   if($('v-pool').value) b.pool=$('v-pool').value;
   if($('v-repl').value) b.replicas=Number($('v-repl').value);
   post('api/v1/volumes',b).then(()=>{$('v-name').value='';refresh()}).catch(e=>{fail(e)});
-  return false; };
-window.moveLeg=(name,from)=>{
+  return false; }
+const act=(p)=>p.then(refresh).catch(e=>{fail(e);refresh();});
+function moveLeg(name,from){
   if(confirm(`Move ${name}'s leg off ${from}? A new leg is placed automatically and rebuilt before ${from} is released.`))
     act(post(`api/v1/volumes/${encodeURIComponent(name)}/move`,{from}));
-};
-window.act=(p)=>p.then(refresh).catch(e=>{fail(e);refresh();});
-window.pubVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/export`,{}));
-window.asmVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/assemble`,{}));
+}
+const pubVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/export`,{}));
+const asmVol=(n)=>act(post(`api/v1/volumes/${encodeURIComponent(n)}/assemble`,{}));
+function delVol(n){ if(confirm(`Delete volume ${n} and all its legs?`))
+  call(`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
+    .then(r=>{ if(!r.ok) return r.json().then(j=>{throw new Error(j.error||r.status)}); refresh(); })
+    .catch(fail); }
+// The one place a button acts: its data-act, with the names it carries as
+// data (never code).
+const ACTS={pub:d=>pubVol(d.name),asm:d=>asmVol(d.name),del:d=>delVol(d.name),move:d=>moveLeg(d.name,d.from)};
+document.addEventListener('click',ev=>{const b=ev.target.closest&&ev.target.closest('button[data-act]');
+  if(b&&ACTS[b.dataset.act])ACTS[b.dataset.act](b.dataset);});
+$('create').addEventListener('submit',createVol);
 // Copies in sync as read from the head's array (#33).
 const syncChips=(x)=>{if(!x.replica_sync||x.legs.length<2)return '';
   const r=x.replica_sync,n=r.filter(y=>y.sync&&y.sync.state==='in_sync').length;
-  let h=' '+chip(`in sync ${n}/${r.length}`,n>=x.replicas?'c-ok':'c-warn');
-  for(const y of r){if(y.sync&&y.sync.state==='resyncing')h+=' '+chip(`${y.node} ${y.sync.progress_pct.toFixed(1)}%`,'c-warn');}
-  if(x.fenced)h+=' '+chip(`fenced @${x.epoch}`,'c-warn');
-  if(x.dual_attach)h+=' '+chip(`dual-attach ${x.dual_attach.target_node}`,'c-warn');
+  const h=[' ',chip(`in sync ${n}/${r.length}`,n>=x.replicas?'c-ok':'c-warn')];
+  for(const y of r){if(y.sync&&y.sync.state==='resyncing')h.push(' ',chip(`${y.node} ${Number(y.sync.progress_pct).toFixed(1)}%`,'c-warn'));}
+  if(x.fenced)h.push(' ',chip(`fenced @${x.epoch}`,'c-warn'));
+  if(x.dual_attach)h.push(' ',chip(`dual-attach ${x.dual_attach.target_node}`,'c-warn'));
   return h;};
-const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=`<button title="publish / republish" onclick="pubVol('${x.name}')">↻</button>`;
-  if(e.state==='published'&&c)return `<span class="mono" title="${c.nqn}">${c.traddr}:${c.trsvcid} ns ${c.nsid}</span>${e.coordinates_changed?' '+chip('moved','c-warn'):''} ${b}`;
-  if(e.state==='failed'&&e.gone)return `${chip('served volume gone','c-err')} <span class="dim">${e.message||''}</span>`;
-  if(e.state==='failed')return `${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
-  if(e.state==='revoking')return `${chip('delete unfinished','c-warn')} <span class="dim">${e.message||''} — delete it again</span>`;
-  if(e.state==='published'&&e.per_host)return chip(`${(e.hosts||[]).length} host(s)`,'c-ok')+' '+b;
+const expo=(x)=>{const e=x.export||{},c=e.coordinates,b=html`<button title="publish / republish" data-act="pub" data-name="${x.name}">↻</button>`;
+  if(e.state==='published'&&c)return html`<span class="mono" title="${c.nqn}">${c.traddr}:${c.trsvcid} ns ${c.nsid}</span>${e.coordinates_changed?[' ',chip('moved','c-warn')]:''} ${b}`;
+  if(e.state==='failed'&&e.gone)return html`${chip('served volume gone','c-err')} <span class="dim">${e.message||''}</span>`;
+  if(e.state==='failed')return html`${chip('failed','c-err')} <span class="dim">${e.message||''}</span> ${b}`;
+  if(e.state==='revoking')return html`${chip('delete unfinished','c-warn')} <span class="dim">${e.message||''} — delete it again</span>`;
+  if(e.state==='published'&&e.per_host)return html`${chip(`${(e.hosts||[]).length} host(s)`,'c-ok')} ${b}`;
   return x.assembly==='pending_engine_support'?'':b;};
-window.delVol=(n)=>{ if(confirm(`Delete volume ${n} and all its legs?`))
-  call(`api/v1/volumes/${encodeURIComponent(n)}`,{method:'DELETE'})
-    .then(r=>{ if(!r.ok) return r.json().then(j=>{throw new Error(j.error||r.status)}); refresh(); })
-    .catch(fail); };
+const drv=d=>d?(d.serial||d.wwn||d.path||'?'):'';
+// A node volume's PV and its claim (#28): complete = Bound and naming each other.
+const pvc=p=>{if(!p)return '';const c=p.claim;const ok=p.phase==='Bound'&&c&&c.bound;
+  const claim=c?html`${c.namespace}/${c.name}${c.bound?'':[' ',chip(c.phase?'not bound':'claim missing','c-warn')]}`:chip('no claim','c-warn');
+  return html`${p.pv} ${ok?p.phase:chip(p.phase||'?','c-warn')}<br>${claim}${p.volume_kind?[' ',chip(p.volume_kind,'c-mut')]:''}`;};
+const what=x=>x.kind==='slab'?`${x.node} · ${x.role} · tier ${x.tier} · ${x.drive?'drive '+drv(x.drive):x.domain}`
+  :x.kind==='tier'?`${x.slabs.length} slab(s) on ${x.nodes.join(', ')}`
+  :`replicas ${x.replicas} at ${x.rung} · ${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}`;
+const nodeRows=n=>n.nodes.length?n.nodes.map(x=>html`<tr>
+  <td class="mono">${x.name}</td>
+  <td class="dim mono">${x.engine_url}</td>
+  <td>${x.tier?chip(x.tier,'c-acc'):''}</td>
+  <td class="dim">${Object.entries(x.labels||{}).map(([k,val])=>`${k}=${val}`).join(' ')}</td>
+  <td>${x.status.healthy?chip('healthy','c-ok'):chip('unreachable','c-err')}</td>
+  <td>${human(x.status.free_bytes)} / ${human(x.status.total_bytes)}</td>
+  <td>${x.status.volumes||0}</td></tr>`)
+  :html`<tr><td colspan="7" class="dim">no nodes — no stormblock on this machine answered; add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>`;
+const poolRows=p=>p.pools.length?p.pools.map(x=>html`<tr>
+  <td class="mono">${x.kind==='slab'?x.node+'/'+String(x.slab).slice(0,8):x.name}</td>
+  <td>${chip(x.kind,x.kind==='policy'?'c-acc':'c-mut')}</td>
+  <td class="dim">${what(x)}</td><td>${x.kind==='policy'?'':x.volumes}</td>
+  <td>${human(x.free_bytes)} / ${human(x.total_bytes)}</td></tr>`)
+  :html`<tr><td colspan="5" class="dim">no pools — no engine found and none configured</td></tr>`;
+const nvolRows=inv=>{const rows=inv.flatMap(({node,i})=>(i.volumes||[]).map(v=>html`<tr>
+  <td class="mono">${v.name}${v.sealed?[' ',chip('sealed','c-mut')]:''}${v.kind&&v.kind!=='volume'?[' ',chip(v.kind,'c-mut')]:''}${v.in_use?[' ',chip('in use '+(v.attachments||[]).map(a=>a.transport).join('+'),'c-acc')]:''}</td><td class="mono">${node}</td>
+  <td>${human(v.virtual_size_bytes)} / ${human(v.allocated_bytes)}</td><td>${v.role}</td>
+  <td class="dim mono">${v.placement?join((v.placement.slabs||[]).map(s=>html`${String(s.id).slice(0,8)} ${drv(s.drive)}${s.node&&s.node!==node?'@'+s.node:''}${s.state!=='ok'?[' ',chip(s.state,'c-err')]:''}`),BR)
+    :(v.slabs||[]).length?v.slabs.map(s=>String(s).slice(0,8)).join('+'):'unknown'}${v.placement&&v.placement.rebuild&&v.placement.rebuild!=='none'?[' ',chip('rebuild '+v.placement.rebuild,'c-warn')]:''}</td>
+  <td class="dim mono">${v.placement?join((v.placement.arrays||[]).flatMap(a=>a.members||[]).map(m=>html`${drv(m.drive)}@${m.node} ${m.state==='active'?m.state:chip(m.state,'c-warn')}`),BR):''}</td>
+  <td class="dim">${(c=>c?`${c.kind} ${c.namespace?c.namespace+'/':''}${c.name}`:'')(v.consumer||v.owner)}</td>
+  <td class="dim mono">${pvc(v.pv)}</td></tr>`));
+  return rows.length?rows:html`<tr><td colspan="8" class="dim">no node volumes</td></tr>`;};
+const poolOptions=p=>html`<option value="">no pool</option>${p.pools.filter(x=>x.kind==='policy').map(x=>html`<option>${x.name}</option>`)}`;
+const legCell=x=>join(x.legs.map(l=>html`${l.node}${l.state==='created'?'':[' ',chip(l.state,'c-err')]}${l.message?[' ',chip(l.message,'c-warn')]:''}${(x.assembly==='assembled'||x.assembly==='degraded')&&!x.replacing?html` <button title="move this leg" data-act="move" data-name="${x.name}" data-from="${l.node}">⇄</button>`:''}`),', ');
+const asmCell=x=>html`${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?[chip('pending','c-warn'),x.legs.length>1?html` <button title="retry the assembly" data-act="asm" data-name="${x.name}">assemble</button>`:'']:chip('single leg','c-mut')}${x.replacing?[' ',chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn')]:''}${syncChips(x)}`;
+const volRows=v=>v.volumes.length?v.volumes.map(x=>html`<tr>
+  <td class="mono">${x.name}</td><td>${human(x.size_bytes)}</td>
+  <td>${x.pool||''}</td>
+  <td>${legCell(x)}</td>
+  <td>${x.rung}${x.head?html` <span class="dim">head ${x.head}</span>`:''}</td>
+  <td>${asmCell(x)}</td>
+  <td>${expo(x)}</td>
+  <td><button class="danger" data-act="del" data-name="${x.name}">✕</button></td></tr>`)
+  :html`<tr><td colspan="8" class="dim">no volumes</td></tr>`;
+const eventRows=e=>{const evs=e.events.slice(-30).reverse();
+  return evs.length?evs.map(x=>{
+    const t=x.time&&x.time.secs_since_epoch?new Date(x.time.secs_since_epoch*1000).toLocaleTimeString():'';
+    const cls={info:'',warning:'c-warn',error:'c-err'}[x.severity]||'';
+    return html`<div class="ev"><span class="t">${t}</span><span class="${cls?'chip '+cls:''}">${x.severity}</span> ${x.message}</div>`;
+  }):html`<div class="dim">no events</div>`;};
 async function refresh(){
   try{
     const [h,n,p,v,e]=await Promise.all([api('api/v1/health'),api('api/v1/nodes'),
       api('api/v1/pools'),api('api/v1/volumes'),api('api/v1/events')]);
     $('head').textContent=`v${h.version} · ${n.nodes.length} nodes · ${v.volumes.length} volumes`;
-    $('nodes').innerHTML=n.nodes.map(x=>`<tr>
-      <td class="mono">${x.name}</td>
-      <td class="dim mono">${x.engine_url}</td>
-      <td>${x.tier?chip(x.tier,'c-acc'):''}</td>
-      <td class="dim">${Object.entries(x.labels||{}).map(([k,val])=>`${k}=${val}`).join(' ')}</td>
-      <td>${x.status.healthy?chip('healthy','c-ok'):chip('unreachable','c-err')}</td>
-      <td>${human(x.status.free_bytes)} / ${human(x.status.total_bytes)}</td>
-      <td>${x.status.volumes||0}</td></tr>`).join('')
-      ||'<tr><td colspan="7" class="dim">no nodes — no stormblock on this machine answered; add [[nodes]] to config or point a stormblock [stormfs] metadata_url here</td></tr>';
-    const drv=d=>d?(d.serial||d.wwn||d.path||'?'):'';
-    // A node volume's PV and its claim (#28): complete = Bound and naming each other.
-    const pvc=p=>{if(!p)return '';const c=p.claim;const ok=p.phase==='Bound'&&c&&c.bound;
-      const claim=c?`${c.namespace}/${c.name}${c.bound?'':' '+chip(c.phase?'not bound':'claim missing','c-warn')}`:chip('no claim','c-warn');
-      return `${p.pv} ${ok?p.phase:chip(p.phase||'?','c-warn')}<br>${claim}${p.volume_kind?' '+chip(p.volume_kind,'c-mut'):''}`;};
-    const what=x=>x.kind==='slab'?`${x.node} · ${x.role} · tier ${x.tier} · ${x.drive?'drive '+drv(x.drive):x.domain}`
-      :x.kind==='tier'?`${x.slabs.length} slab(s) on ${x.nodes.join(', ')}`
-      :`replicas ${x.replicas} at ${x.rung} · ${x.healthy}/${x.matched}: ${(x.nodes||[]).join(', ')}`;
-    $('pools').innerHTML=p.pools.map(x=>`<tr>
-      <td class="mono">${x.kind==='slab'?x.node+'/'+x.slab.slice(0,8):x.name}</td>
-      <td>${chip(x.kind,x.kind==='policy'?'c-acc':'c-mut')}</td>
-      <td class="dim">${what(x)}</td><td>${x.kind==='policy'?'':x.volumes}</td>
-      <td>${human(x.free_bytes)} / ${human(x.total_bytes)}</td></tr>`).join('')
-      ||'<tr><td colspan="5" class="dim">no pools — no engine found and none configured</td></tr>';
+    render($('nodes'),nodeRows(n));
+    render($('pools'),poolRows(p));
     const inv=await Promise.all(n.nodes.map(x=>api(`api/v1/nodes/${encodeURIComponent(x.name)}/inventory`)
       .then(i=>({node:x.name,i})).catch(()=>({node:x.name,i:{volumes:[]}}))));
-    $('nvols').innerHTML=inv.flatMap(({node,i})=>(i.volumes||[]).map(v=>`<tr>
-      <td class="mono">${v.name}${v.sealed?' '+chip('sealed','c-mut'):''}${v.kind&&v.kind!=='volume'?' '+chip(v.kind,'c-mut'):''}${v.in_use?' '+chip('in use '+(v.attachments||[]).map(a=>a.transport).join('+'),'c-acc'):''}</td><td class="mono">${node}</td>
-      <td>${human(v.virtual_size_bytes)} / ${human(v.allocated_bytes)}</td><td>${v.role}</td>
-      <td class="dim mono">${v.placement?(v.placement.slabs||[]).map(s=>`${s.id.slice(0,8)} ${drv(s.drive)}${s.node&&s.node!==node?'@'+s.node:''}${s.state!=='ok'?' '+chip(s.state,'c-err'):''}`).join('<br>')
-        :v.slabs.length?v.slabs.map(s=>s.slice(0,8)).join('+'):'unknown'}${v.placement&&v.placement.rebuild&&v.placement.rebuild!=='none'?' '+chip('rebuild '+v.placement.rebuild,'c-warn'):''}</td>
-      <td class="dim mono">${v.placement?(v.placement.arrays||[]).flatMap(a=>a.members).map(m=>`${drv(m.drive)}@${m.node} ${m.state==='active'?m.state:chip(m.state,'c-warn')}`).join('<br>'):''}</td>
-      <td class="dim">${(c=>c?`${c.kind} ${c.namespace?c.namespace+'/':''}${c.name}`:'')(v.consumer||v.owner)}</td>
-      <td class="dim mono">${pvc(v.pv)}</td></tr>`)).join('')
-      ||'<tr><td colspan="8" class="dim">no node volumes</td></tr>';
+    render($('nvols'),nvolRows(inv));
     const sel=$('v-pool'); const cur=sel.value;
-    sel.innerHTML='<option value="">no pool</option>'+p.pools.filter(x=>x.kind==='policy').map(x=>`<option>${x.name}</option>`).join('');
+    render(sel,poolOptions(p));
     sel.value=cur;
-    $('vols').innerHTML=v.volumes.map(x=>`<tr>
-      <td class="mono">${x.name}</td><td>${human(x.size_bytes)}</td>
-      <td>${x.pool||''}</td>
-      <td>${x.legs.map(l=>`${l.node}${l.state==='created'?'':' '+chip(l.state,'c-err')}${l.message?' '+chip(l.message,'c-warn'):''}${(x.assembly==='assembled'||x.assembly==='degraded')&&!x.replacing?` <button title="move this leg" onclick="moveLeg('${x.name}','${l.node}')">⇄</button>`:''}`).join(', ')}</td>
-      <td>${x.rung}${x.head?` <span class="dim">head ${x.head}</span>`:''}</td>
-      <td>${x.assembly==='assembled'?chip('raid1','c-ok'):x.assembly==='degraded'?chip('degraded','c-warn'):x.assembly==='pending_engine_support'?chip('pending','c-warn')+(x.legs.length>1?` <button title="retry the assembly" onclick="asmVol('${x.name}')">assemble</button>`:''):chip('single leg','c-mut')}${x.replacing?' '+chip(`re-leg ${x.replacing.from} → ${x.replacing.leg.node}`,'c-warn'):''}${syncChips(x)}</td>
-      <td>${expo(x)}</td>
-      <td><button class="danger" onclick="delVol('${x.name}')">✕</button></td></tr>`).join('')
-      ||'<tr><td colspan="8" class="dim">no volumes</td></tr>';
-    $('evlist').innerHTML=e.events.slice(-30).reverse().map(x=>{
-      const t=x.time&&x.time.secs_since_epoch?new Date(x.time.secs_since_epoch*1000).toLocaleTimeString():'';
-      const cls={info:'',warning:'c-warn',error:'c-err'}[x.severity]||'';
-      return `<div class="ev"><span class="t">${t}</span><span class="${cls?'chip '+cls:''}">${x.severity}</span> ${x.message}</div>`;
-    }).join('')||'<div class="dim">no events</div>';
+    render($('vols'),volRows(v));
+    render($('evlist'),eventRows(e));
   }catch(e){fail(e)}
 }
 refresh(); setInterval(refresh,5000);

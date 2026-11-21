@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### 2026-11-21 (#128)
+- **fix (security):** The embedded UI put API strings (node names and
+  engine URLs from self-registration, volume names, messages, events,
+  inventory) into `innerHTML` unescaped, and volume names into inline
+  `onclick` handlers. A hostname such as `<img src=x onerror=…>` ran
+  script in the management origin, which could read the `ss-token` or
+  send authenticated requests. Every value is now rendered through an
+  escaping `html` template tag (text and quoted attributes), and buttons
+  carry names as `data-*` handled by one `addEventListener`. No inline
+  handler is left in the page. Finding d3e282fb6f09.
+- **test:** `tests/ui.rs` runs `tests/ui/escape.js` under node. It runs
+  the page's own script against stub DOM and fetch answering hostile
+  values, and checks that only the page's tags and attributes are rendered,
+  each payload shows escaped, and a button's action gets the name as data.
+  It fails against the old page (an `<img>` rendered from a node name).
+
 ### 2026-11-21 (#127)
 - **fix:** Volume teardown held the federation read lock across the
   head's array and drive deletes and every leg detach (minutes each on a
