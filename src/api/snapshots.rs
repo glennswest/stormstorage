@@ -377,30 +377,63 @@ pub(super) async fn get_group(State(s): State<Arc<AppState>>, Path(id): Path<Str
 }
 
 /// DELETE /api/v1/group-snapshots/{id} — the group and every member.
+///
+/// Each member is deleted where its own parent is served now (#124): the
+/// members' arrays can be promoted to different nodes after the group was
+/// taken. The engine's group delete is used only while every member is
+/// still on the group's node; otherwise each member goes by name on its own
+/// node. A member's record goes only once it is deleted, and the group's
+/// once all are, so a failure part way leaves what is left to delete again.
 pub(super) async fn delete_group(State(s): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    let (g, members, at) = {
+    let (g, homes) = {
         let fed = s.fed.read().await;
         let Some(g) = fed.group_snapshots.get(&id).cloned() else {
             return Ok(Json(json!({})));
         };
-        let members: Vec<Snapshot> = g.members.iter().filter_map(|m| fed.snapshots.get(m).cloned()).collect();
-        let at = match members.first() {
-            Some(m) => Some(snapshot_home(&s, &fed, m)?),
-            None => None,
-        };
-        (g, members, at)
+        let mut homes = Vec::new();
+        for m in g.members.iter().filter_map(|m| fed.snapshots.get(m)) {
+            homes.push((m.clone(), snapshot_home(&s, &fed, m)?));
+        }
+        (g, homes)
     };
-    if let Some(at) = &at {
-        healthy(&s, &at.node).await?;
-        match (&g.engine_id, at.node == g.node) {
-            (Some(eid), true) => at
-                .engine
+    // Every node first: nothing is deleted while one of them is down.
+    let mut nodes: Vec<&str> = homes.iter().map(|(_, at)| at.node.as_str()).collect();
+    nodes.sort();
+    nodes.dedup();
+    for n in &nodes {
+        healthy(&s, n).await?;
+    }
+    let count = homes.len();
+    match (&g.engine_id, homes.first()) {
+        (Some(eid), Some((_, at))) if homes.iter().all(|(_, a)| a.node == g.node) => {
+            at.engine
                 .delete_v1(&format!("/v1/group-snapshots/{eid}"))
                 .await
-                .map_err(|e| ApiError::upstream(format!("{}: {e:#}", at.node)))?,
-            _ => {
-                let names: Vec<String> = members.iter().map(|m| m.engine_name.clone()).collect();
-                delete_by_name(at, &names).await?
+                .map_err(|e| ApiError::upstream(format!("{}: {e:#}", at.node)))?;
+        }
+        _ => {
+            for (m, at) in &homes {
+                if let Err(e) = delete_by_name(at, std::slice::from_ref(&m.engine_name)).await {
+                    commit(&s, &id, format!("group snapshot {id}: delete stopped at {}: {}", m.name, e.message)).await;
+                    return Err(e);
+                }
+                let mut fed = s.fed.write().await;
+                fed.snapshots.remove(&m.name);
+                if let Some(gr) = fed.group_snapshots.get_mut(&id) {
+                    gr.members.retain(|x| x != &m.name);
+                }
+                fed.revision += 1;
+            }
+            // The engine's group record on the node it was taken on, its
+            // members gone by now; best effort (that node may be the one
+            // the arrays were promoted away from).
+            if let Some(eid) = &g.engine_id {
+                let at = homes.iter().find(|(_, a)| a.node == g.node).map(|(_, a)| &a.engine);
+                if let Some(engine) = at {
+                    if let Err(e) = engine.delete_v1(&format!("/v1/group-snapshots/{eid}")).await {
+                        tracing::warn!("group snapshot {id}: engine group record on {}: {e:#}", g.node);
+                    }
+                }
             }
         }
     }
@@ -412,7 +445,7 @@ pub(super) async fn delete_group(State(s): State<Arc<AppState>>, Path(id): Path<
         fed.group_snapshots.remove(&id);
         fed.revision += 1;
     }
-    commit(&s, &id, format!("group snapshot {id} deleted ({} members)", members.len())).await;
+    commit(&s, &id, format!("group snapshot {id} deleted ({count} members)")).await;
     Ok(Json(json!({})))
 }
 

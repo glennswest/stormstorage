@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### 2026-11-20 (#124)
+- **fix:** Deleting a group snapshot sent every member to the first
+  member's node. After a member's array was promoted elsewhere, its
+  snapshot was "not found" there, counted as deleted, and its record
+  dropped, leaving the data allocated with nothing to delete it by. Each
+  member is now resolved to where its parent is served now; every such
+  node must be healthy before anything is deleted; the engine's group
+  delete is used only while all members are still on the group's node,
+  otherwise each member goes by name on its own node (then the engine's
+  group record is removed, best effort). A member's record goes only once
+  it is deleted, the group's once all are. Review finding 3bc9bbab3d9f.
+  Test: tests/replication.rs `group_delete_follows_each_member_to_its_node`.
+
 ### 2026-11-20 (#123)
 - **fix:** Closing a drive by its URI (moves, teardown, stale-head cleanup)
   sent `nvme-tcp://…?nsid=…&hostnqn=…` with `?` and `&` unescaped, so the

@@ -1664,6 +1664,58 @@ async fn group_snapshots_are_one_node_only() {
     assert!(fed.snapshots.is_empty() && fed.group_snapshots.is_empty());
 }
 
+/// #124: a group's members are deleted where each is served now. After one
+/// member's array is promoted to another node, the group delete goes to
+/// both nodes, not only the first member's; while one of them is down
+/// nothing is deleted and every record is kept.
+#[tokio::test]
+async fn group_delete_follows_each_member_to_its_node() {
+    let (api, state, mocks) = setup(&["node-a", "node-b"]).await;
+    for n in ["h1", "h2"] {
+        let (st, v) = call(
+            format!("{api}/api/v1/volumes"),
+            json!({"name": n, "size_bytes": 1u64 << 30, "replicas": 2, "prefer_node": "node-a"}),
+        )
+        .await;
+        assert_eq!((st, v["head"].as_str()), (200, Some("node-a")), "{v}");
+    }
+    let (st, g) = call(format!("{api}/api/v1/group-snapshots"), json!({"name": "gs", "volume_ids": ["h1", "h2"]})).await;
+    assert_eq!(st, 200, "{g}");
+    let has = |node: &str, name: &str| {
+        let m = mocks[node].lock().unwrap();
+        m.volumes.values().any(|v| v.0 == name) || m.adopted.values().any(|n| n == name)
+    };
+    assert!(has("node-a", "gs-h1-mirror") && has("node-a", "gs-h2-mirror"));
+
+    // h2's array moves to node-b; its member comes across with it.
+    let (st, _) = call(format!("{api}/api/v1/volumes/h2/fence"), json!({"expected_epoch": 1})).await;
+    assert_eq!(st, 200);
+    state.fed.write().await.nodes.get_mut("node-a").unwrap().status.healthy = false;
+    let (st, v) = call(format!("{api}/api/v1/volumes/h2/promote"), json!({"target_node": "node-b", "fenced_epoch": 2})).await;
+    assert_eq!(st, 200, "{v}");
+    state.fed.write().await.nodes.get_mut("node-a").unwrap().status.healthy = true;
+    assert!(has("node-b", "gs-h2-mirror"), "adopted with the array");
+
+    // node-b down: refused before anything is deleted, records kept.
+    state.fed.write().await.nodes.get_mut("node-b").unwrap().status.healthy = false;
+    let (st, _) = delete_status(format!("{api}/api/v1/group-snapshots/gs")).await;
+    assert_ne!(st, 200);
+    assert!(has("node-a", "gs-h1-mirror") && has("node-b", "gs-h2-mirror"));
+    {
+        let fed = state.fed.read().await;
+        assert_eq!(fed.group_snapshots["gs"].members.len(), 2);
+        assert_eq!(fed.snapshots.len(), 2);
+    }
+    state.fed.write().await.nodes.get_mut("node-b").unwrap().status.healthy = true;
+
+    let (st, _) = delete_status(format!("{api}/api/v1/group-snapshots/gs")).await;
+    assert_eq!(st, 200);
+    assert!(!has("node-a", "gs-h1-mirror"), "{:?}", mocks["node-a"].lock().unwrap().log);
+    assert!(!has("node-b", "gs-h2-mirror"), "deleted on the node it moved to: {:?}", mocks["node-b"].lock().unwrap().log);
+    let fed = state.fed.read().await;
+    assert!(fed.snapshots.is_empty() && fed.group_snapshots.is_empty());
+}
+
 /// #49: `encrypted` and `qos_class` are refused until stormblock#319 — the
 /// engine would only record them.
 #[tokio::test]
