@@ -1275,6 +1275,6 @@ purge), put_policy, delete_point, on_volume_delete take it via
 listener, form via addEventListener. Test: `tests/ui/escape.js` (node, stub
 DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 
-### 2026-11-21 — #129 (P1): kube TLS exemption matched remote names (finding e53f3730aae1) — IN PROGRESS
+### 2026-11-21 — #129 (P1): kube TLS exemption matched remote names (finding e53f3730aae1) — DONE (sc-build sc-build-fcff0cdf9b: clippy + build + test passed on 74652d7)
 `config::is_loopback_server`: `reqwest::Url` host_str, exact `localhost` or
 `IpAddr::is_loopback`; `KubeConfig::skip_tls_verify` uses it when unset.
