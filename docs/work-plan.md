@@ -1279,7 +1279,7 @@ DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 `config::is_loopback_server`: `reqwest::Url` host_str, exact `localhost` or
 `IpAddr::is_loopback`; `KubeConfig::skip_tls_verify` uses it when unset.
 
-### 2026-11-21 — #131 (P1): larger expand retry skipped the array grow (finding a52b5ff1acfe) — IN PROGRESS
+### 2026-11-21 — #131 (P1): larger expand retry skipped the array grow (finding a52b5ff1acfe) — DONE (sc-build sc-build-9bf52eb7cd: clippy + build + test passed on f664590)
 `expand_claimed`: `to > x.to_bytes` resets `array_grown` and
 `array_bytes_before`; step 2b checks the array capacity is above
 `array_bytes_before` before the served volume grows.
