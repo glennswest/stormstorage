@@ -1219,7 +1219,7 @@ id as one segment; `force=true` is the only query. Test tests/drive_close.rs.
 Not done: closing by recorded drive UUID instead of URI (the callers hold the
 URI, not the UUID; the encoded URI is exact, so it is not needed for the fix).
 
-### 2026-11-20 — #124 (P1): group delete used only the first member's node (finding 3bc9bbab3d9f)
+### 2026-11-20 — #124 (P1): group delete used only the first member's node (finding 3bc9bbab3d9f) — DONE (sc-build sc-build-8dbdf07bb0 passed on 5a4d7de)
 `delete_group` resolved one `snapshot_home` and sent every member there.
 Fix: each member's own home; all those nodes healthy first; engine group
 delete only when all are still on `g.node`; else per member by name,
