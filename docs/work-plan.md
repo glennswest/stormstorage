@@ -1249,7 +1249,7 @@ success, else kept `aborting` (message `start: …; undo: … (retried)`) for
 an error (retried), not "no mirror". Tests: withdraw 500 on T; mirror start
 that takes but answers 502.
 
-### 2026-11-21 — #126 (P1): stopping a queued backup could panic the poller (finding 9b846f4a8055) — IN PROGRESS
+### 2026-11-21 — #126 (P1): stopping a queued backup could panic the poller (finding 9b846f4a8055) — DONE (sc-build sc-build-b49a5356fe passed on 63f7521; clippy sc-build-c2cee5bf61 clean)
 `backup::step` rechecks `policy`/`source_deleted` on load (was
 `expect("filtered")`). `backup:{volume}` claim: `run` holds it as a
 `Claimed` guard through the failure record; `api::backups` stop (incl.
