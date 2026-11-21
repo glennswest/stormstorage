@@ -1288,7 +1288,7 @@ DOM/fetch, tag + attribute allowlist), wrapped by `tests/ui.rs`.
 `kube::members`: `items` must be an array, else an error (adopt_members
 keeps known nodes). Mock apiserver `members_body`; store.rs adoption test.
 
-### 2026-11-21 — #133 (P1): members of one cluster were separate cluster domains (finding ea8110684a65) — IN PROGRESS
+### 2026-11-21 — #133 (P1): members of one cluster were separate cluster domains (finding ea8110684a65) — DONE (sc-build sc-build-57ca346081: clippy + build + test passed on 9999e5b)
 `kube::Member.cluster` from `metadata.labels["cluster.storm.io/cluster"]`
 (stormcluster `crd::CLUSTER_LABEL`); `adopt_members` sets label `cluster`
 (own, else the list's), `Members.local_cluster` → `adopt_local`'s local node.
