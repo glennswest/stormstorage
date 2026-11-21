@@ -1240,7 +1240,7 @@ records dropped as each is confirmed, group record last. Test
 Tests: replication.rs (concurrent creates; delete vs snapshot/expand),
 store.rs (etcd txn 500 → 503, then failover: not there).
 
-### 2026-11-21 — #130 (P1): failed migrate start dropped its record on a failed undo (finding 03b4140a6649) — IN PROGRESS
+### 2026-11-21 — #130 (P1): failed migrate start dropped its record on a failed undo (finding 03b4140a6649) — DONE (sc-build sc-build-9e781e7c88 passed on 45a715c; clippy sc-build-fa41c53e80 clean)
 `api::vmmigrations::start` on an `advance` error: nothing on T → drop the
 record; else `vmmigrate::abort` (stops our mirror via the attach URI even
 with `mirror_target` unrecorded, then `undo_target`); record dropped only on
