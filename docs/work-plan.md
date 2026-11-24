@@ -1312,3 +1312,8 @@ Done here: `commit` on health (build.rs). `api-up` names the build. On a
 null owner, `owner-recorded` names the build and probes with a partial
 owner: 400 means a #109 build, and a 2xx means a pre-#109 build. The next
 gate run passes, or it shows which of the two it was.
+3bfc9df: sc-build sc-build-77627b2406 (build + test) and sc-build-101b7f11ae
+(clippy -D warnings; the health test; the stamp resolved to 3bfc9df790ab)
+passed. Golden requested. Open until a release-gate pass on a pve VM. That
+needs pvetest1-3 answering again (all of them refuse runs while their
+apiservers are down).
