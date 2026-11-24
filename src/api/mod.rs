@@ -376,7 +376,7 @@ async fn ui_index() -> Html<&'static str> {
 }
 
 async fn health(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let mut h = json!({ "status": "ok", "version": crate::VERSION });
+    let mut h = json!({ "status": "ok", "version": crate::VERSION, "commit": crate::COMMIT });
     let conditions = s.conditions();
     if !conditions.is_empty() {
         h["conditions"] = json!(conditions);

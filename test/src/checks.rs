@@ -11,11 +11,46 @@ pub const MIB: u64 = 1 << 20;
 /// Small enough for any machine, big enough to be a real volume.
 pub const SIZE: u64 = 64 * MIB;
 
-/// The service answers and says its version.
+/// The service answers and says its version and build.
 pub async fn api_up(api: &Api) -> Outcome {
     let h = api.get("/api/v1/health").await?;
     ensure(h["status"] == "ok", format!("health: {h}"))?;
-    Ok(format!("stormstorage {} at {}", h["version"].as_str().unwrap_or("?"), api.base()))
+    Ok(format!("stormstorage {} ({}) at {}", h["version"].as_str().unwrap_or("?"), build(&h), api.base()))
+}
+
+/// Which build a health answer names (#120): its commit, or that it is a
+/// build from before the commit stamp — the version alone (0.3.0) was the
+/// same across every golden the release gate saw.
+fn build(health: &Value) -> String {
+    match health["commit"].as_str() {
+        Some(c) => format!("build {c}"),
+        None => "a build before #120: no commit on its health".into(),
+    }
+}
+
+/// Why a create's owner did not come back (#120): the build that answered,
+/// and whether it validates an owner at all. A #109 build refuses an owner
+/// without a kind and a name (400) before any engine work; one before #109
+/// ignores the field and creates the volume, which is removed again.
+async fn owner_dropped(api: &Api, env: &Env, tag: &str) -> String {
+    let health = api.get("/api/v1/health").await.map(|h| build(&h)).unwrap_or_else(|_| "health unreadable".into());
+    let name = env.vol(&format!("{tag}p"));
+    let probe = api
+        .post(
+            "/api/v1/volumes",
+            json!({"name": name, "size_bytes": SIZE, "replicas": 1, "owner": {"kind": "", "name": ""}}),
+        )
+        .await;
+    let owners = match probe {
+        Ok(r) if r.status == 400 => "it refuses a partial owner (400), so it carries #109".to_string(),
+        Ok(r) if r.ok() => {
+            let _ = api.remove(&name).await;
+            "it took a partial owner with a 2xx: a build before #109, which drops the field".to_string()
+        }
+        Ok(r) => format!("a partial owner answered {} {}", r.status, r.body),
+        Err(Why::Fail(e) | Why::Skip(e)) => format!("a partial owner: {e}"),
+    };
+    format!("{health}; {owners}")
 }
 
 /// At least one storage node is registered and healthy — on a stormcos node,
@@ -115,7 +150,9 @@ pub async fn owner_recorded(api: &Api, env: &Env, tag: &str) -> Outcome {
     }
     let result = async {
         let v = api.get(&format!("/api/v1/volumes/{name}")).await?;
-        ensure(v["owner"] == owner, format!("GET owner: {}", v["owner"]))?;
+        if v["owner"] != owner {
+            return Err(Why::Fail(format!("GET owner: {} — {}", v["owner"], owner_dropped(api, env, tag).await)));
+        }
         let listed = api.volumes().await?;
         let l = listed.iter().find(|x| x["name"] == name.as_str());
         ensure(l.is_some_and(|l| l["owner"] == owner), "the listing does not carry the owner")?;

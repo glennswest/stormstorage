@@ -1293,3 +1293,22 @@ keeps known nodes). Mock apiserver `members_body`; store.rs adoption test.
 (stormcluster `crd::CLUSTER_LABEL`); `adopt_members` sets label `cluster`
 (own, else the list's), `Members.local_cluster` → `adopt_local`'s local node.
 `Node::labels`: config > engine topology > default for `cluster`.
+
+### 2026-11-24 — #120 (P0): release 12.97 gate, short `owner-recorded`: `GET owner: null` — IN PROGRESS
+Runs a19da0dfe9 (pvetest2, 12.97-flowsdn) and 6885960a21 (pvetest1, 12.97):
+4/5 pass. `owner-recorded` fails in about 60 ms with `GET owner: null`.
+That is the same result as the pre-#109 negative control a091017dfe on 12.92.
+The test image (sha 1409cd08…) is the same one that passed on 11-19 (86123300c9,
+87f90e6969). 12.94 shipped stormstorage 8758c99 and passed (dd71868bc5,
+d218ab0533). 12.97 ships 5a7a0aa. The commits between them are #117 auth
+work only, and the owner path is unchanged. Both goldens' binaries
+(`component fetch --commit`) contain the #109 strings. Nothing in
+create → record → GET can return a null owner for a request that names
+one. Leading explanation: the 12.97 nodes were answered by a build that
+predates #109. That is unproven: the version is 0.3.0 on every build,
+pvetest syslog from 11-20 has aged out, and pvetest1-3 have not answered
+since 11-21/22, so no run can start.
+Done here: `commit` on health (build.rs). `api-up` names the build. On a
+null owner, `owner-recorded` names the build and probes with a partial
+owner: 400 means a #109 build, and a 2xx means a pre-#109 build. The next
+gate run passes, or it shows which of the two it was.

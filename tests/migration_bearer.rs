@@ -213,4 +213,7 @@ async fn health_says_whether_the_bearer_is_reviewed() {
     let off = serve(stormstorage::api::router(state)).await;
     let h: Value = reqwest::get(format!("{off}/api/v1/health")).await.unwrap().json().await.unwrap();
     assert!(h.get("migration_bearer").is_none(), "{h}");
+    // #120: which build answers, beside the version that moves only at a tag.
+    assert_eq!(h["commit"], stormstorage::COMMIT, "{h}");
+    assert!(!stormstorage::COMMIT.is_empty());
 }

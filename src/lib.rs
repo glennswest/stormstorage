@@ -27,3 +27,6 @@ pub mod store;
 pub mod vmmigrate;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The commit this binary was built from (build.rs, #120): `unknown` when
+/// the tree had no `.git` and no `STORMSTORAGE_COMMIT`.
+pub const COMMIT: &str = env!("STORMSTORAGE_COMMIT");

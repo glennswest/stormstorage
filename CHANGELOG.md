@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### 2026-11-24 (#120)
+- **feat:** `GET /api/v1/health` reports `commit`: the commit the binary
+  was built from, stamped by a new `build.rs` (`STORMSTORAGE_COMMIT`
+  overrides it, `unknown` without either; the same scheme as
+  stormblock#466). The version (0.3.0) was the same on every golden, so
+  nothing showed which build a release gate had tested.
+- **test:** short's `api-up` names the build. When `owner-recorded` reads
+  a null owner, its failure now says which build answered and whether that
+  build validates owners. A #109 build refuses a partial owner with 400.
+  A build from before #109 accepts it with a 2xx, and the probe volume is
+  deleted. Release 12.97's gate runs (a19da0dfe9, 6885960a21) failed with
+  `GET owner: null`, the same result as the pre-#109 negative control
+  a091017dfe. The same test image passed against 12.94, and nothing in
+  stormstorage's owner path changed between 12.94 (8758c99) and 12.97
+  (5a7a0aa). Both goldens' binaries contain the #109 code.
+  `tests/migration_bearer.rs` checks `commit` on health.
+
 ### 2026-11-21 (#133)
 - **fix:** Adopted stormcluster members had only a `storage` label, so
   `cluster` defaulted to each member's own name. A pool at `rung =
