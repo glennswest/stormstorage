@@ -1294,7 +1294,7 @@ keeps known nodes). Mock apiserver `members_body`; store.rs adoption test.
 (own, else the list's), `Members.local_cluster` → `adopt_local`'s local node.
 `Node::labels`: config > engine topology > default for `cluster`.
 
-### 2026-11-24 — #120 (P0): release 12.97 gate, short `owner-recorded`: `GET owner: null` — IN PROGRESS
+### 2026-11-24 — #120 (P0): release 12.97 gate, short `owner-recorded`: `GET owner: null` — DONE (release-gate short 5c1a9969bd passed 5/5 on pvetest2, 14.09-flowsdn, build 119f31e846f8)
 Runs a19da0dfe9 (pvetest2, 12.97-flowsdn) and 6885960a21 (pvetest1, 12.97):
 4/5 pass. `owner-recorded` fails in about 60 ms with `GET owner: null`.
 That is the same result as the pre-#109 negative control a091017dfe on 12.92.
@@ -1317,3 +1317,7 @@ gate run passes, or it shows which of the two it was.
 passed. Golden requested. Open until a release-gate pass on a pve VM. That
 needs pvetest1-3 answering again (all of them refuse runs while their
 apiservers are down).
+Closed 2026-11-27: gate run 5c1a9969bd (pvetest2, pve VM, 14.09-flowsdn) at
+119f31e846f8 passed 5/5. `owner-recorded` found the owner on the record, the
+listing and the engine volume. That build reports its commit, so the 12.97
+failure fits a stale pre-#109 build answering. It was never proven directly.
